@@ -3,6 +3,7 @@ import { DEFAULT_GOAL } from "@/lib/constants";
 import {
   buildExtractionPrompt,
   buildSystemPrompt,
+  buildVideoPrompt,
   effectiveGoal,
   isoDate,
   itemToText,
@@ -95,5 +96,34 @@ describe("buildExtractionPrompt", () => {
     expect(prompt).toContain(DEFAULT_GOAL);
     expect(prompt).toContain("Type: Video");
     expect(prompt).toContain("Learn linear algebra");
+  });
+});
+
+describe("buildVideoPrompt", () => {
+  it("includes the transcript, frame times and length", () => {
+    const prompt = buildVideoPrompt({
+      kind: "tiktok",
+      title: "",
+      url: "",
+      content: "[0:00] Start with customers.",
+      goal: "",
+      frameTimes: [5, 65],
+      durationSec: 125,
+    });
+    expect(prompt).toContain("Start with customers.");
+    expect(prompt).toContain("0:05, 1:05");
+    expect(prompt).toContain("Length: 2:05");
+    expect(prompt).toContain(DEFAULT_GOAL);
+  });
+
+  it("tells the model to work from frames when there is no speech", () => {
+    const prompt = buildVideoPrompt({ kind: "video", title: "", url: "", content: "", goal: "g", frameTimes: [1] });
+    expect(prompt).toContain("No speech was transcribed");
+  });
+});
+
+describe("itemToText with an assessment", () => {
+  it("includes the assessment", () => {
+    expect(itemToText(item({ assessment: "Mostly hype." }))).toContain("Your assessment: Mostly hype.");
   });
 });

@@ -27,6 +27,7 @@ Ask an AI about a goal and you get generic tips. Knowing answers from *your* pro
 | | |
 |---|---|
 | **Chat** | Ask about a goal. Answers stream in, cite the items you taught, and end with a clear next step. |
+| **Watch videos** | Upload a TikTok or video file and Knowing watches all of it: it **transcribes the speech**, looks at **8 frames** from across the video, and saves takeaways plus an honest **assessment** of how useful it is for your goal. |
 | **Teach** | Paste a link. Knowing pulls the **YouTube transcript**, the **TikTok caption**, or an **article's text** automatically, then saves 3 to 5 key takeaways and tags. Or paste your own notes. |
 | **Me** | Your starting point: where you are now, your goal, skills, weekly time. Every answer starts here. |
 | **Backup** | Download everything as one file and restore it on another device. |
@@ -63,6 +64,10 @@ Any Node host that runs Next.js works too (Netlify, Railway, Render, Fly.io).
 | `APP_PASSWORD` | Recommended | *(none)* | When set, the app asks for it once per device before chatting or teaching. |
 | `KNOWING_CHAT_MODEL` | No | `claude-opus-5-5` | Model that writes coaching answers. |
 | `KNOWING_EXTRACT_MODEL` | No | `claude-haiku-5-5` | Fast model that pulls takeaways out of what you teach. |
+| `OPENAI_API_KEY` | For video audio | *(none)* | Lets the server transcribe speech in uploaded videos (about $0.003 per minute with the default model). Without it, uploads are watched from frames only. |
+| `KNOWING_TRANSCRIBE_URL` | No | OpenAI's endpoint | Any OpenAI-compatible transcription endpoint, e.g. Groq's `https://api.groq.com/openai/v1/audio/transcriptions` (then set `OPENAI_API_KEY` to that service's key). |
+| `KNOWING_TRANSCRIBE_MODEL` | No | `gpt-4o-mini-transcribe` | Speech-to-text model (`whisper-large-v3` on Groq). |
+| `KNOWING_VIDEO_MODEL` | No | `claude-sonnet-5-5` | Model that watches uploaded videos. |
 
 ## How it works
 
@@ -114,14 +119,16 @@ tests/                   Vitest unit tests
 
 ## Limits worth knowing
 
-- **TikTok:** TikTok doesn't publish spoken transcripts, so Knowing gets the caption. Paste what the creator says for better advice.
+- **TikTok links:** TikTok doesn't publish spoken transcripts, so a pasted link only gets the caption. Save the TikTok to your device and upload the file to have the whole thing watched.
+- **Uploaded videos:** Up to 20 minutes. The video is processed in your browser and never uploaded whole: only 8 small frames and the audio (in 60-second pieces) are sent.
 - **YouTube:** Works for videos with captions. If YouTube blocks the server, paste the transcript instead.
 - **Sync:** Data lives on each device. Use **Me → Backup** to move it between phone and computer.
 
 ## Roadmap
 
 - [ ] Account sync across devices
-- [ ] Speech-to-text for TikToks and videos without captions
+- [x] Speech-to-text for uploaded TikToks and videos
+- [ ] Paste a TikTok link and have the video watched (needs a download server)
 - [ ] Weekly check-ins that track roadmap progress
 - [ ] Share a roadmap as a link
 

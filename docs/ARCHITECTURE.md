@@ -32,6 +32,29 @@ or hand-edited data is dropped item by item instead of crashing the app.
 The client adds the item immediately with status `reading`, then fills it in
 when the response arrives, so the list never waits on the network.
 
+### Watching an uploaded video
+
+Video files are processed in the browser (`lib/video.ts`), because hosting
+platforms cap request bodies (4.5 MB on Vercel) and phones record large files.
+
+1. `checkVideo()` reads the length and rejects files over 20 minutes or 500 MB.
+2. `extractFrames()` seeks a hidden `<video>` to 8 evenly spaced times
+   (`frameTimes()`) and draws each to a canvas as a JPEG, longest side 768 px.
+3. `extractAudio()` decodes the soundtrack straight to 16 kHz mono, cuts it into
+   60-second pieces, drops silent ones, and encodes each as WAV (about 1.9 MB).
+4. Each piece goes to `POST /api/transcribe`, which forwards it to an
+   OpenAI-compatible speech-to-text endpoint (`lib/transcribe.ts`). Claude reads
+   text and images but not audio, so this step is separate. Lines are stamped
+   with `[m:ss]`.
+5. `POST /api/learn` gets the transcript as `content` plus the frames. With
+   frames present it uses `buildVideoPrompt()` and `claude-sonnet-5-5`, sending
+   each frame as an image labeled with its timestamp. It returns takeaways,
+   tags, an `assessment` of how useful and trustworthy the video is, and
+   `visualNotes` about what the frames show, which are appended to the stored
+   text.
+
+Without `OPENAI_API_KEY`, step 4 is skipped and Claude works from the frames.
+
 ### Chatting (`POST /api/chat`)
 
 1. Body validated by `ChatRequestSchema`; the last message must be the user's.
@@ -53,7 +76,8 @@ when the response arrives, so the list never waits on the network.
 
 ### Health (`GET /api/health`)
 
-Reports whether an API key is configured and whether a password is required.
+Reports whether an API key is configured, whether a password is required, and
+whether the server can transcribe video audio.
 The UI uses it to show a setup banner or the password prompt.
 
 ## Security

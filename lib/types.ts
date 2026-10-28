@@ -47,6 +47,8 @@ export interface KnowledgeItem {
   /** 1 to 3 short lowercase topic tags. */
   tags: string[];
   status: ItemStatus;
+  /** For watched videos: how useful and trustworthy it is for their goal. */
+  assessment?: string;
   /** Epoch milliseconds. */
   createdAt: number;
 }
@@ -67,13 +69,15 @@ export interface KnowingBackup {
 }
 
 /** Where the text for a taught item came from. */
-export type SourceOrigin = "pasted" | "youtube-transcript" | "tiktok-caption" | "web-page";
+export type SourceOrigin = "pasted" | "youtube-transcript" | "tiktok-caption" | "web-page" | "video-upload";
 
 /** Response body of `POST /api/learn`. */
 export interface LearnResponse {
   title: string;
   takeaways: string[];
   tags: string[];
+  /** For uploaded videos: how useful and trustworthy it is for their goal. */
+  assessment?: string;
   /** The text that was analyzed, so the client can store it. */
   content: string;
   origin: SourceOrigin;
@@ -88,6 +92,13 @@ export interface HealthResponse {
   aiConfigured: boolean;
   /** True when the server requires the app password on API calls. */
   passwordRequired: boolean;
+  /** True when the server can transcribe speech in uploaded videos. */
+  transcriptionConfigured: boolean;
+}
+
+/** Response body of `POST /api/transcribe`. */
+export interface TranscribeResponse {
+  text: string;
 }
 
 /** Error body every API route returns on failure. */

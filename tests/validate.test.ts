@@ -33,6 +33,18 @@ describe("LearnRequestSchema", () => {
     expect(LearnRequestSchema.safeParse({ kind: "note", content: "Learn SQL" }).success).toBe(true);
     expect(LearnRequestSchema.safeParse({ kind: "video", url: "https://youtu.be/dQw4w9WgXcQ" }).success).toBe(true);
   });
+
+  it("accepts video frames on their own", () => {
+    const parsed = LearnRequestSchema.parse({ kind: "tiktok", frames: [{ at: 1.5, data: "/9j/4AAQSkZJRg==" }], durationSec: 30 });
+    expect(parsed.frames).toHaveLength(1);
+    expect(parsed.content).toBe("");
+  });
+
+  it("rejects frames that aren't base64 and too many frames", () => {
+    expect(LearnRequestSchema.safeParse({ kind: "video", frames: [{ at: 0, data: "<script>" }] }).success).toBe(false);
+    const many = Array.from({ length: 20 }, (_, i) => ({ at: i, data: "AAAA" }));
+    expect(LearnRequestSchema.safeParse({ kind: "video", frames: many }).success).toBe(false);
+  });
 });
 
 describe("cleanExtraction", () => {
@@ -48,6 +60,12 @@ describe("cleanExtraction", () => {
   });
 
   it("survives junk input", () => {
-    expect(cleanExtraction({ title: null, takeaways: "nope", tags: 5 })).toEqual({ title: "", takeaways: [], tags: [] });
+    expect(cleanExtraction({ title: null, takeaways: "nope", tags: 5 })).toEqual({
+      title: "",
+      takeaways: [],
+      tags: [],
+      assessment: "",
+      visualNotes: "",
+    });
   });
 });

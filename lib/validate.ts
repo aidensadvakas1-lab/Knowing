@@ -5,7 +5,7 @@
  * route handlers only ever see well-formed, size-limited data.
  */
 import { z } from "zod";
-import { ITEM_KINDS, LIMITS } from "./constants";
+import { ITEM_KINDS, LIMITS, VIDEO } from "./constants";
 
 const text = (max: number) => z.string().max(max).default("");
 
@@ -27,6 +27,7 @@ export const KnowledgeItemSchema = z.object({
   takeaways: z.array(z.string().max(500)).max(10).default([]),
   tags: z.array(z.string().max(40)).max(5).default([]),
   status: z.enum(["reading", "done", "saved"]).default("saved"),
+  assessment: z.string().max(1_000).optional(),
   createdAt: z.number().nonnegative(),
 });
 
@@ -51,7 +52,17 @@ export const ChatRequestSchema = z
     path: ["messages"],
   });
 
-/** Body of `POST /api/learn`. Needs a link, some content, or both. */
+/** One frame of an uploaded video: seconds in, and base64 JPEG data. */
+export const FrameSchema = z.object({
+  at: z.number().nonnegative(),
+  data: z
+    .string()
+    .min(1)
+    .max(VIDEO.frameChars)
+    .regex(/^[A-Za-z0-9+/]+=*$/, "Frames must be base64 JPEG data."),
+});
+
+/** Body of `POST /api/learn`. Needs a link, some content, video frames, or a mix. */
 export const LearnRequestSchema = z
   .object({
     kind: z.enum(ITEM_KINDS as [string, ...string[]]).transform((k) => k as (typeof ITEM_KINDS)[number]),
@@ -59,9 +70,13 @@ export const LearnRequestSchema = z
     url: text(2_000),
     content: text(LIMITS.itemContentChars),
     goal: text(4_000),
+    /** Frames from an uploaded video. When present, `content` is its transcript. */
+    frames: z.array(FrameSchema).max(VIDEO.frames).default([]),
+    /** Length of the uploaded video in seconds. */
+    durationSec: z.number().nonnegative().max(VIDEO.maxDurationSec * 2).optional(),
   })
-  .refine((b) => b.url.trim() || b.content.trim(), {
-    message: "Add a link or paste what it says.",
+  .refine((b) => b.url.trim() || b.content.trim() || b.frames.length > 0, {
+    message: "Add a link, a video, or paste what it says.",
     path: ["content"],
   });
 
@@ -78,7 +93,7 @@ export function describeZodError(error: z.ZodError): string {
  * Normalize a model's extraction output: trim, drop empties, cap counts and
  * lengths, lowercase tags. Guards against a model that ignores the limits.
  */
-export function cleanExtraction(raw: { title?: unknown; takeaways?: unknown; tags?: unknown }) {
+export function cleanExtraction(raw: { title?: unknown; takeaways?: unknown; tags?: unknown; assessment?: unknown; visualNotes?: unknown }) {
   const strings = (v: unknown) => (Array.isArray(v) ? v.map((s) => String(s).trim()).filter(Boolean) : []);
   return {
     title: String(raw.title ?? "").trim().slice(0, 100),
@@ -86,5 +101,7 @@ export function cleanExtraction(raw: { title?: unknown; takeaways?: unknown; tag
     tags: strings(raw.tags)
       .map((t) => t.toLowerCase().replace(/^#/, "").slice(0, 30))
       .slice(0, 3),
+    assessment: String(raw.assessment ?? "").trim().slice(0, 1_000),
+    visualNotes: String(raw.visualNotes ?? "").trim().slice(0, 4_000),
   };
 }
