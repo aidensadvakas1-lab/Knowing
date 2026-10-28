@@ -6,15 +6,14 @@
  * at frames. Then it pulls out the key points. Lists everything it has learned.
  */
 import { useRef, useState, type FormEvent } from "react";
-import { ApiError, learn, transcribe } from "@/lib/api-client";
+import { ApiError, learn } from "@/lib/api-client";
 import { ITEM_KINDS, KIND_LABEL, LIMITS } from "@/lib/constants";
 import { effectiveGoal } from "@/lib/prompt";
 import { parseHttpUrl, suggestKind } from "@/lib/sources";
 import { newId } from "@/lib/storage";
 import type { KnowingState } from "@/hooks/useKnowing";
 import type { ItemKind, KnowledgeItem } from "@/lib/types";
-import { checkVideo, extractAudio, extractFrames, VideoError } from "@/lib/video";
-import { formatTimestamp } from "@/lib/video-math";
+import { checkVideo, VideoError, watchVideo } from "@/lib/watch-video";
 
 export function TeachView({ state }: { state: KnowingState }) {
   const { items, addItem, updateItem, deleteItem, profile, password, health } = state;
@@ -98,10 +97,7 @@ export function TeachView({ state }: { state: KnowingState }) {
     }
   }
 
-  /**
-   * Watch an uploaded video: grab frames, transcribe the speech chunk by chunk,
-   * then send both to the server so Claude can assess the whole thing.
-   */
+  /** Watch an uploaded video and save what it learned as a new item. */
   async function teachVideo(file: File) {
     const link = url.trim();
     const notes = content.trim();
@@ -130,59 +126,26 @@ export function TeachView({ state }: { state: KnowingState }) {
         return setStatus("Storage is full. Delete some items first.");
       }
 
-      setStatus("Looking at the video…");
-      const frames = await extractFrames(file);
-
-      let transcript = "";
-      let hearingNote = "";
-      if (health?.transcriptionConfigured) {
-        setStatus("Pulling out the audio…");
-        const chunks = await extractAudio(file);
-        if (chunks.length === 0) hearingNote = "No speech found, so it watched the frames only.";
-        const lines: string[] = [];
-        for (const [i, chunk] of chunks.entries()) {
-          setStatus(chunks.length > 1 ? `Listening… part ${i + 1} of ${chunks.length}` : "Listening…");
-          try {
-            const text = await transcribe(chunk.wav, password);
-            if (text) lines.push(`[${formatTimestamp(chunk.start)}] ${text}`);
-          } catch (error) {
-            hearingNote = `Couldn't hear all of it: ${error instanceof ApiError ? error.message : "the server didn't answer."}`;
-            if (error instanceof ApiError && (error.code === "not_configured" || error.code === "unauthorized")) break;
-          }
-        }
-        transcript = lines.join("\n");
-      } else {
-        hearingNote = "The server can't hear audio yet (no OPENAI_API_KEY), so it watched the frames only.";
-      }
-      if (!frames.length && !transcript) throw new VideoError("Couldn't get any frames or speech out of that video.");
-
-      const combined = [transcript, notes && `Their own notes: ${notes}`].filter(Boolean).join("\n\n");
-      setStatus("Watching it…");
-      const result = await learn(
+      const result = await watchVideo(
         {
+          file,
           kind,
           title: title.trim(),
           url: link,
-          content: combined.slice(0, LIMITS.itemContentChars),
+          notes,
           goal: effectiveGoal(profile),
-          frames,
-          durationSec,
+          password,
+          canTranscribe: Boolean(health?.transcriptionConfigured),
+          onStatus: setStatus,
         },
-        password,
+        durationSec,
       );
-      updateItem(id, {
-        title: result.title,
-        content: result.content.slice(0, LIMITS.itemContentChars),
-        takeaways: result.takeaways,
-        tags: result.tags,
-        assessment: result.assessment,
-        status: result.takeaways.length ? "done" : "saved",
-      });
+      updateItem(id, result.patch);
       setTitle("");
       setUrl("");
       setContent("");
       clearVideo();
-      setStatus([result.warning ?? "Watched it.", hearingNote].filter(Boolean).join(" "));
+      setStatus(result.notes.length ? result.notes.join(" ") : "Watched it.");
     } catch (error) {
       if (id) deleteItem(id);
       setStatus(

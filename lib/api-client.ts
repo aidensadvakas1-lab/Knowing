@@ -15,6 +15,7 @@ import type {
   Profile,
   TranscribeResponse,
 } from "./types";
+import type { ChatAttachment } from "./attachments";
 import type { VideoFrame } from "./video";
 
 /** An API failure with a stable code the UI can react to. */
@@ -100,7 +101,7 @@ export interface ChatResult {
  * Rejects with ApiError on failure; a partial answer is attached as `partial`.
  */
 export async function streamChat(
-  payload: { profile: Profile; items: KnowledgeItem[]; messages: ChatTurn[] },
+  payload: { profile: Profile; items: KnowledgeItem[]; messages: ChatTurn[]; attachments?: ChatAttachment[] },
   password: string,
   handlers: ChatHandlers,
   signal?: AbortSignal,

@@ -5,7 +5,8 @@
  * route handlers only ever see well-formed, size-limited data.
  */
 import { z } from "zod";
-import { ITEM_KINDS, LIMITS, VIDEO } from "./constants";
+import { IMAGE_TYPES } from "./attachments";
+import { ATTACHMENTS, ITEM_KINDS, LIMITS, VIDEO } from "./constants";
 
 const text = (max: number) => z.string().max(max).default("");
 
@@ -36,12 +37,33 @@ export const ChatTurnSchema = z.object({
   content: z.string().min(1).max(LIMITS.messageChars * 4),
 });
 
+const base64 = (max: number) =>
+  z
+    .string()
+    .min(1)
+    .max(max)
+    .regex(/^[A-Za-z0-9+/]+=*$/, "Attachments must be base64 data.");
+
+/** A file attached to the newest chat message with the + button. */
+export const ChatAttachmentSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("image"),
+    name: z.string().max(300),
+    mediaType: z.enum(IMAGE_TYPES),
+    data: base64(ATTACHMENTS.totalBinaryChars),
+  }),
+  z.object({ type: z.literal("pdf"), name: z.string().max(300), data: base64(ATTACHMENTS.totalBinaryChars) }),
+  z.object({ type: z.literal("text"), name: z.string().max(300), text: z.string().max(ATTACHMENTS.textChars) }),
+]);
+
 /** Body of `POST /api/chat`. */
 export const ChatRequestSchema = z
   .object({
     profile: ProfileSchema.partial().default({}),
     items: z.array(KnowledgeItemSchema).max(LIMITS.items).default([]),
     messages: z.array(ChatTurnSchema).min(1).max(LIMITS.chatTurnsKept * 2),
+    /** Files attached to the last message. */
+    attachments: z.array(ChatAttachmentSchema).max(ATTACHMENTS.max).default([]),
   })
   .refine((body) => body.messages.at(-1)?.role === "user", {
     message: "The last message must be from the user.",
@@ -50,7 +72,12 @@ export const ChatRequestSchema = z
   .refine((body) => (body.messages.at(-1)?.content.length ?? 0) <= LIMITS.messageChars, {
     message: `Messages can be at most ${LIMITS.messageChars} characters.`,
     path: ["messages"],
-  });
+  })
+  .refine(
+    (body) =>
+      body.attachments.reduce((sum, a) => sum + (a.type === "text" ? 0 : a.data.length), 0) <= ATTACHMENTS.totalBinaryChars,
+    { message: "Those files are too big to send together. Attach fewer or smaller files.", path: ["attachments"] },
+  );
 
 /** One frame of an uploaded video: seconds in, and base64 JPEG data. */
 export const FrameSchema = z.object({

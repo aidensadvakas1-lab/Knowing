@@ -2,6 +2,7 @@
  * Prompt builders. Pure functions so they can be unit tested and so the
  * client never decides what the model is told.
  */
+import type { ChatAttachment, ImageType } from "./attachments";
 import { DEFAULT_GOAL, KIND_LABEL, LIMITS } from "./constants";
 import { formatTimestamp } from "./video-math";
 import type { ItemKind, KnowledgeItem, Profile } from "./types";
@@ -163,3 +164,29 @@ export const VIDEO_EXTRACTION_SCHEMA = {
     visualNotes: { type: "string" },
   },
 } as const;
+
+/** A content block for the Messages API: text, image or PDF document. */
+export type MessageBlock =
+  | { type: "text"; text: string }
+  | { type: "image"; source: { type: "base64"; media_type: ImageType; data: string } }
+  | { type: "document"; source: { type: "base64"; media_type: "application/pdf"; data: string }; title?: string };
+
+/**
+ * Build the newest user message with its attachments: each file first,
+ * labeled with its name, then what the user asked.
+ */
+export function messageWithAttachments(question: string, attachments: ChatAttachment[]): MessageBlock[] {
+  const blocks: MessageBlock[] = [];
+  for (const a of attachments) {
+    if (a.type === "image") {
+      blocks.push({ type: "text", text: `Attached image: ${a.name}` });
+      blocks.push({ type: "image", source: { type: "base64", media_type: a.mediaType, data: a.data } });
+    } else if (a.type === "pdf") {
+      blocks.push({ type: "document", source: { type: "base64", media_type: "application/pdf", data: a.data }, title: a.name });
+    } else {
+      blocks.push({ type: "text", text: `Attached file: ${a.name}\n\n${a.text}` });
+    }
+  }
+  blocks.push({ type: "text", text: question });
+  return blocks;
+}

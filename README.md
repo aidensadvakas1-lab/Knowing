@@ -27,6 +27,7 @@ Ask an AI about a goal and you get generic tips. Knowing answers from *your* pro
 | | |
 |---|---|
 | **Chat** | Ask about a goal. Answers stream in, cite the items you taught, and end with a clear next step. |
+| **+ button** | Attach up to 4 files to a message. Videos are watched and saved to what Knowing knows; photos, PDFs and text files are read along with your question. |
 | **Watch videos** | Upload a TikTok or video file and Knowing watches all of it: it **transcribes the speech**, looks at **8 frames** from across the video, and saves takeaways plus an honest **assessment** of how useful it is for your goal. |
 | **Teach** | Paste a link. Knowing pulls the **YouTube transcript**, the **TikTok caption**, or an **article's text** automatically, then saves 3 to 5 key takeaways and tags. Or paste your own notes. |
 | **Me** | Your starting point: where you are now, your goal, skills, weekly time. Every answer starts here. |

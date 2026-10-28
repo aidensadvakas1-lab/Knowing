@@ -4,6 +4,7 @@ import {
   buildExtractionPrompt,
   buildSystemPrompt,
   buildVideoPrompt,
+  messageWithAttachments,
   effectiveGoal,
   isoDate,
   itemToText,
@@ -125,5 +126,20 @@ describe("buildVideoPrompt", () => {
 describe("itemToText with an assessment", () => {
   it("includes the assessment", () => {
     expect(itemToText(item({ assessment: "Mostly hype." }))).toContain("Your assessment: Mostly hype.");
+  });
+});
+
+describe("messageWithAttachments", () => {
+  it("puts each file before the question, labeled by name", () => {
+    const blocks = messageWithAttachments("What now?", [
+      { type: "image", name: "chart.png", mediaType: "image/png", data: "AAAA" },
+      { type: "pdf", name: "plan.pdf", data: "BBBB" },
+      { type: "text", name: "notes.txt", text: "Learn SQL" },
+    ]);
+    expect(blocks.map((b) => b.type)).toEqual(["text", "image", "document", "text", "text"]);
+    expect(blocks[0]).toEqual({ type: "text", text: "Attached image: chart.png" });
+    expect(blocks[2]).toMatchObject({ title: "plan.pdf", source: { media_type: "application/pdf", data: "BBBB" } });
+    expect(blocks[3]).toEqual({ type: "text", text: "Attached file: notes.txt\n\nLearn SQL" });
+    expect(blocks.at(-1)).toEqual({ type: "text", text: "What now?" });
   });
 });

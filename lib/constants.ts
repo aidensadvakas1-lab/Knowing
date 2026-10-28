@@ -71,6 +71,20 @@ export const VIDEO = {
   maxFileBytes: 500 * 1024 * 1024,
 } as const;
 
+/** Limits for files attached to a chat message with the + button. */
+export const ATTACHMENTS = {
+  /** Files per message. */
+  max: 4,
+  /** Largest picked file for images and PDFs, before any shrinking. */
+  maxPickBytes: 25 * 1024 * 1024,
+  /** Images are shrunk so their longest side is at most this many pixels. */
+  imageMaxSide: 1_568,
+  /** Max base64 characters of all images and PDFs in one message. Keeps requests under Vercel's 4.5 MB body limit. */
+  totalBinaryChars: 3_200_000,
+  /** Max characters read from one text file. */
+  textChars: 40_000,
+} as const;
+
 /** Models used by the API routes. Override with env vars if needed. */
 export const MODELS = {
   /** Main coaching model for chat answers. */

@@ -55,6 +55,17 @@ platforms cap request bodies (4.5 MB on Vercel) and phones record large files.
 
 Without `OPENAI_API_KEY`, step 4 is skipped and Claude works from the frames.
 
+### Attaching files in chat (the + button)
+
+`classifyFile()` sorts each picked file. Videos run through the same pipeline
+as Teach (`lib/watch-video.ts`) and are saved as taught items before the
+message is sent, so the answer can draw on them. Images are shrunk to 1,568 px
+and re-encoded as JPEG, PDFs are read as base64, and text files as text
+(`lib/read-attachment.ts`). Those go to `/api/chat` as `attachments`, capped at
+3.2 MB of base64 in total, and `messageWithAttachments()` places them before the
+newest question as image, document and text blocks. Chat history keeps only an
+"Attached: …" line, not the files.
+
 ### Chatting (`POST /api/chat`)
 
 1. Body validated by `ChatRequestSchema`; the last message must be the user's.

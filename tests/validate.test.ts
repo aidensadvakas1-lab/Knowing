@@ -27,6 +27,32 @@ describe("ChatRequestSchema", () => {
   });
 });
 
+describe("ChatRequestSchema attachments", () => {
+  const ok = { messages: [turn("user")] };
+
+  it("accepts images, PDFs and text files", () => {
+    const parsed = ChatRequestSchema.parse({
+      ...ok,
+      attachments: [
+        { type: "image", name: "a.png", mediaType: "image/png", data: "iVBORw0KGgo=" },
+        { type: "pdf", name: "b.pdf", data: "JVBERi0=" },
+        { type: "text", name: "c.txt", text: "hello" },
+      ],
+    });
+    expect(parsed.attachments).toHaveLength(3);
+  });
+
+  it("defaults to none and rejects bad or oversized files", () => {
+    expect(ChatRequestSchema.parse(ok).attachments).toEqual([]);
+    expect(ChatRequestSchema.safeParse({ ...ok, attachments: [{ type: "image", name: "a", mediaType: "image/bmp", data: "AA==" }] }).success).toBe(false);
+    expect(ChatRequestSchema.safeParse({ ...ok, attachments: [{ type: "pdf", name: "a", data: "not base64!" }] }).success).toBe(false);
+    const big = { type: "pdf", name: "a", data: "A".repeat(2_000_000) };
+    const result = ChatRequestSchema.safeParse({ ...ok, attachments: [big, big] });
+    expect(result.success).toBe(false);
+    if (!result.success) expect(describeZodError(result.error)).toMatch(/too big/);
+  });
+});
+
 describe("LearnRequestSchema", () => {
   it("needs a link or content", () => {
     expect(LearnRequestSchema.safeParse({ kind: "note" }).success).toBe(false);
