@@ -36,9 +36,9 @@ export function transcribeErrorFor(status: number): TranscribeError {
 }
 
 /** Transcribe one audio file and return its text. */
-export async function transcribeAudio(audio: Blob, signal?: AbortSignal): Promise<string> {
+export async function transcribeAudio(audio: Blob, signal?: AbortSignal, filename = "audio.wav"): Promise<string> {
   const form = new FormData();
-  form.append("file", audio, "audio.wav");
+  form.append("file", audio, filename);
   form.append("model", MODELS.transcribe);
   form.append("response_format", "json");
   let res: Response;
