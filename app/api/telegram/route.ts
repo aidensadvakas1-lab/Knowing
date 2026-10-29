@@ -12,6 +12,7 @@ import { timingSafeEqual } from "node:crypto";
 import { createBrain } from "@/lib/bot/brain";
 import { handleUpdate, parseAllowed, type Deps, type Update } from "@/lib/bot/handle";
 import { createMedia } from "@/lib/bot/media";
+import { createEmbedder, SupabaseRetriever } from "@/lib/bot/rag-supabase";
 import { SupabaseStore } from "@/lib/bot/store";
 import { Telegram } from "@/lib/bot/telegram";
 import { apiError } from "@/lib/server";
@@ -49,6 +50,7 @@ export async function POST(request: Request): Promise<Response> {
     store: new SupabaseStore(process.env.SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!),
     brain: createBrain(),
     media: createMedia((fileId) => tg.fileUrl(fileId)),
+    retriever: new SupabaseRetriever(process.env.SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!, createEmbedder()),
     isAllowed: (id) => allowed.has(id),
   };
   after(() => handleUpdate(update, deps).catch((error) => console.error("Telegram update failed", error)));

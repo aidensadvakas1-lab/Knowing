@@ -4,7 +4,7 @@ import type { Save } from "@/lib/bot/types";
 
 const drill: Save = {
   id: "d1", userId: 1, title: "Split dodge <weak hand>", topic: "Lacrosse, Dodging", type: "drill", summary: "", steps: ["Jog 10 yards", "Plant & split", "Shoot"],
-  details: "", needsWords: true, sourceUrl: "", words: "", practiced: 0, createdAt: "",
+  details: "", needsWords: true, sourceUrl: "", words: "", source: "", practiced: 0, createdAt: "",
 };
 
 describe("mdToHtml", () => {

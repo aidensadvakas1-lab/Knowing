@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { handleUpdate, parseAllowed, type Deps, type Update } from "@/lib/bot/handle";
+import { MemoryRetriever } from "@/lib/bot/rag";
 import { MemoryStore } from "@/lib/bot/store";
 import type { Answer, Brain, InlineButton, Media, Save, SaveDraft, TelegramApi, WatchResult } from "@/lib/bot/types";
 
@@ -26,8 +27,9 @@ function setup(opts: { answer?: Partial<Answer>; draft?: Partial<SaveDraft>; wat
     fromTelegramFile: vi.fn(async () => ({ frames: ["aGk="], transcript: "say this", caption: "", notes: [] })),
   };
   const store = new MemoryStore();
-  const deps: Deps = { tg, store, brain, media, isAllowed: (id) => id === 7 };
-  return { deps, sent, edits, store, brain, media };
+  const retriever = new MemoryRetriever();
+  const deps: Deps = { tg, store, brain, media, retriever, isAllowed: (id) => id === 7 };
+  return { deps, sent, edits, store, brain, media, retriever };
 }
 
 const text = (t: string, from = 7): Update => ({ message: { message_id: 1, chat: { id: 7 }, from: { id: from }, text: t } });
@@ -112,6 +114,35 @@ describe("handleUpdate", () => {
     expect((await store.getUser(7)).facts).toEqual(["Plays Siege on PC, Gold rank"]);
     await handleUpdate(text("and again?"), deps);
     expect(vi.mocked(brain.answer).mock.calls[1]?.[0].user.facts).toEqual(["Plays Siege on PC, Gold rank"]);
+  });
+
+  it("indexes the video's own words and hands the matching passages to the answer", async () => {
+    const { deps, brain, retriever, store } = setup();
+    vi.mocked(deps.media.fromLink).mockResolvedValueOnce({ frames: [], transcript: "plant your left foot then split hard to the right", caption: "dodge", notes: [] });
+    await handleUpdate(text("https://vm.tiktok.com/ZMabc/"), deps);
+    expect(store.saves[0]?.source).toContain("plant your left foot");
+    expect(retriever.chunks.some((c) => c.kind === "source")).toBe(true);
+    await handleUpdate(text("which foot do I plant on the split?"), deps);
+    const retrieved = vi.mocked(brain.answer).mock.calls[0]?.[0].retrieved ?? [];
+    expect(retrieved[0]?.save.id).toBe(store.saves[0]!.id);
+    expect(retrieved[0]?.passages.join(" ")).toContain("plant your left foot");
+  });
+
+  it("drops a replaced save from search", async () => {
+    const { deps, edits, store, retriever } = setup({ watch: (saves) => (saves[0] ? { relation: "duplicate", relatedId: saves[0].id } : {}) });
+    await handleUpdate(text("https://vm.tiktok.com/one/"), deps);
+    const oldId = store.saves[0]!.id;
+    await handleUpdate(text("https://vm.tiktok.com/two/"), deps);
+    await handleUpdate(tap(datas(edits.at(-1)?.buttons)[1]!, edits.at(-1)!.id), deps);
+    expect(retriever.chunks.some((c) => c.saveId === oldId)).toBe(false);
+  });
+
+  it("still answers when search is down", async () => {
+    const { deps, brain, retriever } = setup();
+    await handleUpdate(text("https://vm.tiktok.com/ZMabc/"), deps);
+    vi.spyOn(retriever, "search").mockRejectedValueOnce(new Error("db down"));
+    await handleUpdate(text("split dodge drill?"), deps);
+    expect(vi.mocked(brain.answer).mock.calls[0]?.[0].retrieved[0]?.save.title).toBe("Split dodge drill");
   });
 
   it("shows and forgets remembered facts", async () => {

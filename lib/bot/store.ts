@@ -60,6 +60,7 @@ interface SaveRow {
   needs_words: boolean;
   source_url: string;
   words: string;
+  source: string;
   practiced: number;
   created_at: string;
 }
@@ -76,6 +77,7 @@ const toRow = (s: Save): SaveRow => ({
   needs_words: s.needsWords,
   source_url: s.sourceUrl,
   words: s.words,
+  source: s.source,
   practiced: s.practiced,
   created_at: s.createdAt,
 });
@@ -92,6 +94,7 @@ const fromRow = (r: SaveRow): Save => ({
   needsWords: Boolean(r.needs_words),
   sourceUrl: r.source_url ?? "",
   words: r.words ?? "",
+  source: r.source ?? "",
   practiced: Number(r.practiced) || 0,
   createdAt: r.created_at,
 });

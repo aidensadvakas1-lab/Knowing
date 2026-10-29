@@ -40,6 +40,8 @@ export interface Save extends SaveDraft {
   sourceUrl: string;
   /** What the video says, when the user typed or pasted it in. */
   words: string;
+  /** The video's own words as captured (transcript + caption), kept for retrieval. */
+  source: string;
   /** How many times they've run it with Start now. */
   practiced: number;
   createdAt: string;
@@ -113,6 +115,8 @@ export interface AskInput {
   user: BotUser;
   question: string;
   saves: Save[];
+  /** The saves retrieval picked for this question, best first, with passages from the video. */
+  retrieved: Array<{ save: Save; passages: string[] }>;
 }
 
 export interface Brain {

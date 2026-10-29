@@ -37,13 +37,13 @@ export function createBrain(): Brain {
       return cleanDraft(await watchJson([{ type: "text", text: buildRewritePrompt(save, words) }]), save.title);
     },
 
-    async answer({ user, question, saves }) {
+    async answer({ user, question, saves, retrieved }) {
       const history: Anthropic.MessageParam[] = user.turns.slice(-8).map((t) => ({ role: t.role, content: t.content }));
       while (history.length && history[0]?.role !== "user") history.shift();
       const response = await getAnthropic().messages.create({
         model: MODELS.bot,
         max_tokens: 2_000,
-        system: buildAskSystem(user, saves, question, today()),
+        system: buildAskSystem(user, saves, retrieved, today()),
         messages: [...history, { role: "user", content: question }],
       });
       if (response.stop_reason === "refusal") throw new Error("refused");

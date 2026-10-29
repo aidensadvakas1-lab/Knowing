@@ -15,6 +15,7 @@ const save = (over: Partial<Save>): Save => ({
   needsWords: false,
   sourceUrl: "",
   words: "",
+  source: "",
   practiced: 0,
   createdAt: "2026-10-29T00:00:00Z",
   ...over,
@@ -54,9 +55,10 @@ describe("buildAskSystem", () => {
     const mindset = save({ id: "m1", title: "The open arena", topic: "Business, Mindset", type: "mindset", steps: ["No degree needed"], details: "", summary: "Anyone can start." });
     const other = save({ id: "o1", title: "Split dodge drill", topic: "Lacrosse", steps: [], details: "", summary: "Weak hand." });
     const user = { ...newUser(1), facts: ["Plays Siege on PC"] };
-    const p = buildAskSystem(user, [save({}), mindset, other], "bank setup?", "2026-10-29");
+    const p = buildAskSystem(user, [save({}), mindset, other], [{ save: save({}), passages: ["put the Mira on the lockers wall"] }], "2026-10-29");
     expect(p).toContain("- Plays Siege on PC");
     expect(p).toContain("Mira on lockers");
+    expect(p).toContain("> put the Mira on the lockers wall");
     expect(p).toContain("No degree needed");
     expect(p).toContain('[id o1] "Split dodge drill"');
     expect(p).toContain("REMEMBER:");

@@ -9,6 +9,8 @@
  * - /start, /saved, /memory.
  */
 import { answerText, escapeHtml as esc, reactionButtons, reactionText, saveButtons, saveCard, savedList, stepButtons, stepText } from "./format";
+import { relevantSaves } from "./prompts";
+import { groupHits, searchQuery, type Retriever } from "./rag";
 import { FACTS_KEPT, newSaveId, TURNS_KEPT } from "./store";
 import { findUrl } from "./tiktok";
 import type { Brain, BotUser, InlineButton, Media, Save, Store, TelegramApi, WatchInput } from "./types";
@@ -18,6 +20,8 @@ export interface Deps {
   store: Store;
   brain: Brain;
   media: Media;
+  /** Finds the saves and passages that answer a question (hybrid vector + word search). */
+  retriever: Retriever;
   /** Who may use the bot. Each message costs API money, so it's private by default. */
   isAllowed(userId: number): boolean;
 }
@@ -140,11 +144,13 @@ async function watchAndSave(chatId: number, user: BotUser, get: () => Promise<Wa
     userId: user.id,
     sourceUrl,
     words: "",
+    source: [input.caption && `Caption: ${input.caption}`, input.transcript && `Transcript: ${input.transcript}`].filter(Boolean).join("\n").slice(0, 20_000),
     practiced: 0,
     createdAt: new Date().toISOString(),
   };
   await deps.store.saveUser(user); // saves belong to a user row, so make sure it exists
   await deps.store.addSave(save);
+  await reindex(save, deps);
   const decide = watched.relation === "conflict" || watched.relation === "duplicate" ? saves.find((s) => s.id === watched.relatedId) : null;
   await deps.tg.editMessage(chatId, status, reactionText(watched.reply, save, input.notes), reactionButtons(save, decide));
 }
@@ -159,13 +165,15 @@ async function addWords(chatId: number, user: BotUser, words: string, deps: Deps
   const draft = await deps.brain.rewrite(save, words);
   const updated: Save = { ...save, ...draft, words: words.slice(0, 8_000), needsWords: false };
   await deps.store.updateSave(updated);
+  await reindex(updated, deps);
   await deps.tg.sendMessage(chatId, `Updated with what it says.\n\n${saveCard(updated)}`, saveButtons(updated));
 }
 
 async function answer(chatId: number, user: BotUser, question: string, deps: Deps) {
   await deps.tg.typing(chatId);
   const saves = await deps.store.listSaves(user.id);
-  const reply = await deps.brain.answer({ user, question: question.slice(0, 4_000), saves });
+  const retrieved = await retrieve(user, question, saves, deps);
+  const reply = await deps.brain.answer({ user, question: question.slice(0, 4_000), saves, retrieved });
   const used = reply.sources.map((id) => saves.find((s) => s.id === id)).filter((s): s is Save => Boolean(s));
 
   const fresh = reply.remember.filter((f) => !user.facts.includes(f));
@@ -197,7 +205,10 @@ async function onButton(q: NonNullable<Update["callback_query"]>, deps: Deps) {
       return;
     }
     if (kind === "keep" || kind === "repl") {
-      if (kind === "repl" && n) await deps.store.deleteSave(q.from.id, n);
+      if (kind === "repl" && n) {
+        await deps.store.deleteSave(q.from.id, n);
+        await deps.retriever.remove(q.from.id, n).catch((error) => console.error("Unindex failed", error));
+      }
       await deps.tg.answerCallback(q.id, kind === "repl" ? "Replaced" : "Kept both");
       const save = await deps.store.getSave(q.from.id, id);
       if (save) await deps.tg.editMessage(chatId, messageId, `${kind === "repl" ? "Replaced the old one." : "Kept both."}\n\n✓ <i>Saved: ${esc(save.title)}</i>`, reactionButtons(save));
@@ -240,3 +251,23 @@ async function onButton(q: NonNullable<Update["callback_query"]>, deps: Deps) {
   }
 }
 
+/** Search failures never block saving: the save is still kept and found by words. */
+async function reindex(save: Save, deps: Deps) {
+  await deps.retriever.index(save).catch((error) => console.error("Indexing failed", error));
+}
+
+/** Retrieval for a question, falling back to simple word matching if search is down. */
+async function retrieve(user: BotUser, question: string, saves: Save[], deps: Deps) {
+  const previous = [...user.turns].reverse().find((t) => t.role === "user")?.content ?? "";
+  const query = searchQuery(question, previous);
+  try {
+    const groups = groupHits(await deps.retriever.search(user.id, query, 16));
+    return groups.flatMap(({ saveId, passages }) => {
+      const save = saves.find((s) => s.id === saveId);
+      return save ? [{ save, passages }] : [];
+    });
+  } catch (error) {
+    console.error("Search failed, using word match", error);
+    return relevantSaves(saves, query).map((save) => ({ save, passages: [] }));
+  }
+}

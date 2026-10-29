@@ -89,7 +89,7 @@ TikTok Share → Telegram → POST /api/telegram (Vercel)
   → ffmpeg: 8 frames + audio (lib/bot/media.ts)
   → speech to text (OpenAI)
   → Claude Haiku turns it into a save (lib/bot/brain.ts, lib/bot/prompts.ts)
-  → Supabase (lib/bot/store.ts)
+  → Supabase (lib/bot/store.ts), plus search chunks with embeddings (lib/bot/rag*.ts)
   → card with buttons back in Telegram (lib/bot/format.ts)
 ```
 
@@ -97,12 +97,32 @@ All the conversation logic is in [`lib/bot/handle.ts`](../lib/bot/handle.ts). It
 database, Claude and video processing as parameters, so `tests/bot-handle.test.ts` runs whole
 conversations with fakes.
 
+## How search works (RAG)
+
+When you ask something, Knowing doesn't read every save. It searches them first, then gives Claude only what matches:
+
+1. **Every save is split into chunks:** its card (title and steps), its details, and the video's own words
+   (transcript and caption) in overlapping pieces of about 900 characters. Each chunk starts with the save's
+   title and topic, so a piece of transcript still says what it belongs to.
+2. **Hybrid search.** Each question is matched two ways: by **meaning** (embeddings with pgvector, so
+   "where does the one-way mirror go" finds your Mira save) and by **exact words** (Postgres full-text, so
+   names like "Mira" or "Bank" always hit). The two rankings are merged with reciprocal rank fusion
+   (`match_chunks` in `supabase.sql`).
+3. **Follow-ups** like "and the other one?" are searched together with your previous message.
+4. **Claude gets the top saves plus their best passages verbatim** from the video, so a detail the summary
+   dropped is still there.
+
+Embeddings use your `OPENAI_API_KEY` (`text-embedding-3-small`, about $0.02 per million tokens: well under
+a cent a month). Without a key, search still works on exact words. `KNOWING_EMBED_URL`, `KNOWING_EMBED_KEY`
+and `KNOWING_EMBED_MODEL` point it at another OpenAI-compatible embeddings service (keep 1536 dimensions or
+change the column in `supabase.sql`).
+
 ## Limits
 
 - **TikTok downloads are the fragile part.** TikTok has no download API, so the bot uses a resolver
   service (tikwm.com's free API by default; set `KNOWING_TIKTOK_RESOLVER` to swap it). When it fails,
   the bot falls back to the post's caption and says so. Sending the video file itself always works.
 - **Videos sent as files:** up to 20 MB (Telegram's limit for bots).
-- **Search:** answers pull in saves that share words with the question, plus all "mindset" saves and
-  a one-line index of everything else. Past a few hundred saves, this should move to embeddings.
+- **Search quality depends on what was captured.** If a video's details were only spoken and the audio
+  couldn't be transcribed, they aren't in the save. "Add what it says" fixes that.
 - **Time:** each update has 60 seconds on Vercel's free plan, which fits TikTok-length videos.

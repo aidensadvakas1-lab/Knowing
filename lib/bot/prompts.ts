@@ -121,9 +121,15 @@ export function relevantSaves(saves: Save[], query: string, limit = 6): Save[] {
 }
 
 /** The instructions for answering a question, with the saves it may draw on. */
-export function buildAskSystem(user: BotUser, saves: Save[], question: string, today: string): string {
-  const recent = user.turns.slice(-4).map((t) => t.content).join(" ");
-  const hits = relevantSaves(saves, `${question} ${recent}`);
+/** What retrieval found: saves best first, each with its best passages from the video itself. */
+export interface Retrieved {
+  save: Save;
+  passages: string[];
+}
+
+export function buildAskSystem(user: BotUser, saves: Save[], retrieved: Retrieved[], today: string): string {
+  const hits = retrieved.map((r) => r.save);
+  const passages = new Map(retrieved.map((r) => [r.save.id, r.passages]));
   const mindsets = saves.filter((s) => s.type === "mindset" && !hits.includes(s)).slice(0, 6);
   const rest = saves.filter((s) => !hits.includes(s) && !mindsets.includes(s)).slice(0, 120);
   return `You are Knowing, a memory tool in Telegram. The person shares videos (drills, game setups, study methods, plans, ways of thinking) so they never have to save captions or re-explain things. Later they ask, and you hand back exactly what they saved, plus what they've already told you about themselves. You are not a coach or a friend: be quick, exact and plain.
@@ -142,7 +148,7 @@ How to answer:
 Today is ${today}.
 
 THEIR SAVES THAT MATCH THIS QUESTION:
-${hits.length ? hits.map(saveText).join("\n\n") : "(none match)"}
+${hits.length ? hits.map((h) => saveText(h) + ((passages.get(h.id) ?? []).length ? `\nExact words from the video:\n${passages.get(h.id)!.map((p) => `> ${p}`).join("\n")}` : "")).join("\n\n") : "(none match)"}
 ${mindsets.length ? `\nTHEIR SAVED WAYS OF THINKING (use when relevant):\n${mindsets.map(saveText).join("\n\n")}\n` : ""}
 EVERYTHING ELSE THEY'VE SAVED (you may use and cite these too):
 ${rest.map((s) => `[id ${s.id}] "${s.title}" (${s.topic || "?"}) ${s.summary}`).join("\n") || "(nothing)"}`;
