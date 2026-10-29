@@ -2,18 +2,20 @@
 
 Share a TikTok to Knowing in one tap: **TikTok → Share → Telegram → your bot**.
 The bot downloads the video, looks at 8 frames, transcribes what's said, and
-saves a card with the exact steps. Later, ask it anything and it answers from
-your saves and your goal, not with a generic answer.
+saves exactly what it showed. Later, ask in your own words and it hands back
+that drill, setup or plan, plus what you've already told it about yourself.
+It's a memory tool, not a coach: no one has to save captions or re-explain anything.
 
 ## What it does
 
 | You do | Knowing does |
 |---|---|
-| Share a TikTok link (or send any video) | Watches it and replies with a card: title, topic, type (drill, setup, plan, tip, mindset, info) and the exact steps |
-| Tap **Start now** on a drill or plan | Walks through it one step at a time with **Next** / **Back**, and counts each time you finish |
-| Ask a question | Answers from the matching saves and names them ("From your save: …"). If your save is for a different map or skill, it says so |
-| Ask something that pulls against your goal | Names the tradeoff (what you'd gain and give up), still helps, then offers **Keep**, **Switch** or **Do both** |
-| `/goal …` | Sets your main goal. `/goal` alone shows it |
+| Share a TikTok link (or send any video) | Saves exactly what it showed and reacts in a sentence or two: what it is, and how it connects to what you've saved ("This one puts Mira on CCTV, not lockers like your last Bank save"). It doesn't coach |
+| Tap **Keep both** / **Replace the old one** | Shown only when a new video conflicts with or duplicates an older save |
+| Tap **Show steps** / **Start now** | The full steps, or a step-by-step run with **Next** / **Back** that counts each time you finish |
+| Ask a question | Answers from the matching saves and names them. If your save is for a different map or skill, it says so |
+| Mention something lasting ("I'm Gold on PC", "I'm a junior") | Remembers it, so you never repeat it |
+| `/memory` | Shows what it remembers about you, with a button to forget each one |
 | `/saved` | Lists everything, grouped by topic |
 
 If a video is mostly talking and audio isn't available, the card offers **Add what it says**: paste the caption and the save is rewritten to be exact.

@@ -10,7 +10,10 @@ import type { BotUser, Save, Store } from "./types";
 /** Turns kept per user for follow-up questions. */
 export const TURNS_KEPT = 12;
 
-export const newUser = (id: number): BotUser => ({ id, goal: "", turns: [], offer: null, awaitingWordsFor: null });
+/** Lasting facts kept per user. */
+export const FACTS_KEPT = 40;
+
+export const newUser = (id: number): BotUser => ({ id, facts: [], turns: [], awaitingWordsFor: null });
 
 /** A short id that fits inside Telegram's 64-byte button data. */
 export function newSaveId(): string {
@@ -25,13 +28,16 @@ export class MemoryStore implements Store {
     return structuredClone(this.users.get(id) ?? newUser(id));
   }
   async saveUser(user: BotUser) {
-    this.users.set(user.id, structuredClone({ ...user, turns: user.turns.slice(-TURNS_KEPT) }));
+    this.users.set(user.id, structuredClone({ ...user, turns: user.turns.slice(-TURNS_KEPT), facts: user.facts.slice(-FACTS_KEPT) }));
   }
   async addSave(save: Save) {
     this.saves.unshift(structuredClone(save));
   }
   async updateSave(save: Save) {
     this.saves = this.saves.map((s) => (s.id === save.id && s.userId === save.userId ? structuredClone(save) : s));
+  }
+  async deleteSave(userId: number, id: string) {
+    this.saves = this.saves.filter((s) => !(s.id === id && s.userId === userId));
   }
   async getSave(userId: number, id: string) {
     const s = this.saves.find((x) => x.id === id && x.userId === userId);
@@ -107,17 +113,28 @@ export class SupabaseStore implements Store {
   }
 
   async getUser(id: number): Promise<BotUser> {
-    const rows = await this.rest<Array<{ id: number; goal: string; turns: BotUser["turns"]; offer: BotUser["offer"]; awaiting_words_for: string | null }>>(`bot_users?id=eq.${id}&select=*`);
+    const rows = await this.rest<Array<{ id: number; facts: unknown; turns: BotUser["turns"]; awaiting_words_for: string | null }>>(`bot_users?id=eq.${id}&select=*`);
     const r = rows[0];
     if (!r) return newUser(id);
-    return { id, goal: r.goal ?? "", turns: Array.isArray(r.turns) ? r.turns : [], offer: r.offer ?? null, awaitingWordsFor: r.awaiting_words_for ?? null };
+    return {
+      id,
+      facts: Array.isArray(r.facts) ? r.facts.map(String) : [],
+      turns: Array.isArray(r.turns) ? r.turns : [],
+      awaitingWordsFor: r.awaiting_words_for ?? null,
+    };
   }
 
   async saveUser(user: BotUser): Promise<void> {
     await this.rest("bot_users", {
       method: "POST",
       headers: { prefer: "resolution=merge-duplicates,return=minimal" },
-      body: JSON.stringify({ id: user.id, goal: user.goal, turns: user.turns.slice(-TURNS_KEPT), offer: user.offer, awaiting_words_for: user.awaitingWordsFor, updated_at: new Date().toISOString() }),
+      body: JSON.stringify({
+        id: user.id,
+        facts: user.facts.slice(-FACTS_KEPT),
+        turns: user.turns.slice(-TURNS_KEPT),
+        awaiting_words_for: user.awaitingWordsFor,
+        updated_at: new Date().toISOString(),
+      }),
     });
   }
 
@@ -131,6 +148,10 @@ export class SupabaseStore implements Store {
       headers: { prefer: "return=minimal" },
       body: JSON.stringify(toRow(save)),
     });
+  }
+
+  async deleteSave(userId: number, id: string): Promise<void> {
+    await this.rest(`saves?id=eq.${encodeURIComponent(id)}&user_id=eq.${userId}`, { method: "DELETE" });
   }
 
   async getSave(userId: number, id: string): Promise<Save | null> {

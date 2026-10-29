@@ -1,11 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import { handleUpdate, parseAllowed, type Deps, type Update } from "@/lib/bot/handle";
 import { MemoryStore } from "@/lib/bot/store";
-import type { Answer, Brain, InlineButton, Media, Save, SaveDraft, TelegramApi } from "@/lib/bot/types";
+import type { Answer, Brain, InlineButton, Media, Save, SaveDraft, TelegramApi, WatchResult } from "@/lib/bot/types";
 
 interface Sent { chatId: number; html: string; buttons?: InlineButton[][]; id: number }
 
-function setup(opts: { answer?: Partial<Answer>; draft?: Partial<SaveDraft> } = {}) {
+function setup(opts: { answer?: Partial<Answer>; draft?: Partial<SaveDraft>; watch?: (saves: Save[]) => Partial<WatchResult> } = {}) {
   const sent: Sent[] = [];
   const edits: Sent[] = [];
   let nextId = 100;
@@ -17,9 +17,9 @@ function setup(opts: { answer?: Partial<Answer>; draft?: Partial<SaveDraft> } = 
   };
   const draft: SaveDraft = { title: "Split dodge drill", topic: "Lacrosse, Dodging", type: "drill", summary: "Beat a defender.", steps: ["Jog", "Plant", "Split"], details: "", needsWords: false, ...opts.draft };
   const brain: Brain = {
-    watch: vi.fn(async () => draft),
+    watch: vi.fn(async ({ saves }: { saves: Save[] }) => ({ draft, reply: "A split dodge drill for your weak hand.", relation: "none" as const, relatedId: "", ...opts.watch?.(saves) })),
     rewrite: vi.fn(async (s: Save) => ({ ...s, steps: ["Exact step"] })),
-    answer: vi.fn(async ({ saves }: { saves: Save[] }) => ({ text: "Do the split dodge.", sources: saves.map((s: Save) => s.id), goal: "", switchTo: "", both: "", ...opts.answer })),
+    answer: vi.fn(async ({ saves }: { saves: Save[] }) => ({ text: "Do the split dodge.", sources: saves.map((s) => s.id), remember: [], ...opts.answer })),
   };
   const media: Media = {
     fromLink: vi.fn(async () => ({ frames: ["aGk="], transcript: "", caption: "dodge tips", notes: [] })),
@@ -32,6 +32,7 @@ function setup(opts: { answer?: Partial<Answer>; draft?: Partial<SaveDraft> } = 
 
 const text = (t: string, from = 7): Update => ({ message: { message_id: 1, chat: { id: 7 }, from: { id: from }, text: t } });
 const tap = (data: string, messageId = 100): Update => ({ callback_query: { id: "cb", from: { id: 7 }, data, message: { message_id: messageId, chat: { id: 7 } } } });
+const datas = (b?: InlineButton[][]) => (b ?? []).flat().map((x) => x.callback_data);
 
 describe("parseAllowed", () => {
   it("reads comma or space separated ids", () => {
@@ -48,14 +49,37 @@ describe("handleUpdate", () => {
     expect(brain.answer).not.toHaveBeenCalled();
   });
 
-  it("watches a shared TikTok link and saves a card with Start now", async () => {
+  it("watches a shared TikTok link and reacts briefly, with the steps one tap away", async () => {
     const { deps, sent, edits, store, media } = setup();
     await handleUpdate(text("look https://vm.tiktok.com/ZMabc/"), deps);
     expect(media.fromLink).toHaveBeenCalledWith("https://vm.tiktok.com/ZMabc/");
-    expect(sent[0]?.html).toContain("Watching");
-    expect(edits[0]?.html).toContain("Split dodge drill");
-    expect(edits[0]?.buttons?.flat()[0]?.callback_data).toMatch(/^open:/);
+    expect(sent[0]?.html).toBe("Watching…");
+    expect(edits[0]?.html).toContain("A split dodge drill for your weak hand.");
+    expect(edits[0]?.html).toContain("Saved: Split dodge drill");
+    expect(edits[0]?.html).not.toContain("1. Jog");
+    expect(datas(edits[0]?.buttons)).toEqual([expect.stringMatching(/^show:/), expect.stringMatching(/^open:/)]);
     expect(store.saves[0]?.sourceUrl).toBe("https://vm.tiktok.com/ZMabc/");
+  });
+
+  it("gives the watcher what's already saved and known, and offers keep or replace on a conflict", async () => {
+    const { deps, edits, store, brain } = setup({ watch: (saves) => (saves[0] ? { relation: "conflict", relatedId: saves[0].id, reply: "This one puts Mira on CCTV, not lockers." } : {}) });
+    await handleUpdate(text("https://vm.tiktok.com/one/"), deps);
+    const oldId = store.saves[0]!.id;
+    await handleUpdate(text("https://vm.tiktok.com/two/"), deps);
+    expect(vi.mocked(brain.watch).mock.calls[1]?.[0].saves.map((s) => s.id)).toEqual([oldId]);
+    const reaction = edits.at(-1)!;
+    expect(datas(reaction.buttons)[0]).toMatch(/^keep:/);
+    expect(datas(reaction.buttons)[1]).toBe(`repl:${store.saves[0]!.id}:${oldId}`);
+    await handleUpdate(tap(datas(reaction.buttons)[1]!, reaction.id), deps);
+    expect(store.saves.map((s) => s.id)).not.toContain(oldId);
+    expect(edits.at(-1)?.html).toContain("Replaced the old one");
+  });
+
+  it("shows the full steps on request", async () => {
+    const { deps, sent, store } = setup();
+    await handleUpdate(text("https://vm.tiktok.com/ZMabc/"), deps);
+    await handleUpdate(tap(`show:${store.saves[0]!.id}`), deps);
+    expect(sent.at(-1)?.html).toContain("1. Jog");
   });
 
   it("watches a video sent straight to the bot", async () => {
@@ -77,24 +101,27 @@ describe("handleUpdate", () => {
     expect(store.saves[0]?.practiced).toBe(1);
   });
 
-  it("answers from saves and offers to keep, switch or combine the goal", async () => {
-    const { deps, sent, store } = setup({ answer: { switchTo: "Go to college for AI", both: "Build a business while studying AI" } });
-    await handleUpdate(text("/goal Become a rich entrepreneur"), deps);
+  it("answers from saves, names them, and remembers facts the user mentions", async () => {
+    const { deps, sent, store, brain } = setup({ answer: { remember: ["Plays Siege on PC, Gold rank"] } });
     await handleUpdate(text("https://vm.tiktok.com/ZMabc/"), deps);
-    await handleUpdate(text("what college path for ai engineering?"), deps);
+    await handleUpdate(text("I'm gold on PC. what was that dodge drill?"), deps);
     const reply = sent.at(-1)!;
+    expect(reply.html).toContain("Do the split dodge.");
     expect(reply.html).toContain("From your save: Split dodge drill");
-    expect(reply.buttons?.flat().map((b) => b.callback_data)).toEqual(["goal:keep", "goal:switch", "goal:both", expect.stringMatching(/^open:/)]);
-    await handleUpdate(tap("goal:both"), deps);
-    expect((await store.getUser(7)).goal).toBe("Build a business while studying AI");
-    expect(sent.at(-1)?.html).toContain("Goal changed");
+    expect(datas(reply.buttons)).toEqual([expect.stringMatching(/^open:/)]);
+    expect((await store.getUser(7)).facts).toEqual(["Plays Siege on PC, Gold rank"]);
+    await handleUpdate(text("and again?"), deps);
+    expect(vi.mocked(brain.answer).mock.calls[1]?.[0].user.facts).toEqual(["Plays Siege on PC, Gold rank"]);
   });
 
-  it("sets a goal stated in a question when none is set, without offering a switch", async () => {
-    const { deps, sent, store } = setup({ answer: { goal: "Get 1500 on the SAT", switchTo: "x" } });
-    await handleUpdate(text("my goal is a 1500 on the SAT, what now?"), deps);
-    expect((await store.getUser(7)).goal).toBe("Get 1500 on the SAT");
-    expect(sent.at(-1)?.html).toContain("Saved your goal");
+  it("shows and forgets remembered facts", async () => {
+    const { deps, sent, edits, store } = setup({ answer: { remember: ["Junior in high school"] } });
+    await handleUpdate(text("I'm a junior"), deps);
+    await handleUpdate(text("/memory"), deps);
+    expect(sent.at(-1)?.html).toContain("1. Junior in high school");
+    await handleUpdate(tap("forget:0", sent.at(-1)!.id), deps);
+    expect((await store.getUser(7)).facts).toEqual([]);
+    expect(edits.at(-1)?.html).toContain("Nothing yet");
   });
 
   it("takes the next message as a video's words after Add what it says", async () => {

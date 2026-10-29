@@ -26,7 +26,7 @@ Ask an AI about a goal and you get generic tips. Knowing answers from *your* pro
 
 | | |
 |---|---|
-| **Telegram bot** | Share a TikTok straight from the TikTok app (**Share → Telegram**). Knowing downloads it, watches and hears it, and saves the exact drill, setup or plan. Ask later and it answers from **your** saves and goal. See [docs/TELEGRAM.md](docs/TELEGRAM.md). |
+| **Telegram bot** | Share a TikTok straight from the TikTok app (**Share → Telegram**). Knowing downloads it, watches and hears it, and saves the exact drill, setup or plan. Ask later and it answers from **your** saves and what you've told it. See [docs/TELEGRAM.md](docs/TELEGRAM.md). |
 | **Chat** | Ask about a goal. Answers stream in, cite the items you taught, and end with a clear next step. |
 | **+ button** | Attach up to 4 files to a message. Videos are watched and saved to what Knowing knows; photos, PDFs and text files are read along with your question. |
 | **Watch videos** | Upload a TikTok or video file and Knowing watches all of it: it **transcribes the speech**, looks at **8 frames** from across the video, and saves takeaways plus an honest **assessment** of how useful it is for your goal. |

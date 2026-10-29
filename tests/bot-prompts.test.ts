@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildAskSystem, buildWatchPrompt, cleanDraft, parseAnswer, relevantSaves } from "@/lib/bot/prompts";
+import { buildAskSystem, buildWatchPrompt, cleanDraft, cleanWatch, parseAnswer, relevantSaves } from "@/lib/bot/prompts";
 import { newUser } from "@/lib/bot/store";
 import type { Save } from "@/lib/bot/types";
 
@@ -50,26 +50,39 @@ describe("relevantSaves", () => {
 });
 
 describe("buildAskSystem", () => {
-  it("puts the goal, matching saves in full, mindsets, and the rest as an index", () => {
+  it("puts what they've told us, matching saves in full, mindsets, and the rest as an index", () => {
     const mindset = save({ id: "m1", title: "The open arena", topic: "Business, Mindset", type: "mindset", steps: ["No degree needed"], details: "", summary: "Anyone can start." });
     const other = save({ id: "o1", title: "Split dodge drill", topic: "Lacrosse", steps: [], details: "", summary: "Weak hand." });
-    const user = { ...newUser(1), goal: "Become a rich entrepreneur" };
+    const user = { ...newUser(1), facts: ["Plays Siege on PC"] };
     const p = buildAskSystem(user, [save({}), mindset, other], "bank setup?", "2026-10-29");
-    expect(p).toContain("THEIR MAIN GOAL: Become a rich entrepreneur");
+    expect(p).toContain("- Plays Siege on PC");
     expect(p).toContain("Mira on lockers");
     expect(p).toContain("No degree needed");
     expect(p).toContain('[id o1] "Split dodge drill"');
-    expect(p).toContain("SWITCH:");
+    expect(p).toContain("REMEMBER:");
+    expect(p).not.toMatch(/goal|SWITCH/i);
+  });
+});
+
+describe("watch prompt and cleanWatch", () => {
+  it("shows the watcher their facts and existing saves", () => {
+    const p = buildWatchPrompt({ caption: "", transcript: "", note: "", frameCount: 2, facts: ["Gold rank"], saves: [save({})] });
+    expect(p).toContain("Gold rank");
+    expect(p).toContain('[id a1] "Bank basement: lockers + CCTV setup"');
+  });
+  it("drops a relation that points at an unknown save", () => {
+    expect(cleanWatch({ reply: "x", relation: "conflict", relatedId: "nope" }, [save({})])).toMatchObject({ relation: "none", relatedId: "" });
+    expect(cleanWatch({ reply: "x", relation: "conflict", relatedId: "a1" }, [save({})])).toMatchObject({ relation: "conflict", relatedId: "a1", reply: "x" });
   });
 });
 
 describe("parseAnswer", () => {
-  it("splits off the control lines and keeps only known ids", () => {
-    const a = parseAnswer("1. Reinforce\n2. Mira\nSWITCH: Go to college for AI\nBOTH: Build a business while studying\nSOURCES: a1, zz", ["a1"]);
-    expect(a).toEqual({ text: "1. Reinforce\n2. Mira", sources: ["a1"], goal: "", switchTo: "Go to college for AI", both: "Build a business while studying" });
+  it("splits off REMEMBER and SOURCES and keeps only known ids", () => {
+    const a = parseAnswer("1. Reinforce\n2. Mira\nREMEMBER: Plays on PC\nREMEMBER: Gold rank\nSOURCES: a1, zz", ["a1"]);
+    expect(a).toEqual({ text: "1. Reinforce\n2. Mira", sources: ["a1"], remember: ["Plays on PC", "Gold rank"] });
   });
   it("handles a plain answer", () => {
-    expect(parseAnswer("Nothing saved on that yet.\nSOURCES: none", [])).toMatchObject({ text: "Nothing saved on that yet.", sources: [] });
+    expect(parseAnswer("Nothing saved on that yet.\nSOURCES: none", [])).toMatchObject({ text: "Nothing saved on that yet.", sources: [], remember: [] });
     expect(parseAnswer("Hi", []).text).toBe("Hi");
   });
 });

@@ -6,12 +6,12 @@ import "server-only";
 import type Anthropic from "@anthropic-ai/sdk";
 import { MODELS } from "../constants";
 import { getAnthropic } from "../server";
-import { buildAskSystem, buildRewritePrompt, buildWatchPrompt, cleanDraft, parseAnswer, WATCH_SCHEMA } from "./prompts";
-import type { Brain, SaveDraft } from "./types";
+import { buildAskSystem, buildRewritePrompt, buildWatchPrompt, cleanDraft, cleanWatch, parseAnswer, WATCH_SCHEMA } from "./prompts";
+import type { Brain } from "./types";
 
 const today = () => new Date().toISOString().slice(0, 10);
 
-async function draftFrom(content: Anthropic.ContentBlockParam[], fallbackTitle: string): Promise<SaveDraft> {
+async function watchJson(content: Anthropic.ContentBlockParam[]): Promise<unknown> {
   const response = await getAnthropic().messages.create({
     model: MODELS.bot,
     max_tokens: 4_000,
@@ -20,21 +20,21 @@ async function draftFrom(content: Anthropic.ContentBlockParam[], fallbackTitle: 
   });
   if (response.stop_reason === "refusal") throw new Error("refused");
   const text = response.content.find((b) => b.type === "text");
-  return cleanDraft(JSON.parse(text?.type === "text" ? text.text : "{}"), fallbackTitle);
+  return JSON.parse(text?.type === "text" ? text.text : "{}");
 }
 
 export function createBrain(): Brain {
   return {
-    async watch({ frames, transcript, caption, note }) {
+    async watch({ frames, transcript, caption, note, facts, saves }) {
       const content: Anthropic.ContentBlockParam[] = [
-        { type: "text", text: buildWatchPrompt({ caption, transcript, note, frameCount: frames.length }) },
+        { type: "text", text: buildWatchPrompt({ caption, transcript, note, frameCount: frames.length, facts, saves }) },
         ...frames.map((data): Anthropic.ContentBlockParam => ({ type: "image", source: { type: "base64", media_type: "image/jpeg", data } })),
       ];
-      return draftFrom(content, caption.slice(0, 60) || "Saved video");
+      return cleanWatch(await watchJson(content), saves, caption.slice(0, 60) || "Saved video");
     },
 
     async rewrite(save, words) {
-      return draftFrom([{ type: "text", text: buildRewritePrompt(save, words) }], save.title);
+      return cleanDraft(await watchJson([{ type: "text", text: buildRewritePrompt(save, words) }]), save.title);
     },
 
     async answer({ user, question, saves }) {

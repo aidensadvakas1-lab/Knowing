@@ -2,13 +2,14 @@
  * What the bot does with each Telegram update. Every outside service comes in
  * through `deps`, so tests can run whole conversations with fakes.
  *
- * - A link (shared from TikTok) or a video: watch it, save a card.
- * - Any other text: answer from their saves and goal.
- * - Buttons: Start now steps, Done, Add what it says, Keep / Switch / Both.
- * - /start, /goal, /saved.
+ * - A link (shared from TikTok) or a video: watch it, save it, and react in
+ *   a sentence or two (how it connects to their other saves). No coaching.
+ * - Any other text: answer from their saves and what they've told us.
+ * - Buttons: Show steps, Start now, Add what it says, Keep both / Replace.
+ * - /start, /saved, /memory.
  */
-import { answerText, goalButtons, saveButtons, saveCard, savedList, stepButtons, stepText } from "./format";
-import { newSaveId, TURNS_KEPT } from "./store";
+import { answerText, escapeHtml as esc, reactionButtons, reactionText, saveButtons, saveCard, savedList, stepButtons, stepText } from "./format";
+import { FACTS_KEPT, newSaveId, TURNS_KEPT } from "./store";
 import { findUrl } from "./tiktok";
 import type { Brain, BotUser, InlineButton, Media, Save, Store, TelegramApi, WatchInput } from "./types";
 
@@ -50,13 +51,11 @@ export function parseAllowed(raw: string | undefined): Set<number> {
   );
 }
 
-const WELCOME = `👋 <b>I'm Knowing.</b> Don't just favorite a video. Send it here and I'll remember exactly what it showed.
+const WELCOME = `Send me videos you want to keep. In TikTok, tap Share, then Telegram, then me.
 
-<b>How:</b> in TikTok tap <b>Share</b> → <b>Telegram</b> → me. Or send me any video.
-<b>Later:</b> just ask. "What was my Bank setup?" "Give me that dodging drill." You get <i>that</i> one, not a generic answer.
+I'll remember exactly what each one showed. Ask me about any of them later, in your own words.
 
-Tell me your main goal with /goal so I can point everything at it. Example: <code>/goal Become a successful entrepreneur</code>
-/saved shows everything you've sent.`;
+/saved lists everything. /memory shows what I remember about you.`;
 
 const FAIL = "Something went wrong on my side. Try again in a minute.";
 
@@ -78,7 +77,10 @@ export async function handleUpdate(update: Update, deps: Deps): Promise<void> {
       return;
     }
     const user = await deps.store.getUser(userId);
-    if (text.startsWith("/goal")) return await setGoalCommand(chatId, user, text.replace(/^\/goal(@\w+)?/, "").trim(), deps);
+    if (text.startsWith("/memory")) {
+      await deps.tg.sendMessage(chatId, memoryText(user), memoryButtons(user));
+      return;
+    }
     if (text.startsWith("/saved")) {
       await deps.tg.sendMessage(chatId, savedList(await deps.store.listSaves(userId)));
       return;
@@ -106,21 +108,17 @@ export async function handleUpdate(update: Update, deps: Deps): Promise<void> {
   }
 }
 
-async function setGoalCommand(chatId: number, user: BotUser, goal: string, deps: Deps) {
-  if (!goal) {
-    await deps.tg.sendMessage(chatId, user.goal ? `🎯 Your goal: <b>${esc(user.goal)}</b>\nChange it with <code>/goal your new goal</code>.` : "No goal yet. Set one like this: <code>/goal Become a successful entrepreneur</code>");
-    return;
-  }
-  user.goal = goal.slice(0, 200);
-  user.offer = null;
-  await deps.store.saveUser(user);
-  await deps.tg.sendMessage(chatId, `🎯 Goal set: <b>${esc(user.goal)}</b>\nI'll point answers at it, and tell you when a question pulls against it.`);
+function memoryText(user: BotUser): string {
+  if (!user.facts.length) return "Nothing yet. When you mention something lasting, like your rank or your position, I'll remember it.";
+  return ["What I remember about you:", ...user.facts.map((f, i) => `${i + 1}. ${esc(f)}`)].join("\n");
 }
 
-const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+function memoryButtons(user: BotUser) {
+  return user.facts.slice(0, 20).map((f, i) => [{ text: `Forget ${i + 1}: ${f.slice(0, 30)}`, callback_data: `forget:${i}` }]);
+}
 
 async function watchAndSave(chatId: number, user: BotUser, get: () => Promise<WatchInput>, sourceUrl: string, note: string, deps: Deps) {
-  const status = await deps.tg.sendMessage(chatId, "👀 Watching it…");
+  const status = await deps.tg.sendMessage(chatId, "Watching…");
   let input: WatchInput;
   try {
     input = await get();
@@ -133,10 +131,11 @@ async function watchAndSave(chatId: number, user: BotUser, get: () => Promise<Wa
     await deps.tg.editMessage(chatId, status, ["I couldn't get anything out of that one.", ...input.notes].join("\n"));
     return;
   }
-  const draft = await deps.brain.watch({ ...input, note });
+  const saves = await deps.store.listSaves(user.id);
+  const watched = await deps.brain.watch({ ...input, note, facts: user.facts, saves });
   const save: Save = {
-    ...draft,
-    needsWords: draft.needsWords && !input.transcript,
+    ...watched.draft,
+    needsWords: watched.draft.needsWords && !input.transcript,
     id: newSaveId(),
     userId: user.id,
     sourceUrl,
@@ -146,7 +145,8 @@ async function watchAndSave(chatId: number, user: BotUser, get: () => Promise<Wa
   };
   await deps.store.saveUser(user); // saves belong to a user row, so make sure it exists
   await deps.store.addSave(save);
-  await deps.tg.editMessage(chatId, status, saveCard(save, input.notes), saveButtons(save));
+  const decide = watched.relation === "conflict" || watched.relation === "duplicate" ? saves.find((s) => s.id === watched.relatedId) : null;
+  await deps.tg.editMessage(chatId, status, reactionText(watched.reply, save, input.notes), reactionButtons(save, decide));
 }
 
 async function addWords(chatId: number, user: BotUser, words: string, deps: Deps) {
@@ -159,7 +159,7 @@ async function addWords(chatId: number, user: BotUser, words: string, deps: Deps
   const draft = await deps.brain.rewrite(save, words);
   const updated: Save = { ...save, ...draft, words: words.slice(0, 8_000), needsWords: false };
   await deps.store.updateSave(updated);
-  await deps.tg.sendMessage(chatId, saveCard(updated).replace("✅ <b>Saved:</b>", "✏️ <b>Updated:</b>"), saveButtons(updated));
+  await deps.tg.sendMessage(chatId, `Updated with what it says.\n\n${saveCard(updated)}`, saveButtons(updated));
 }
 
 async function answer(chatId: number, user: BotUser, question: string, deps: Deps) {
@@ -168,20 +168,15 @@ async function answer(chatId: number, user: BotUser, question: string, deps: Dep
   const reply = await deps.brain.answer({ user, question: question.slice(0, 4_000), saves });
   const used = reply.sources.map((id) => saves.find((s) => s.id === id)).filter((s): s is Save => Boolean(s));
 
-  let extra = "";
-  if (!user.goal && reply.goal) {
-    user.goal = reply.goal;
-    extra = `\n\n🎯 <i>Saved your goal: ${esc(user.goal)}. Change it anytime with /goal.</i>`;
-  }
-  const offer = user.goal && (reply.switchTo || reply.both) ? { switchTo: reply.switchTo, both: reply.both } : null;
-  user.offer = offer;
+  const fresh = reply.remember.filter((f) => !user.facts.includes(f));
+  user.facts = [...user.facts, ...fresh].slice(-FACTS_KEPT);
   user.turns = [...user.turns, { role: "user" as const, content: question }, { role: "assistant" as const, content: reply.text }].slice(-TURNS_KEPT);
   await deps.store.saveUser(user);
 
-  const buttons: InlineButton[][] = offer ? goalButtons(user.goal, offer) : [];
+  const buttons: InlineButton[][] = [];
   const runnable = used.find((s) => (s.type === "drill" || s.type === "plan") && s.steps.length);
-  if (runnable) buttons.push([{ text: `▶️ Start: ${runnable.title.slice(0, 40)}`, callback_data: `open:${runnable.id}` }]);
-  await deps.tg.sendMessage(chatId, answerText(reply.text, used) + extra + (offer ? "\n\n<b>Want to change your goal?</b>" : ""), buttons);
+  if (runnable) buttons.push([{ text: `Start: ${runnable.title.slice(0, 40)}`, callback_data: `open:${runnable.id}` }]);
+  await deps.tg.sendMessage(chatId, answerText(reply.text, used), buttons);
 }
 
 async function onButton(q: NonNullable<Update["callback_query"]>, deps: Deps) {
@@ -192,9 +187,30 @@ async function onButton(q: NonNullable<Update["callback_query"]>, deps: Deps) {
   if (!deps.isAllowed(q.from.id)) return deps.tg.answerCallback(q.id, "This bot is private.");
   try {
     const [kind, id = "", n = "0"] = data.split(":");
-    if (kind === "open" || kind === "run" || kind === "done" || kind === "words") {
+    if (kind === "forget") {
+      const user = await deps.store.getUser(q.from.id);
+      const i = Number(id);
+      if (Number.isInteger(i) && user.facts[i] !== undefined) user.facts.splice(i, 1);
+      await deps.store.saveUser(user);
+      await deps.tg.answerCallback(q.id, "Forgotten");
+      await deps.tg.editMessage(chatId, messageId, memoryText(user), memoryButtons(user));
+      return;
+    }
+    if (kind === "keep" || kind === "repl") {
+      if (kind === "repl" && n) await deps.store.deleteSave(q.from.id, n);
+      await deps.tg.answerCallback(q.id, kind === "repl" ? "Replaced" : "Kept both");
+      const save = await deps.store.getSave(q.from.id, id);
+      if (save) await deps.tg.editMessage(chatId, messageId, `${kind === "repl" ? "Replaced the old one." : "Kept both."}\n\n✓ <i>Saved: ${esc(save.title)}</i>`, reactionButtons(save));
+      return;
+    }
+    if (kind === "open" || kind === "run" || kind === "done" || kind === "words" || kind === "show") {
       const save = await deps.store.getSave(q.from.id, id);
       if (!save) return deps.tg.answerCallback(q.id, "That save is gone.");
+      if (kind === "show") {
+        await deps.tg.answerCallback(q.id);
+        await deps.tg.sendMessage(chatId, saveCard(save), saveButtons(save));
+        return;
+      }
       if (kind === "open" || kind === "run") {
         const i = Math.max(0, Math.min(save.steps.length - 1, Number(n) || 0));
         await deps.tg.answerCallback(q.id);
@@ -207,7 +223,7 @@ async function onButton(q: NonNullable<Update["callback_query"]>, deps: Deps) {
         save.practiced += 1;
         await deps.store.updateSave(save);
         await deps.tg.answerCallback(q.id, "Nice.");
-        await deps.tg.editMessage(chatId, messageId, `✅ <b>${esc(save.title)}</b>: done. That's ${save.practiced} time${save.practiced === 1 ? "" : "s"}.`, [[{ text: "🔁 Run it again", callback_data: `run:${save.id}:0` }]]);
+        await deps.tg.editMessage(chatId, messageId, `<b>${esc(save.title)}</b>: done (${save.practiced} time${save.practiced === 1 ? "" : "s"}).`, [[{ text: "Run it again", callback_data: `run:${save.id}:0` }]]);
         return;
       }
       const user = await deps.store.getUser(q.from.id);
@@ -215,17 +231,6 @@ async function onButton(q: NonNullable<Update["callback_query"]>, deps: Deps) {
       await deps.store.saveUser(user);
       await deps.tg.answerCallback(q.id);
       await deps.tg.sendMessage(chatId, `Paste the caption or type what they say in <b>${esc(save.title)}</b>, and I'll make the save exact.`);
-      return;
-    }
-    if (kind === "goal") {
-      const user = await deps.store.getUser(q.from.id);
-      if (!user.offer) return deps.tg.answerCallback(q.id, "That choice already expired.");
-      const next = id === "switch" ? user.offer.switchTo : id === "both" ? user.offer.both : "";
-      if (next) user.goal = next;
-      user.offer = null;
-      await deps.store.saveUser(user);
-      await deps.tg.answerCallback(q.id, next ? "Goal changed" : "Kept your goal");
-      await deps.tg.sendMessage(chatId, next ? `🎯 Goal changed to: <b>${esc(user.goal)}</b>` : `🎯 Kept your goal: <b>${esc(user.goal)}</b>`);
       return;
     }
     await deps.tg.answerCallback(q.id);

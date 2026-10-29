@@ -50,18 +50,12 @@ export interface Turn {
   content: string;
 }
 
-/** A pending "change your goal?" offer from the last answer. */
-export interface GoalOffer {
-  switchTo: string;
-  both: string;
-}
-
 /** Everything kept per Telegram user besides their saves. */
 export interface BotUser {
   id: number;
-  goal: string;
+  /** Lasting things they've mentioned (rank, platform, school year...), so they never repeat themselves. */
+  facts: string[];
   turns: Turn[];
-  offer: GoalOffer | null;
   /** Set when the next text message is the words for a save, not a question. */
   awaitingWordsFor: string | null;
 }
@@ -72,6 +66,7 @@ export interface Store {
   addSave(save: Save): Promise<void>;
   updateSave(save: Save): Promise<void>;
   getSave(userId: number, id: string): Promise<Save | null>;
+  deleteSave(userId: number, id: string): Promise<void>;
   /** Newest first. */
   listSaves(userId: number, limit?: number): Promise<Save[]>;
 }
@@ -97,10 +92,21 @@ export interface Answer {
   text: string;
   /** Ids of the saves it used. */
   sources: string[];
-  /** A goal the user stated, when they had none set. */
-  goal: string;
-  switchTo: string;
-  both: string;
+  /** New lasting facts the user mentioned. */
+  remember: string[];
+}
+
+/** How a new save relates to what's already saved. */
+export type Relation = "none" | "related" | "duplicate" | "conflict";
+
+/** What watching a video produces: the save, plus a short reaction to send back. */
+export interface WatchResult {
+  draft: SaveDraft;
+  /** 1 to 3 sentences: what it is, and how it connects to their saves. Not coaching. */
+  reply: string;
+  relation: Relation;
+  /** The existing save it duplicates or conflicts with, if any. */
+  relatedId: string;
 }
 
 export interface AskInput {
@@ -110,7 +116,7 @@ export interface AskInput {
 }
 
 export interface Brain {
-  watch(input: WatchInput & { note: string }): Promise<SaveDraft>;
+  watch(input: WatchInput & { note: string; facts: string[]; saves: Save[] }): Promise<WatchResult>;
   /** Rewrite a save once we have what the video actually says. */
   rewrite(save: Save, words: string): Promise<SaveDraft>;
   answer(input: AskInput): Promise<Answer>;

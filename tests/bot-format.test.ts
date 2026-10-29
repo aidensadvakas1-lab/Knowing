@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { answerText, goalButtons, mdToHtml, saveButtons, saveCard, savedList, stepButtons, stepText } from "@/lib/bot/format";
+import { answerText, mdToHtml, reactionButtons, reactionText, saveButtons, saveCard, savedList, stepButtons, stepText } from "@/lib/bot/format";
 import type { Save } from "@/lib/bot/types";
 
 const drill: Save = {
@@ -42,12 +42,21 @@ describe("savedList", () => {
   });
 });
 
-describe("answerText / goalButtons", () => {
+describe("reaction", () => {
+  it("leads with the reaction and keeps the steps behind a button", () => {
+    const t = reactionText("A **split** dodge.", drill);
+    expect(t).toContain("A <b>split</b> dodge.");
+    expect(t).toContain("Saved: Split dodge &lt;weak hand&gt;");
+    expect(t).not.toContain("Jog 10 yards");
+    expect(reactionButtons(drill).flat().map((b) => b.callback_data)).toEqual(["show:d1", "open:d1", "words:d1"]);
+    const old = { ...drill, id: "o1" };
+    expect(reactionButtons(drill, old).flat().map((b) => b.callback_data).slice(0, 2)).toEqual(["keep:d1", "repl:d1:o1"]);
+  });
+});
+
+describe("answerText", () => {
   it("names the saves it used", () => {
     expect(answerText("Do **this**", [drill])).toContain("From your save: Split dodge &lt;weak hand&gt;");
     expect(answerText("Hi", [])).toBe("Hi");
-  });
-  it("offers keep, switch and both", () => {
-    expect(goalButtons("Be an entrepreneur", { switchTo: "College for AI", both: "Both" }).flat().map((b) => b.callback_data)).toEqual(["goal:keep", "goal:switch", "goal:both"]);
   });
 });
