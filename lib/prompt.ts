@@ -2,7 +2,9 @@
  * Prompt builders. Pure functions so they can be unit tested and so the
  * client never decides what the model is told.
  */
+import type { ChatAttachment, ImageType } from "./attachments";
 import { DEFAULT_GOAL, KIND_LABEL, LIMITS } from "./constants";
+import { formatTimestamp } from "./video-math";
 import type { ItemKind, KnowledgeItem, Profile } from "./types";
 
 const NOT_FILLED = "(not filled in yet)";
@@ -36,6 +38,7 @@ export function itemToText(item: KnowledgeItem): string {
     .filter(Boolean)
     .join(", ");
   let block = `### ${item.title || "Untitled"} (${source})\n`;
+  if (item.assessment) block += `Your assessment: ${item.assessment}\n`;
   if (item.takeaways.length) {
     block += "Key points:\n" + item.takeaways.map((t) => `- ${t}`).join("\n") + "\n";
   }
@@ -115,3 +118,75 @@ export const EXTRACTION_SCHEMA = {
     tags: { type: "array", items: { type: "string" } },
   },
 } as const;
+
+/** Input for {@link buildVideoPrompt}. */
+export interface VideoPromptInput extends ExtractionInput {
+  /** Seconds into the video for each attached frame, in order. */
+  frameTimes: number[];
+  durationSec?: number;
+}
+
+/**
+ * Build the prompt for watching an uploaded video. The frames are attached as
+ * images after this text, each labeled with its timestamp; `content` is the
+ * transcript (empty when the video has no speech or transcription is off).
+ */
+export function buildVideoPrompt(input: VideoPromptInput): string {
+  const transcript = input.content.trim();
+  return `Someone uploaded a video to teach their personal goal coach. You are watching it for them: the transcript of what is said is below, and ${input.frameTimes.length} frames from across the video are attached as images. Their goal: ${input.goal || DEFAULT_GOAL}
+
+Return:
+- title: a short title (max 8 words).
+- takeaways: 3 to 6 concrete takeaways from the whole video, each under 30 words, written as advice they can act on toward their goal.
+- tags: 1 to 3 short lowercase topic tags.
+- assessment: 2 or 3 sentences on how useful and trustworthy this video is for their goal. Point out hype, selling, or advice that is wrong or risky.
+- visualNotes: what the frames show that the transcript doesn't (on-screen text, slides, charts, products, setting), under 150 words. Empty if the frames add nothing.
+
+Type: ${KIND_LABEL[input.kind]}
+Link: ${input.url || "(none)"}
+Title they gave: ${input.title || "(none)"}
+Length: ${input.durationSec ? formatTimestamp(input.durationSec) : "(unknown)"}
+Frames at: ${input.frameTimes.map(formatTimestamp).join(", ") || "(none)"}
+Transcript:
+${transcript ? transcript.slice(0, LIMITS.itemContentChars) : "(No speech was transcribed. Work from the frames.)"}`;
+}
+
+/** JSON schema for watching a video (structured outputs). */
+export const VIDEO_EXTRACTION_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["title", "takeaways", "tags", "assessment", "visualNotes"],
+  properties: {
+    title: { type: "string" },
+    takeaways: { type: "array", items: { type: "string" } },
+    tags: { type: "array", items: { type: "string" } },
+    assessment: { type: "string" },
+    visualNotes: { type: "string" },
+  },
+} as const;
+
+/** A content block for the Messages API: text, image or PDF document. */
+export type MessageBlock =
+  | { type: "text"; text: string }
+  | { type: "image"; source: { type: "base64"; media_type: ImageType; data: string } }
+  | { type: "document"; source: { type: "base64"; media_type: "application/pdf"; data: string }; title?: string };
+
+/**
+ * Build the newest user message with its attachments: each file first,
+ * labeled with its name, then what the user asked.
+ */
+export function messageWithAttachments(question: string, attachments: ChatAttachment[]): MessageBlock[] {
+  const blocks: MessageBlock[] = [];
+  for (const a of attachments) {
+    if (a.type === "image") {
+      blocks.push({ type: "text", text: `Attached image: ${a.name}` });
+      blocks.push({ type: "image", source: { type: "base64", media_type: a.mediaType, data: a.data } });
+    } else if (a.type === "pdf") {
+      blocks.push({ type: "document", source: { type: "base64", media_type: "application/pdf", data: a.data }, title: a.name });
+    } else {
+      blocks.push({ type: "text", text: `Attached file: ${a.name}\n\n${a.text}` });
+    }
+  }
+  blocks.push({ type: "text", text: question });
+  return blocks;
+}

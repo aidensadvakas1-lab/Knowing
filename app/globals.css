@@ -101,6 +101,14 @@ form.notice { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px; 
 .composer { display: flex; gap: 8px; align-items: flex-end; padding-block: 10px 14px; border-top: 1px solid var(--line); }
 /* 16px stops iOS Safari from zooming into the field on focus. */
 .composer textarea { flex: 1; min-width: 0; resize: none; max-height: 160px; border: 1px solid var(--line); background: var(--surface); border-radius: 14px; padding: 10px 14px; line-height: 1.4; font-size: 16px; }
+.btn.plus { width: 44px; padding: 0; font-size: 24px; font-weight: 400; line-height: 1; flex-shrink: 0; }
+.attachments { list-style: none; margin: 0; padding: 10px 0 0; display: flex; flex-wrap: wrap; gap: 6px; border-top: 1px solid var(--line); }
+.attachments + .composer { border-top: 0; }
+.attachment { display: flex; align-items: center; gap: 6px; max-width: 100%; min-width: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 999px; padding: 4px 4px 4px 10px; font-size: 13px; }
+.attachment-kind { font-family: var(--f-mono), monospace; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--hl-ink); background: var(--hl-soft); border-radius: 6px; padding: 1px 6px; }
+.attachment-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.attachment-remove { border: 0; background: transparent; color: var(--muted); cursor: pointer; font-size: 18px; line-height: 1; width: 28px; height: 28px; border-radius: 50%; }
+.attachment-remove:hover { color: var(--ink); background: var(--accent-soft); }
 
 .btn { border: 1px solid transparent; background: var(--accent); color: var(--accent-ink); border-radius: 12px; padding: 10px 16px; font-weight: 600; cursor: pointer; white-space: nowrap; min-height: 44px; }
 .btn:disabled { opacity: 0.5; cursor: default; }
@@ -115,6 +123,8 @@ form.notice { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px; 
 .lede { color: var(--muted); margin: -8px 0 0; font-size: 14px; }
 label { display: grid; gap: 5px; font-weight: 500; font-size: 14px; }
 .hint { font-weight: 400; color: var(--muted); font-size: 13px; }
+input[type="file"] { font-size: 14px; max-width: 100%; }
+.assessment { margin: 0; font-size: 14px; color: var(--muted); border-left: 2px solid var(--line); padding-left: 10px; }
 input[type="text"], input[type="url"], input[type="password"], textarea, select {
   width: 100%; border: 1px solid var(--line); background: var(--bg); border-radius: 10px; padding: 9px 12px; font-size: 16px;
 }

@@ -4,7 +4,19 @@
  */
 import { ChatStreamParser, type ChatStreamEvent } from "./chat-stream";
 import { PASSWORD_HEADER } from "./constants";
-import type { ApiErrorBody, ApiErrorCode, ChatTurn, HealthResponse, ItemKind, KnowledgeItem, LearnResponse, Profile } from "./types";
+import type {
+  ApiErrorBody,
+  ApiErrorCode,
+  ChatTurn,
+  HealthResponse,
+  ItemKind,
+  KnowledgeItem,
+  LearnResponse,
+  Profile,
+  TranscribeResponse,
+} from "./types";
+import type { ChatAttachment } from "./attachments";
+import type { VideoFrame } from "./video";
 
 /** An API failure with a stable code the UI can react to. */
 export class ApiError extends Error {
@@ -41,12 +53,35 @@ export async function getHealth(): Promise<HealthResponse> {
 
 /** POST /api/learn */
 export async function learn(
-  input: { kind: ItemKind; title: string; url: string; content: string; goal: string },
+  input: {
+    kind: ItemKind;
+    title: string;
+    url: string;
+    content: string;
+    goal: string;
+    frames?: VideoFrame[];
+    durationSec?: number;
+  },
   password: string,
 ): Promise<LearnResponse> {
   const res = await fetch("/api/learn", { method: "POST", headers: headers(password), body: JSON.stringify(input) });
   if (!res.ok) await raise(res);
   return res.json();
+}
+
+/** POST /api/transcribe with one WAV chunk. Returns its transcript. */
+export async function transcribe(wav: Blob, password: string, signal?: AbortSignal): Promise<string> {
+  const form = new FormData();
+  form.append("audio", wav, "audio.wav");
+  const res = await fetch("/api/transcribe", {
+    method: "POST",
+    headers: password ? { [PASSWORD_HEADER]: password } : undefined,
+    body: form,
+    signal,
+  });
+  if (!res.ok) await raise(res);
+  const body: TranscribeResponse = await res.json();
+  return body.text;
 }
 
 /** Callbacks for {@link streamChat}. */
@@ -66,7 +101,7 @@ export interface ChatResult {
  * Rejects with ApiError on failure; a partial answer is attached as `partial`.
  */
 export async function streamChat(
-  payload: { profile: Profile; items: KnowledgeItem[]; messages: ChatTurn[] },
+  payload: { profile: Profile; items: KnowledgeItem[]; messages: ChatTurn[]; attachments?: ChatAttachment[] },
   password: string,
   handlers: ChatHandlers,
   signal?: AbortSignal,

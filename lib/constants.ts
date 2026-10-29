@@ -49,12 +49,54 @@ export const LIMITS = {
   fetchTimeoutMs: 10_000,
 } as const;
 
+/** Limits and settings for uploaded videos, processed in the browser. */
+export const VIDEO = {
+  /** Frames grabbed per video and shown to Claude. */
+  frames: 8,
+  /** Longest side of each frame, in pixels. */
+  frameMaxSide: 768,
+  /** JPEG quality for frames (0 to 1). */
+  jpegQuality: 0.72,
+  /** Max base64 characters per frame accepted by the server. */
+  frameChars: 400_000,
+  /** Audio is resampled to this rate (Hz) before transcription. */
+  sampleRate: 16_000,
+  /** Seconds of audio per transcription request. 60 s of 16 kHz WAV is about 1.9 MB, under Vercel's 4.5 MB body limit. */
+  chunkSec: 60,
+  /** Max bytes of one audio chunk accepted by the server. */
+  chunkBytes: 4_000_000,
+  /** Longest video accepted, in seconds. Longer videos use too much phone memory. */
+  maxDurationSec: 20 * 60,
+  /** Largest video file accepted, in bytes. */
+  maxFileBytes: 500 * 1024 * 1024,
+} as const;
+
+/** Limits for files attached to a chat message with the + button. */
+export const ATTACHMENTS = {
+  /** Files per message. */
+  max: 4,
+  /** Largest picked file for images and PDFs, before any shrinking. */
+  maxPickBytes: 25 * 1024 * 1024,
+  /** Images are shrunk so their longest side is at most this many pixels. */
+  imageMaxSide: 1_568,
+  /** Max base64 characters of all images and PDFs in one message. Keeps requests under Vercel's 4.5 MB body limit. */
+  totalBinaryChars: 3_200_000,
+  /** Max characters read from one text file. */
+  textChars: 40_000,
+} as const;
+
 /** Models used by the API routes. Override with env vars if needed. */
 export const MODELS = {
   /** Main coaching model for chat answers. */
   chat: process.env.KNOWING_CHAT_MODEL || "claude-opus-5-5",
   /** Fast, cheap model for pulling takeaways out of taught items. */
   extract: process.env.KNOWING_EXTRACT_MODEL || "claude-haiku-5-5",
+  /** Model that watches uploaded videos (reads frames and transcript). */
+  video: process.env.KNOWING_VIDEO_MODEL || "claude-sonnet-5-5",
+  /** Model behind the Telegram bot: watching shared videos and answering. Cheap by default. */
+  bot: process.env.KNOWING_BOT_MODEL || "claude-haiku-5-5",
+  /** Speech-to-text model at the transcription endpoint. */
+  transcribe: process.env.KNOWING_TRANSCRIBE_MODEL || "gpt-4o-mini-transcribe",
 } as const;
 
 /** localStorage keys. Versioned so a future schema change can migrate. */

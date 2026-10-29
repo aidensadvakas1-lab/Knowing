@@ -65,7 +65,7 @@ export function useKnowing(): KnowingState {
     setReady(true);
     getHealth()
       .then(setHealth)
-      .catch(() => setHealth({ ok: false, aiConfigured: false, passwordRequired: false }));
+      .catch(() => setHealth({ ok: false, aiConfigured: false, passwordRequired: false, transcriptionConfigured: false }));
   }, []);
 
   const setProfile = useCallback((next: Profile) => {

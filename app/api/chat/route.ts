@@ -9,7 +9,8 @@
  */
 import { LIMITS, MODELS } from "@/lib/constants";
 import { encodeEvent, type ChatStreamEvent } from "@/lib/chat-stream";
-import { buildSystemPrompt } from "@/lib/prompt";
+import { buildSystemPrompt, messageWithAttachments } from "@/lib/prompt";
+import type Anthropic from "@anthropic-ai/sdk";
 import { apiError, describeAnthropicError, getAnthropic, guardAiRoute } from "@/lib/server";
 import { ChatRequestSchema, describeZodError } from "@/lib/validate";
 import type { KnowledgeItem } from "@/lib/types";
@@ -32,12 +33,18 @@ export async function POST(request: Request): Promise<Response> {
   const parsed = ChatRequestSchema.safeParse(body);
   if (!parsed.success) return apiError("bad_request", describeZodError(parsed.error));
 
-  const { profile, items, messages } = parsed.data;
+  const { profile, items, messages, attachments } = parsed.data;
   const system = buildSystemPrompt(profile, items as KnowledgeItem[]);
 
   // Send the most recent turns, starting on a user turn as the API requires.
   const history = messages.slice(-LIMITS.chatTurnsSent);
   while (history.length && history[0].role !== "user") history.shift();
+  // Files from the + button ride along with the newest message only.
+  const last = history.at(-1)!;
+  const turns: Anthropic.Beta.BetaMessageParam[] = [
+    ...history.slice(0, -1),
+    { role: "user", content: attachments.length ? messageWithAttachments(last.content, attachments) : last.content },
+  ];
 
   // The SDK starts the request lazily; errors surface while iterating below.
   const stream = getAnthropic().beta.messages.stream(
@@ -45,7 +52,7 @@ export async function POST(request: Request): Promise<Response> {
       model: MODELS.chat,
       max_tokens: 16_000,
       system,
-      messages: history,
+      messages: turns,
       output_config: { effort: "medium" },
       // If the main model declines, let the API retry on its recommended fallback.
       betas: ["server-side-fallback-2026-07-01"],
