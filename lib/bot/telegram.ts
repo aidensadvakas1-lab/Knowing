@@ -67,6 +67,18 @@ export class Telegram implements TelegramApi {
     await this.call("sendChatAction", { chat_id: chatId, action: "typing" }).catch(() => {});
   }
 
+  /**
+   * One-time setup: point Telegram at our webhook and fill in the bot's
+   * commands menu and profile text. Safe to run again.
+   */
+  async setup(webhookUrl: string, secret: string, profile: { commands: ReadonlyArray<{ command: string; description: string }>; description: string; shortDescription: string }) {
+    await this.call("setWebhook", { url: webhookUrl, secret_token: secret, allowed_updates: ["message", "callback_query"] });
+    await this.call("setMyCommands", { commands: profile.commands });
+    await this.call("setMyDescription", { description: profile.description });
+    await this.call("setMyShortDescription", { short_description: profile.shortDescription });
+    return this.call<{ username?: string }>("getMe", {});
+  }
+
   /** A download URL for a file sent to the bot (bots can fetch files up to 20 MB). */
   async fileUrl(fileId: string): Promise<string> {
     const file = await this.call<{ file_path?: string }>("getFile", { file_id: fileId });

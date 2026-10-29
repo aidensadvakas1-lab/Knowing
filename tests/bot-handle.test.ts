@@ -1,12 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
-import { handleUpdate, parseAllowed, type Deps, type Update } from "@/lib/bot/handle";
+import { handleUpdate, isOutOfCredit, parseAllowed, secretMatches, spend, type Deps, type Update } from "@/lib/bot/handle";
 import { MemoryRetriever } from "@/lib/bot/rag";
 import { MemoryStore } from "@/lib/bot/store";
 import type { Answer, Brain, InlineButton, Media, Save, SaveDraft, TelegramApi, WatchResult } from "@/lib/bot/types";
 
 interface Sent { chatId: number; html: string; buttons?: InlineButton[][]; id: number }
 
-function setup(opts: { answer?: Partial<Answer>; draft?: Partial<SaveDraft>; watch?: (saves: Save[]) => Partial<WatchResult> } = {}) {
+function setup(opts: { answer?: Partial<Answer>; draft?: Partial<SaveDraft>; watch?: (saves: Save[]) => Partial<WatchResult>; limits?: Deps["limits"] } = {}) {
   const sent: Sent[] = [];
   const edits: Sent[] = [];
   let nextId = 100;
@@ -28,8 +28,9 @@ function setup(opts: { answer?: Partial<Answer>; draft?: Partial<SaveDraft>; wat
   };
   const store = new MemoryStore();
   const retriever = new MemoryRetriever();
-  const deps: Deps = { tg, store, brain, media, retriever, isAllowed: (id) => id === 7 };
-  return { deps, sent, edits, store, brain, media, retriever };
+  const alerts: string[] = [];
+  const deps: Deps = { tg, store, brain, media, retriever, isAllowed: (id) => id === 7, limits: opts.limits ?? { videos: 50, questions: 50 }, alert: async (t) => void alerts.push(t) };
+  return { deps, sent, edits, store, brain, media, retriever, alerts };
 }
 
 const text = (t: string, from = 7): Update => ({ message: { message_id: 1, chat: { id: 7 }, from: { id: from }, text: t } });
@@ -40,6 +41,19 @@ describe("parseAllowed", () => {
   it("reads comma or space separated ids", () => {
     expect([...parseAllowed("1, 22 333,x")]).toEqual([1, 22, 333]);
     expect(parseAllowed(undefined).size).toBe(0);
+  });
+});
+
+describe("isOutOfCredit and secretMatches", () => {
+  it("spots billing errors from Anthropic and OpenAI", () => {
+    expect(isOutOfCredit(new Error("Your credit balance is too low"))).toBe(true);
+    expect(isOutOfCredit(new Error("429 insufficient_quota"))).toBe(true);
+    expect(isOutOfCredit(new Error("timeout"))).toBe(false);
+  });
+  it("compares secrets exactly", () => {
+    expect(secretMatches("abc", "abc")).toBe(true);
+    expect(secretMatches("abd", "abc")).toBe(false);
+    expect(secretMatches("", "abc")).toBe(false);
   });
 });
 
@@ -167,10 +181,53 @@ describe("handleUpdate", () => {
     expect(sent.at(-1)?.html).toContain("Updated");
   });
 
-  it("tells the user when something fails instead of going silent", async () => {
-    const { deps, sent, brain } = setup();
+  it("tells the user when something fails instead of going silent, and alerts the owner", async () => {
+    const { deps, sent, brain, alerts } = setup();
     vi.mocked(brain.answer).mockRejectedValueOnce(new Error("boom"));
     await handleUpdate(text("hi"), deps);
     expect(sent.at(-1)?.html).toContain("went wrong");
+    expect(alerts[0]).toContain("boom");
+  });
+
+  it("says it's paused, not broken, when the API is out of credit", async () => {
+    const { deps, edits, store, brain, alerts } = setup();
+    vi.mocked(brain.watch).mockRejectedValueOnce(new Error("400 Your credit balance is too low to access the Anthropic API"));
+    await handleUpdate(text("https://vm.tiktok.com/ZMabc/"), deps);
+    expect(edits.at(-1)?.html).toContain("paused");
+    expect(alerts[0]).toContain("Out of API credit");
+    expect(store.saves).toHaveLength(0);
+  });
+
+  it("stops at the daily limits", async () => {
+    const { deps, sent, brain, media } = setup({ limits: { videos: 1, questions: 1 } });
+    await handleUpdate(text("https://vm.tiktok.com/one/"), deps);
+    await handleUpdate(text("https://vm.tiktok.com/two/"), deps);
+    expect(media.fromLink).toHaveBeenCalledTimes(1);
+    expect(sent.at(-1)?.html).toContain("daily limit");
+    await handleUpdate(text("what was that drill?"), deps);
+    await handleUpdate(text("and the other one?"), deps);
+    expect(brain.answer).toHaveBeenCalledTimes(1);
+    expect(sent.at(-1)?.html).toContain("daily limit");
+  });
+
+  it("resets the limits on a new day", () => {
+    const user = { id: 7, facts: [], turns: [], awaitingWordsFor: null, usage: { day: "2000-01-01", videos: 9, questions: 9 } };
+    expect(spend(user, "videos", 1)).toBe(true);
+    expect(user.usage.videos).toBe(1);
+    expect(spend(user, "videos", 1)).toBe(false);
+  });
+
+  it("deletes everything only after confirming", async () => {
+    const { deps, sent, edits, store } = setup();
+    await handleUpdate(text("https://vm.tiktok.com/ZMabc/"), deps);
+    await handleUpdate(text("/delete"), deps);
+    expect(sent.at(-1)?.html).toContain("1 save");
+    expect(datas(sent.at(-1)?.buttons)).toEqual(["wipe:yes", "wipe:no"]);
+    await handleUpdate(tap("wipe:no"), deps);
+    expect(store.saves).toHaveLength(1);
+    await handleUpdate(tap("wipe:yes"), deps);
+    expect(store.saves).toHaveLength(0);
+    expect(store.users.has(7)).toBe(false);
+    expect(edits.at(-1)?.html).toContain("Deleted");
   });
 });

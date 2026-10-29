@@ -52,6 +52,14 @@ export interface Turn {
   content: string;
 }
 
+/** What a user has used today, for the daily limits. Resets each UTC day. */
+export interface Usage {
+  /** YYYY-MM-DD (UTC) the counts are for. */
+  day: string;
+  videos: number;
+  questions: number;
+}
+
 /** Everything kept per Telegram user besides their saves. */
 export interface BotUser {
   id: number;
@@ -60,6 +68,7 @@ export interface BotUser {
   turns: Turn[];
   /** Set when the next text message is the words for a save, not a question. */
   awaitingWordsFor: string | null;
+  usage: Usage;
 }
 
 export interface Store {
@@ -69,6 +78,8 @@ export interface Store {
   updateSave(save: Save): Promise<void>;
   getSave(userId: number, id: string): Promise<Save | null>;
   deleteSave(userId: number, id: string): Promise<void>;
+  /** Everything about a user: their row, saves and search index. */
+  deleteUser(userId: number): Promise<void>;
   /** Newest first. */
   listSaves(userId: number, limit?: number): Promise<Save[]>;
 }

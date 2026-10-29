@@ -34,6 +34,7 @@ For one person sharing about 5 videos and asking about 15 questions a day, expec
 1. In Telegram, open a chat with **@BotFather** and send `/newbot`.
 2. Pick a name ("Knowing") and a username ending in `bot`.
 3. Copy the **token** it gives you. That's `TELEGRAM_BOT_TOKEN`.
+4. Optional but worth it: send `/setuserpic` to give it a profile picture.
 
 ### 2. Make the database (Supabase, free plan)
 
@@ -62,16 +63,21 @@ Add these in Vercel under **Project Settings → Environment Variables**, then r
 | `SUPABASE_SERVICE_ROLE_KEY` | From Supabase |
 | `ANTHROPIC_API_KEY` | From Anthropic |
 | `OPENAI_API_KEY` | From OpenAI (optional) |
+| `KNOWING_DAILY_VIDEOS` | Optional. Videos per person per day (default 15) |
+| `KNOWING_DAILY_QUESTIONS` | Optional. Questions per person per day (default 50) |
+| `KNOWING_OWNER_ID` | Optional. Who gets error alerts (default: the first id in `TELEGRAM_ALLOWED_USERS`) |
 
-### 5. Point Telegram at your app
+### 5. Connect Telegram to your app
 
 Open this link in a browser, with your values filled in:
 
 ```
-https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook?url=https://<your-app>.vercel.app/api/telegram&secret_token=<TELEGRAM_WEBHOOK_SECRET>
+https://<your-app>.vercel.app/api/telegram/setup?key=<TELEGRAM_WEBHOOK_SECRET>
 ```
 
-It should say `"Webhook was set"`.
+It should say `"ok": true` and your bot's name. This points Telegram at your app and fills in the
+bot's commands menu (`/saved`, `/memory`, `/help`, `/delete`) and the text people see before they
+tap Start. Running it again is harmless.
 
 ### 6. Let yourself in
 
@@ -79,6 +85,16 @@ Send your bot any message. Because you're not on the list yet, it replies with y
 Put that number in `TELEGRAM_ALLOWED_USERS` in Vercel, redeploy, and send `/start`.
 
 The bot only answers people on that list, so a stranger who finds it can't spend your credits.
+
+## Keeping it safe and cheap
+
+- **Daily limits.** Each person gets `KNOWING_DAILY_VIDEOS` videos and `KNOWING_DAILY_QUESTIONS`
+  questions a day (reset at midnight UTC). Failed attempts don't count.
+- **Alerts.** When something breaks, the owner gets a Telegram message from the bot saying what
+  (at most one every 5 minutes). If the AI credit runs out, users are told the bot is paused, not broken.
+- **Delete.** `/delete` wipes a person's saves, search index and memory after they confirm.
+- **Already set up before these existed?** Run [`supabase.sql`](supabase.sql) again. It only adds
+  what's missing.
 
 ## How it works
 

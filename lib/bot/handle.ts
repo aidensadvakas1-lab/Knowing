@@ -6,9 +6,12 @@
  *   a sentence or two (how it connects to their other saves). No coaching.
  * - Any other text: answer from their saves and what they've told us.
  * - Buttons: Show steps, Start now, Add what it says, Keep both / Replace.
- * - /start, /saved, /memory.
+ * - /start, /help, /saved, /memory, /delete.
+ * - Daily limits per user, and an alert to the owner when something breaks.
  */
+import { timingSafeEqual } from "node:crypto";
 import { answerText, escapeHtml as esc, reactionButtons, reactionText, saveButtons, saveCard, savedList, stepButtons, stepText } from "./format";
+import { WELCOME } from "./profile";
 import { relevantSaves } from "./prompts";
 import { groupHits, searchQuery, type Retriever } from "./rag";
 import { FACTS_KEPT, newSaveId, TURNS_KEPT } from "./store";
@@ -24,6 +27,10 @@ export interface Deps {
   retriever: Retriever;
   /** Who may use the bot. Each message costs API money, so it's private by default. */
   isAllowed(userId: number): boolean;
+  /** Most videos and questions per user per day, so one person can't run up the API bill. */
+  limits: { videos: number; questions: number };
+  /** Tells the owner something broke. */
+  alert(text: string): Promise<void>;
 }
 
 /** The parts of a Telegram update we read. */
@@ -45,6 +52,13 @@ export interface Update {
   };
 }
 
+/** Constant-time compare, for the webhook secret. */
+export function secretMatches(given: string, expected: string): boolean {
+  const a = Buffer.from(given);
+  const b = Buffer.from(expected);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
 /** Telegram user ids allowed to use the bot, from a comma-separated env var. */
 export function parseAllowed(raw: string | undefined): Set<number> {
   return new Set(
@@ -55,13 +69,36 @@ export function parseAllowed(raw: string | undefined): Set<number> {
   );
 }
 
-const WELCOME = `Send me videos you want to keep. In TikTok, tap Share, then Telegram, then me.
-
-I'll remember exactly what each one showed. Ask me about any of them later, in your own words.
-
-/saved lists everything. /memory shows what I remember about you.`;
-
 const FAIL = "Something went wrong on my side. Try again in a minute.";
+const PAUSED = "I'm paused for a bit while my owner tops up my credit. Try again later.";
+
+/** The API account ran out of credit or quota: nothing the user can fix. */
+export function isOutOfCredit(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /credit balance|insufficient_quota|exceeded your current quota|billing/i.test(message);
+}
+
+/** Log it, tell the owner, and return what to tell the user. */
+async function failed(error: unknown, where: string, deps: Deps): Promise<string> {
+  console.error(`Bot failed while ${where}`, error);
+  const broke = isOutOfCredit(error);
+  const detail = (error instanceof Error ? error.message : String(error)).slice(0, 300);
+  await deps.alert(`${broke ? "Out of API credit" : "Error"} while ${where}: ${detail}`).catch(() => {});
+  return broke ? PAUSED : FAIL;
+}
+
+const today = () => new Date().toISOString().slice(0, 10);
+
+/** Count one use, or return false when today's limit is reached. */
+export function spend(user: BotUser, kind: "videos" | "questions", limit: number): boolean {
+  if (user.usage.day !== today()) user.usage = { day: today(), videos: 0, questions: 0 };
+  if (user.usage[kind] >= limit) return false;
+  user.usage[kind] += 1;
+  return true;
+}
+
+const limitText = (kind: "videos" | "questions", n: number) =>
+  `That's ${n} ${kind} today, the daily limit. ${kind === "videos" ? "Send it again tomorrow." : "Ask again tomorrow."}`;
 
 export async function handleUpdate(update: Update, deps: Deps): Promise<void> {
   if (update.callback_query) return onButton(update.callback_query, deps);
@@ -76,7 +113,7 @@ export async function handleUpdate(update: Update, deps: Deps): Promise<void> {
     return;
   }
   try {
-    if (text === "/start" || text.startsWith("/start ")) {
+    if (text === "/start" || text.startsWith("/start ") || text.startsWith("/help")) {
       await deps.tg.sendMessage(chatId, WELCOME);
       return;
     }
@@ -89,6 +126,14 @@ export async function handleUpdate(update: Update, deps: Deps): Promise<void> {
       await deps.tg.sendMessage(chatId, savedList(await deps.store.listSaves(userId)));
       return;
     }
+    if (text.startsWith("/delete")) {
+      const count = (await deps.store.listSaves(userId)).length;
+      await deps.tg.sendMessage(chatId, `This deletes your ${count} save${count === 1 ? "" : "s"} and everything I remember about you. It can't be undone.`, [
+        [{ text: "Delete everything", callback_data: "wipe:yes" }],
+        [{ text: "Cancel", callback_data: "wipe:no" }],
+      ]);
+      return;
+    }
 
     const video = msg.video ?? (msg.document?.mime_type?.startsWith("video/") ? msg.document : undefined);
     if (video) {
@@ -96,19 +141,21 @@ export async function handleUpdate(update: Update, deps: Deps): Promise<void> {
         await deps.tg.sendMessage(chatId, "That video is over 20 MB, which is Telegram's limit for bots. Share the TikTok link instead.");
         return;
       }
+      if (!spend(user, "videos", deps.limits.videos)) return void (await deps.tg.sendMessage(chatId, limitText("videos", deps.limits.videos)));
       const duration = "duration" in video && typeof video.duration === "number" ? video.duration : 0;
       return await watchAndSave(chatId, user, () => deps.media.fromTelegramFile(video.file_id, duration), "", text, deps);
     }
 
     const url = findUrl(text);
+    if (url && !spend(user, "videos", deps.limits.videos)) return void (await deps.tg.sendMessage(chatId, limitText("videos", deps.limits.videos)));
     if (url) return await watchAndSave(chatId, user, () => deps.media.fromLink(url), url, text.replace(url, "").trim(), deps);
 
     if (!text) return;
     if (user.awaitingWordsFor) return await addWords(chatId, user, text, deps);
+    if (!spend(user, "questions", deps.limits.questions)) return void (await deps.tg.sendMessage(chatId, limitText("questions", deps.limits.questions)));
     await answer(chatId, user, text, deps);
   } catch (error) {
-    console.error("Bot update failed", error);
-    await deps.tg.sendMessage(chatId, FAIL).catch(() => {});
+    await deps.tg.sendMessage(chatId, await failed(error, "handling a message", deps)).catch(() => {});
   }
 }
 
@@ -127,7 +174,7 @@ async function watchAndSave(chatId: number, user: BotUser, get: () => Promise<Wa
   try {
     input = await get();
   } catch (error) {
-    console.error("Media failed", error);
+    await failed(error, `opening ${sourceUrl || "a sent video"}`, deps);
     await deps.tg.editMessage(chatId, status, "I couldn't open that video. Try sending it again, or send the video file itself.");
     return;
   }
@@ -135,6 +182,14 @@ async function watchAndSave(chatId: number, user: BotUser, get: () => Promise<Wa
     await deps.tg.editMessage(chatId, status, ["I couldn't get anything out of that one.", ...input.notes].join("\n"));
     return;
   }
+  try {
+    await saveWatched(chatId, status, user, input, sourceUrl, note, deps);
+  } catch (error) {
+    await deps.tg.editMessage(chatId, status, await failed(error, "watching a video", deps)).catch(() => {});
+  }
+}
+
+async function saveWatched(chatId: number, status: number, user: BotUser, input: WatchInput, sourceUrl: string, note: string, deps: Deps) {
   const saves = await deps.store.listSaves(user.id);
   const watched = await deps.brain.watch({ ...input, note, facts: user.facts, saves });
   const save: Save = {
@@ -195,6 +250,12 @@ async function onButton(q: NonNullable<Update["callback_query"]>, deps: Deps) {
   if (!deps.isAllowed(q.from.id)) return deps.tg.answerCallback(q.id, "This bot is private.");
   try {
     const [kind, id = "", n = "0"] = data.split(":");
+    if (kind === "wipe") {
+      if (id === "yes") await deps.store.deleteUser(q.from.id);
+      await deps.tg.answerCallback(q.id, id === "yes" ? "Deleted" : undefined);
+      await deps.tg.editMessage(chatId, messageId, id === "yes" ? "Deleted. Everything you saved and everything I remembered about you is gone." : "Cancelled. Nothing was deleted.");
+      return;
+    }
     if (kind === "forget") {
       const user = await deps.store.getUser(q.from.id);
       const i = Number(id);
@@ -246,8 +307,7 @@ async function onButton(q: NonNullable<Update["callback_query"]>, deps: Deps) {
     }
     await deps.tg.answerCallback(q.id);
   } catch (error) {
-    console.error("Button failed", error);
-    await deps.tg.answerCallback(q.id, FAIL);
+    await deps.tg.answerCallback(q.id, await failed(error, `handling the ${data.split(":")[0]} button`, deps));
   }
 }
 

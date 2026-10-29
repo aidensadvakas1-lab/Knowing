@@ -36,6 +36,9 @@ alter table saves enable row level security;
 -- dropped is lost. Searched through save_chunks below.
 alter table saves add column if not exists source text not null default '';
 
+-- Today's usage per user, for the daily limits ({day, videos, questions}).
+alter table bot_users add column if not exists usage jsonb not null default '{}';
+
 -- Retrieval (RAG): each save is split into chunks with an embedding (meaning)
 -- and a full-text index (exact words). match_chunks merges both rankings.
 create extension if not exists vector;
