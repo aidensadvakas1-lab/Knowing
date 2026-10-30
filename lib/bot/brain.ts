@@ -1,6 +1,6 @@
 /**
  * The bot's Claude calls: watch a video into a save, and answer questions
- * from saves. Watching uses MODELS.watch (Opus by default: it happens once
+ * from saves. Watching uses MODELS.watch (Sonnet by default: it happens once
  * per video and has to read the details right). Answering uses MODELS.bot
  * (Haiku by default, to stay cheap).
  */

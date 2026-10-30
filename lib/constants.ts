@@ -95,8 +95,8 @@ export const MODELS = {
   video: process.env.KNOWING_VIDEO_MODEL || "claude-sonnet-5-5",
   /** Model behind the Telegram bot's answers. Cheap, since people ask many questions. */
   bot: process.env.KNOWING_BOT_MODEL || "claude-haiku-5-5",
-  /** Model that watches each video sent to the bot. Runs once per video, so it can be the strongest. */
-  watch: process.env.KNOWING_WATCH_MODEL || "claude-opus-5-5",
+  /** Model that watches each video sent to the bot. Runs once per video, so it can be stronger than the one answering. */
+  watch: process.env.KNOWING_WATCH_MODEL || "claude-sonnet-5-5",
   /** Speech-to-text model at the transcription endpoint. */
   transcribe: process.env.KNOWING_TRANSCRIBE_MODEL || "gpt-4o-mini-transcribe",
 } as const;

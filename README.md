@@ -73,7 +73,7 @@ Any Node host that runs Next.js works too (Netlify, Railway, Render, Fly.io).
 | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET`, `TELEGRAM_ALLOWED_USERS` | For the bot | *(none)* | Turn on the Telegram bot. Setup in [docs/TELEGRAM.md](docs/TELEGRAM.md). |
 | `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` | For the bot | *(none)* | Where the bot keeps saves. Tables in [docs/supabase.sql](docs/supabase.sql). |
 | `KNOWING_BOT_MODEL` | No | `claude-haiku-5-5` | Model behind the bot's answers. Cheap by default. |
-| `KNOWING_WATCH_MODEL` | No | `claude-opus-5-5` | Model that watches each video sent to the bot. |
+| `KNOWING_WATCH_MODEL` | No | `claude-sonnet-5-5` | Model that watches each video sent to the bot. |
 | `KNOWING_CRON_SECRET` | For wrap-ups | none | Key for `/api/telegram/wrapup`, which Supabase cron calls every 5 minutes. |
 | `KNOWING_TIKTOK_RESOLVER` | No | tikwm.com's API | Service that turns a TikTok link into a video file. |
 
