@@ -72,16 +72,14 @@ export interface BotUser {
    */
   awaitingWordsFor: string | null;
   usage: Usage;
-  /** Videos shared in the current scroll session, for the wrap-up once they stop. */
+  /** Set while a scroll session is waiting for its wrap-up. Only touchSitting and closeSitting write it. */
   sitting: Sitting | null;
 }
 
-/** One scroll session: videos shared close together. */
+/** One scroll session: videos shared close together. Which videos is worked out from the saves' times. */
 export interface Sitting {
-  /** When the last video in it was saved (ISO). */
+  /** When the latest video in it was saved (ISO). */
   last: string;
-  /** Ids of the saves made in it, oldest first. */
-  ids: string[];
 }
 
 export interface Store {
@@ -97,6 +95,13 @@ export interface Store {
   listSaves(userId: number, limit?: number): Promise<Save[]>;
   /** Users with a scroll session that hasn't had its wrap-up yet. */
   listOpenSittings(): Promise<BotUser[]>;
+  /**
+   * Note that they just saved a video. Writes only this, so a slower update
+   * of the user row (another video still being watched) can't undo it.
+   */
+  touchSitting(userId: number, at: string): Promise<void>;
+  /** End their sitting, unless they've shared again since `last`. True if this call ended it. */
+  closeSitting(userId: number, last: string): Promise<boolean>;
 }
 
 /** What we could get out of a video: frames to look at, speech, and the caption. */

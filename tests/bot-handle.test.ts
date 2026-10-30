@@ -182,11 +182,14 @@ describe("handleUpdate", () => {
     expect(sent.at(-1)?.html).toContain("Updated");
   });
 
-  it("counts shares that come close together as one sitting", async () => {
-    const { deps, store } = setup();
+  it("marks a scroll session for the wrap-up, and still saves if that fails", async () => {
+    const { deps, store, edits } = setup();
     await handleUpdate(text("https://vm.tiktok.com/one/"), deps);
+    expect((await store.getUser(7)).sitting?.last).toBe(store.saves[0]?.createdAt);
+    vi.spyOn(store, "touchSitting").mockRejectedValueOnce(new Error("no sitting column"));
     await handleUpdate(text("https://vm.tiktok.com/two/"), deps);
-    expect((await store.getUser(7)).sitting?.ids).toEqual([...store.saves].reverse().map((s) => s.id));
+    expect(store.saves).toHaveLength(2);
+    expect(edits.at(-1)?.html).toContain("Saved: Split dodge drill");
   });
 
   it("takes the next message as a correction after Fix something, without touching the video's words", async () => {

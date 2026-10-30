@@ -22,8 +22,7 @@ function readUsage(raw: unknown): BotUser["usage"] {
 
 function readSitting(raw: unknown): Sitting | null {
   const r = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : null;
-  if (!r || typeof r.last !== "string" || !Array.isArray(r.ids)) return null;
-  return { last: r.last, ids: r.ids.map(String) };
+  return r && typeof r.last === "string" ? { last: r.last } : null;
 }
 
 /** A short id that fits inside Telegram's 64-byte button data. */
@@ -39,7 +38,8 @@ export class MemoryStore implements Store {
     return structuredClone(this.users.get(id) ?? newUser(id));
   }
   async saveUser(user: BotUser) {
-    this.users.set(user.id, structuredClone({ ...user, turns: user.turns.slice(-TURNS_KEPT), facts: user.facts.slice(-FACTS_KEPT) }));
+    const sitting = this.users.get(user.id)?.sitting ?? null; // like the database, saving the row leaves the sitting alone
+    this.users.set(user.id, structuredClone({ ...user, sitting, turns: user.turns.slice(-TURNS_KEPT), facts: user.facts.slice(-FACTS_KEPT) }));
   }
   async addSave(save: Save) {
     this.saves.unshift(structuredClone(save));
@@ -63,6 +63,16 @@ export class MemoryStore implements Store {
   }
   async listOpenSittings() {
     return [...this.users.values()].filter((u) => u.sitting).map((u) => structuredClone(u));
+  }
+  async touchSitting(userId: number, at: string) {
+    const user = this.users.get(userId);
+    if (user) user.sitting = { last: at };
+  }
+  async closeSitting(userId: number, last: string) {
+    const user = this.users.get(userId);
+    if (user?.sitting?.last !== last) return false;
+    user.sitting = null;
+    return true;
   }
 }
 
@@ -161,6 +171,19 @@ export class SupabaseStore implements Store {
     return rows.map(fromUserRow);
   }
 
+  async touchSitting(userId: number, at: string): Promise<void> {
+    await this.rest(`bot_users?id=eq.${userId}`, { method: "PATCH", headers: { prefer: "return=minimal" }, body: JSON.stringify({ sitting: { last: at } }) });
+  }
+
+  async closeSitting(userId: number, last: string): Promise<boolean> {
+    const rows = await this.rest<Array<{ id: number }>>(`bot_users?id=eq.${userId}&sitting->>last=eq.${encodeURIComponent(last)}&select=id`, {
+      method: "PATCH",
+      headers: { prefer: "return=representation" },
+      body: JSON.stringify({ sitting: null }),
+    });
+    return Array.isArray(rows) && rows.length > 0;
+  }
+
   async saveUser(user: BotUser): Promise<void> {
     await this.rest("bot_users", {
       method: "POST",
@@ -171,7 +194,6 @@ export class SupabaseStore implements Store {
         turns: user.turns.slice(-TURNS_KEPT),
         awaiting_words_for: user.awaitingWordsFor,
         usage: user.usage,
-        sitting: user.sitting,
         updated_at: new Date().toISOString(),
       }),
     });

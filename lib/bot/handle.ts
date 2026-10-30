@@ -17,7 +17,6 @@ import { relevantSaves } from "./prompts";
 import { groupHits, searchQuery, type Retriever } from "./rag";
 import { FACTS_KEPT, newSaveId, TURNS_KEPT } from "./store";
 import { findUrl } from "./tiktok";
-import { trackSitting } from "./wrapup";
 import type { Brain, BotUser, InlineButton, Media, Save, Store, TelegramApi, WatchInput } from "./types";
 
 export interface Deps {
@@ -205,9 +204,10 @@ async function saveWatched(chatId: number, status: number, user: BotUser, input:
     practiced: 0,
     createdAt: new Date().toISOString(),
   };
-  trackSitting(user, save.id, Date.now());
   await deps.store.saveUser(user); // saves belong to a user row, so make sure it exists
   await deps.store.addSave(save);
+  // For the wrap-up. If this fails, only the wrap-up is lost, so the save still goes through.
+  await deps.store.touchSitting(user.id, save.createdAt).catch((error) => console.error("Sitting update failed", error));
   await reindex(save, deps);
   const decide = watched.relation === "alternative" || watched.relation === "duplicate" ? saves.find((s) => s.id === watched.relatedId) : null;
   await deps.tg.editMessage(chatId, status, reactionText(watched.reply, save, input.notes), reactionButtons(save, decide, watched.relation === "alternative" ? "alternative" : "duplicate"));
