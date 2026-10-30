@@ -7,7 +7,7 @@ create table if not exists bot_users (
   id bigint primary key,                 -- Telegram user id
   facts jsonb not null default '[]',     -- lasting things they've mentioned
   turns jsonb not null default '[]',     -- last few questions and answers
-  awaiting_words_for text,               -- save id waiting for "what it says"
+  awaiting_words_for text,               -- save id waiting for "what it says", or "fix:<id>" for a correction
   updated_at timestamptz not null default now()
 );
 

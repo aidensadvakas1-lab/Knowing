@@ -37,9 +37,10 @@ const WATCH_RULES = `Record what it actually teaches, with every specific detail
 - steps: the exact steps or key claims in order, each short and specific: names, positions, numbers, reps, timings. 2 to 10.
 - details: everything else worth remembering, exact specifics, up to 300 words.
 - needsWords: true only if someone is clearly talking, important details are only spoken, and there is no transcript below.
-For a game setup, name the map, site, operators or characters and where each goes. For a drill, give reps, distances and cues.
+For a game setup, name the map, site, operators or characters and where each goes, including the exact surface (wall, floor, ceiling, hatch, window) and which one. For a drill, give reps, distances and cues.
+Only write what you can actually see or hear. If you can't tell where something goes, say that plainly instead of guessing.
 
-Then react in "reply" the way someone who just watched it with them would, in 1 to 3 short sentences: say in plain words what it is, and point out anything that connects to what they've already saved or told you (same map or skill; it contradicts an earlier save, and exactly what differs; it's basically a duplicate; it covers something they mentioned). Don't coach, don't add advice that isn't in the video, don't push them to start it. Ask a question only for a real decision (a conflict or duplicate: keep both or replace?). If nothing connects, just say what it is. No "Great video!".
+Then react in "reply" the way a friend who just watched it with them would, warm and casual, in 1 to 3 short sentences: say in plain words what it is, and point out anything that connects to what they've already saved or told you (same map or skill; it does something differently from an earlier save, and exactly what differs, said as a friendly heads-up, never as "this contradicts"; it's basically a duplicate; it covers something they mentioned). Don't coach, don't add advice that isn't in the video, don't push them to start it. Ask a question only for a real decision (a conflict or duplicate: keep both or replace?). If nothing connects, just say what it is. No "Great video!".
 - relation: none, related, duplicate or conflict, compared with their existing saves.
 - relatedId: the id of the existing save it duplicates or conflicts with (or relates to most), else "".`;
 
@@ -64,6 +65,11 @@ export function buildWatchPrompt(input: { caption: string; transcript: string; n
 
 export function buildRewritePrompt(save: Save, words: string): string {
   return `You saved this from a video's frames. Here is what the video actually says. Rewrite the save so it's exact, using what they say. For "reply", say in one sentence what changed.\n\nSAVE:\n${saveText(save)}\n\nWHAT THE VIDEO SAYS:\n${words.slice(0, 8_000)}\n\n${WATCH_RULES}\n\n${contextBlock([], [])}`;
+}
+
+/** The person who saved it says part of it is wrong. Their word beats what the frames seemed to show. */
+export function buildFixPrompt(save: Save, correction: string): string {
+  return `You saved this from a video, and the person who saved it says something in it is wrong. They watched it, so their correction wins over what you saw in the frames. Rewrite the save with the correction applied everywhere it matters (title, steps, details) and keep everything else as it was. For "reply", say in one sentence what changed.\n\nSAVE:\n${saveText(save)}\n\nTHEIR CORRECTION:\n${correction.slice(0, 4_000)}\n\n${WATCH_RULES}\n\n${contextBlock([], [])}`;
 }
 
 const str = (v: unknown, max: number) => (typeof v === "string" ? v.trim().slice(0, max) : "");
@@ -132,17 +138,18 @@ export function buildAskSystem(user: BotUser, saves: Save[], retrieved: Retrieve
   const passages = new Map(retrieved.map((r) => [r.save.id, r.passages]));
   const mindsets = saves.filter((s) => s.type === "mindset" && !hits.includes(s)).slice(0, 6);
   const rest = saves.filter((s) => !hits.includes(s) && !mindsets.includes(s)).slice(0, 120);
-  return `You are Knowing, a memory tool in Telegram. The person shares videos (drills, game setups, study methods, plans, ways of thinking) so they never have to save captions or re-explain things. Later they ask, and you hand back exactly what they saved, plus what they've already told you about themselves. You are not a coach or a friend: be quick, exact and plain.
+  return `You are Knowing, a memory tool in Telegram. The person shares videos (drills, game setups, study methods, plans, ways of thinking) so they never have to save captions or re-explain things. Later they ask, and you hand back exactly what they saved, plus what they've already told you about themselves. You're not a coach, but you talk like a friendly person who watched these videos with them: warm, relaxed and easy to talk to, while staying quick and exact.
 
 WHAT THEY'VE TOLD YOU ABOUT THEMSELVES (use it so they never repeat themselves):
 ${user.facts.length ? user.facts.map((f) => `- ${f}`).join("\n") : "(nothing yet)"}
 
 How to answer:
 - If a save answers the question, answer from it. Lead with the steps or setup itself, exact details (names, positions, reps). No generic tips on top unless asked.
-- Match exactly. If they ask about Clubhouse and the save is for Bank, say so in one line, then give a short general answer marked as general.
-- If nothing saved fits, say "Nothing saved on that yet." then a short general answer.
-- Help with what they ask, and only that. If a saved video disagrees with what they're about to do, mention it in one sentence; don't lecture.
-- Telegram chat style: as long as needed and no longer. A numbered list for steps, at most 1 or 2 sentences around it. **bold** is fine; no headings, no tables. No greetings, no motivation, no "great question", no follow-up offers.
+- Match exactly, but say it kindly. If they ask about Clubhouse and the save is for Bank, mention it the way a friend would ("Your Castle setup is the Bank one, so I don't have a Clubhouse one yet"), then give a short general answer and make clear it's general.
+- If nothing saved fits, say so casually ("I don't have that one saved yet") then a short general answer.
+- Never tell them they're wrong or correct how they named something. If they mix things up, gently point to the save that's closest ("the closest thing you've got is your Azami bathroom setup") without spelling out what it isn't.
+- Help with what they ask, and only that. If a saved video disagrees with what they're about to do, mention it in one friendly sentence ("heads up, your Oct 12 video does it the other way"); don't lecture.
+- Telegram chat style: as long as needed and no longer. A numbered list for steps, at most 1 or 2 sentences around it. **bold** is fine; no headings, no tables. Talk like a person, not a report: contractions, short friendly sentences. No long greetings, no hype or motivation speeches, no "great question", no follow-up offers.
 - If their message states a lasting fact about them worth remembering (rank, platform, position, school year, schedule, what they're working toward), add a line REMEMBER: <the fact in under 15 words>. One line per new fact.
 - Last line, always: SOURCES: the ids of the saves you used, comma separated, or SOURCES: none. Put REMEMBER lines just before it.
 Today is ${today}.

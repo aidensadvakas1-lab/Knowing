@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildAskSystem, buildWatchPrompt, cleanDraft, cleanWatch, parseAnswer, relevantSaves } from "@/lib/bot/prompts";
+import { buildAskSystem, buildFixPrompt, buildWatchPrompt, cleanDraft, cleanWatch, parseAnswer, relevantSaves } from "@/lib/bot/prompts";
 import { newUser } from "@/lib/bot/store";
 import type { Save } from "@/lib/bot/types";
 
@@ -86,5 +86,15 @@ describe("parseAnswer", () => {
   it("handles a plain answer", () => {
     expect(parseAnswer("Nothing saved on that yet.\nSOURCES: none", [])).toMatchObject({ text: "Nothing saved on that yet.", sources: [], remember: [] });
     expect(parseAnswer("Hi", []).text).toBe("Hi");
+  });
+});
+
+describe("buildFixPrompt", () => {
+  it("puts the person's correction above what the frames showed", () => {
+    const save = { id: "s1", userId: 7, title: "Club 2F bathroom: Azami barrier", topic: "Siege, Clubhouse", type: "setup", summary: "", steps: ["Throw a Kiba barrier onto the ceiling"], details: "", needsWords: false, words: "", source: "", sourceUrl: "", practiced: 0, createdAt: "" } as const;
+    const p = buildFixPrompt({ ...save, steps: [...save.steps] }, "the barrier goes on the wall, not the ceiling");
+    expect(p).toContain("their correction wins");
+    expect(p).toContain("the barrier goes on the wall, not the ceiling");
+    expect(p).toContain("Throw a Kiba barrier onto the ceiling");
   });
 });

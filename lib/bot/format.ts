@@ -37,6 +37,7 @@ export function reactionButtons(s: Save, decideAgainst?: Save | null): InlineBut
   if (canRun(s)) row.push({ text: "Start now", callback_data: `open:${s.id}` });
   if (row.length) rows.push(row);
   if (s.needsWords && !s.words) rows.push([{ text: "Add what it says", callback_data: `words:${s.id}` }]);
+  rows.push([{ text: "Fix something", callback_data: `fix:${s.id}` }]);
   return rows;
 }
 
@@ -57,6 +58,7 @@ export function saveButtons(s: Save): InlineButton[][] {
   const rows: InlineButton[][] = [];
   if (canRun(s)) rows.push([{ text: "Start now", callback_data: `open:${s.id}` }]);
   if (s.needsWords && !s.words) rows.push([{ text: "Add what it says", callback_data: `words:${s.id}` }]);
+  rows.push([{ text: "Fix something", callback_data: `fix:${s.id}` }]);
   return rows;
 }
 

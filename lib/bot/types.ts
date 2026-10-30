@@ -66,7 +66,10 @@ export interface BotUser {
   /** Lasting things they've mentioned (rank, platform, school year...), so they never repeat themselves. */
   facts: string[];
   turns: Turn[];
-  /** Set when the next text message is the words for a save, not a question. */
+  /**
+   * Set when the next text message is about a save, not a question: a save id
+   * for its spoken words, or "fix:<id>" for a correction.
+   */
   awaitingWordsFor: string | null;
   usage: Usage;
 }
@@ -133,7 +136,8 @@ export interface AskInput {
 export interface Brain {
   watch(input: WatchInput & { note: string; facts: string[]; saves: Save[] }): Promise<WatchResult>;
   /** Rewrite a save once we have what the video actually says. */
-  rewrite(save: Save, words: string): Promise<SaveDraft>;
+  /** Remake a save from its spoken words, or from the user's correction. */
+  rewrite(save: Save, text: string, kind?: "words" | "fix"): Promise<SaveDraft>;
   answer(input: AskInput): Promise<Answer>;
 }
 

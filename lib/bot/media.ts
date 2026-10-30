@@ -15,10 +15,10 @@ import { isTranscriptionConfigured, transcribeAudio } from "../transcribe";
 import { isTikTok, resolveTikTok } from "./tiktok";
 import type { Media, WatchInput } from "./types";
 
-/** Frames shown to Claude per video. */
-export const FRAME_COUNT = 8;
-/** Longest side of each frame, in pixels. */
-const FRAME_SIDE = 768;
+/** Frames shown to Claude per video. Setups change every few seconds, so 8 missed whole placements. */
+export const FRAME_COUNT = 20;
+/** Longest side of each frame, in pixels. Big enough to tell a wall from a ceiling. */
+const FRAME_SIDE = 960;
 /** Biggest video we'll download. TikToks are usually 2 to 20 MB. */
 const MAX_VIDEO_BYTES = 60 * 1024 * 1024;
 

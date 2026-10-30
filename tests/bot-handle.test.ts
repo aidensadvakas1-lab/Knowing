@@ -73,7 +73,7 @@ describe("handleUpdate", () => {
     expect(edits[0]?.html).toContain("A split dodge drill for your weak hand.");
     expect(edits[0]?.html).toContain("Saved: Split dodge drill");
     expect(edits[0]?.html).not.toContain("1. Jog");
-    expect(datas(edits[0]?.buttons)).toEqual([expect.stringMatching(/^show:/), expect.stringMatching(/^open:/)]);
+    expect(datas(edits[0]?.buttons)).toEqual([expect.stringMatching(/^show:/), expect.stringMatching(/^open:/), expect.stringMatching(/^fix:/)]);
     expect(store.saves[0]?.sourceUrl).toBe("https://vm.tiktok.com/ZMabc/");
   });
 
@@ -179,6 +179,20 @@ describe("handleUpdate", () => {
     expect(brain.answer).not.toHaveBeenCalled();
     expect(store.saves[0]?.words).toBe("they say plant your left foot");
     expect(sent.at(-1)?.html).toContain("Updated");
+  });
+
+  it("takes the next message as a correction after Fix something, without touching the video's words", async () => {
+    const { deps, store, brain, sent } = setup();
+    await handleUpdate(text("https://vm.tiktok.com/ZMabc/"), deps);
+    const id = store.saves[0]!.id;
+    await handleUpdate(tap(`fix:${id}`), deps);
+    expect(sent.at(-1)?.html).toContain("What did I get wrong");
+    await handleUpdate(text("the barrier goes on the wall, not the ceiling"), deps);
+    expect(brain.rewrite).toHaveBeenCalledWith(expect.objectContaining({ id }), "the barrier goes on the wall, not the ceiling", "fix");
+    expect(brain.answer).not.toHaveBeenCalled();
+    expect(store.saves[0]?.words).toBe("");
+    expect(sent.at(-1)?.html).toContain("Fixed.");
+    expect((await store.getUser(7)).awaitingWordsFor).toBeNull();
   });
 
   it("tells the user when something fails instead of going silent, and alerts the owner", async () => {

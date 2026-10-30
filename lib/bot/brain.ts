@@ -6,7 +6,7 @@ import "server-only";
 import type Anthropic from "@anthropic-ai/sdk";
 import { MODELS } from "../constants";
 import { getAnthropic } from "../server";
-import { buildAskSystem, buildRewritePrompt, buildWatchPrompt, cleanDraft, cleanWatch, parseAnswer, WATCH_SCHEMA } from "./prompts";
+import { buildAskSystem, buildFixPrompt, buildRewritePrompt, buildWatchPrompt, cleanDraft, cleanWatch, parseAnswer, WATCH_SCHEMA } from "./prompts";
 import type { Brain } from "./types";
 
 const today = () => new Date().toISOString().slice(0, 10);
@@ -33,8 +33,9 @@ export function createBrain(): Brain {
       return cleanWatch(await watchJson(content), saves, caption.slice(0, 60) || "Saved video");
     },
 
-    async rewrite(save, words) {
-      return cleanDraft(await watchJson([{ type: "text", text: buildRewritePrompt(save, words) }]), save.title);
+    async rewrite(save, text, kind = "words") {
+      const prompt = kind === "fix" ? buildFixPrompt(save, text) : buildRewritePrompt(save, text);
+      return cleanDraft(await watchJson([{ type: "text", text: prompt }]), save.title);
     },
 
     async answer({ user, question, saves, retrieved }) {
