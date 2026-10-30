@@ -1,6 +1,8 @@
 /**
  * The bot's Claude calls: watch a video into a save, and answer questions
- * from saves. Uses MODELS.bot (Claude Haiku by default, to stay cheap).
+ * from saves. Watching uses MODELS.watch (Opus by default: it happens once
+ * per video and has to read the details right). Answering uses MODELS.bot
+ * (Haiku by default, to stay cheap).
  */
 import "server-only";
 import type Anthropic from "@anthropic-ai/sdk";
@@ -11,13 +13,15 @@ import type { Brain } from "./types";
 
 const today = () => new Date().toISOString().slice(0, 10);
 
-async function watchJson(content: Anthropic.ContentBlockParam[]): Promise<unknown> {
+async function watchJson(content: Anthropic.ContentBlockParam[], model: string = MODELS.watch): Promise<unknown> {
   const response = await getAnthropic().messages.create({
-    model: MODELS.bot,
-    max_tokens: 4_000,
-    output_config: { format: { type: "json_schema", schema: WATCH_SCHEMA } },
+    model,
+    max_tokens: 16_000,
+    output_config: { effort: "medium", format: { type: "json_schema", schema: WATCH_SCHEMA } },
     messages: [{ role: "user", content }],
   });
+  // A gaming clip can trip the strong model's safety filter by mistake; the cheap model gets a second look.
+  if (response.stop_reason === "refusal" && model !== MODELS.bot) return watchJson(content, MODELS.bot);
   if (response.stop_reason === "refusal") throw new Error("refused");
   const text = response.content.find((b) => b.type === "text");
   return JSON.parse(text?.type === "text" ? text.text : "{}");
