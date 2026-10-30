@@ -21,6 +21,7 @@ function setup(opts: { answer?: Partial<Answer>; draft?: Partial<SaveDraft>; wat
     watch: vi.fn(async ({ saves }: { saves: Save[] }) => ({ draft, reply: "A split dodge drill for your weak hand.", relation: "none" as const, relatedId: "", ...opts.watch?.(saves) })),
     rewrite: vi.fn(async (s: Save) => ({ ...s, steps: ["Exact step"] })),
     answer: vi.fn(async ({ saves }: { saves: Save[] }) => ({ text: "Do the split dodge.", sources: saves.map((s) => s.id), remember: [], ...opts.answer })),
+    wrapUp: vi.fn(async ({ kept }: { kept: Save[] }) => `From that scroll you kept **${kept.length}**.`),
   };
   const media: Media = {
     fromLink: vi.fn(async () => ({ frames: ["aGk="], transcript: "", caption: "dodge tips", notes: [] })),
@@ -77,16 +78,16 @@ describe("handleUpdate", () => {
     expect(store.saves[0]?.sourceUrl).toBe("https://vm.tiktok.com/ZMabc/");
   });
 
-  it("gives the watcher what's already saved and known, and offers keep or replace on a conflict", async () => {
-    const { deps, edits, store, brain } = setup({ watch: (saves) => (saves[0] ? { relation: "conflict", relatedId: saves[0].id, reply: "This one puts Mira on CCTV, not lockers." } : {}) });
+  it("gives the watcher what's already saved and known, keeps both ways by default and offers Replace", async () => {
+    const { deps, edits, store, brain } = setup({ watch: (saves) => (saves[0] ? { relation: "alternative", relatedId: saves[0].id, reply: "This one puts Mira on CCTV, not lockers." } : {}) });
     await handleUpdate(text("https://vm.tiktok.com/one/"), deps);
     const oldId = store.saves[0]!.id;
     await handleUpdate(text("https://vm.tiktok.com/two/"), deps);
     expect(vi.mocked(brain.watch).mock.calls[1]?.[0].saves.map((s) => s.id)).toEqual([oldId]);
     const reaction = edits.at(-1)!;
-    expect(datas(reaction.buttons)[0]).toMatch(/^keep:/);
-    expect(datas(reaction.buttons)[1]).toBe(`repl:${store.saves[0]!.id}:${oldId}`);
-    await handleUpdate(tap(datas(reaction.buttons)[1]!, reaction.id), deps);
+    expect(datas(reaction.buttons)[0]).toBe(`repl:${store.saves[0]!.id}:${oldId}`);
+    expect(datas(reaction.buttons)).not.toContainEqual(expect.stringMatching(/^keep:/));
+    await handleUpdate(tap(datas(reaction.buttons)[0]!, reaction.id), deps);
     expect(store.saves.map((s) => s.id)).not.toContain(oldId);
     expect(edits.at(-1)?.html).toContain("Replaced the old one");
   });
@@ -181,6 +182,13 @@ describe("handleUpdate", () => {
     expect(sent.at(-1)?.html).toContain("Updated");
   });
 
+  it("counts shares that come close together as one sitting", async () => {
+    const { deps, store } = setup();
+    await handleUpdate(text("https://vm.tiktok.com/one/"), deps);
+    await handleUpdate(text("https://vm.tiktok.com/two/"), deps);
+    expect((await store.getUser(7)).sitting?.ids).toEqual([...store.saves].reverse().map((s) => s.id));
+  });
+
   it("takes the next message as a correction after Fix something, without touching the video's words", async () => {
     const { deps, store, brain, sent } = setup();
     await handleUpdate(text("https://vm.tiktok.com/ZMabc/"), deps);
@@ -225,7 +233,7 @@ describe("handleUpdate", () => {
   });
 
   it("resets the limits on a new day", () => {
-    const user = { id: 7, facts: [], turns: [], awaitingWordsFor: null, usage: { day: "2000-01-01", videos: 9, questions: 9 } };
+    const user = { id: 7, facts: [], turns: [], awaitingWordsFor: null, usage: { day: "2000-01-01", videos: 9, questions: 9 }, sitting: null };
     expect(spend(user, "videos", 1)).toBe(true);
     expect(user.usage.videos).toBe(1);
     expect(spend(user, "videos", 1)).toBe(false);

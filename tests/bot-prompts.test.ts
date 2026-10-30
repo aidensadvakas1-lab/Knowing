@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildAskSystem, buildFixPrompt, buildWatchPrompt, cleanDraft, cleanWatch, parseAnswer, relevantSaves } from "@/lib/bot/prompts";
+import { buildAskSystem, buildFixPrompt, buildWatchPrompt, buildWrapUpPrompt, cleanDraft, cleanWatch, parseAnswer, relevantSaves } from "@/lib/bot/prompts";
 import { newUser } from "@/lib/bot/store";
 import type { Save } from "@/lib/bot/types";
 
@@ -73,8 +73,8 @@ describe("watch prompt and cleanWatch", () => {
     expect(p).toContain('[id a1] "Bank basement: lockers + CCTV setup"');
   });
   it("drops a relation that points at an unknown save", () => {
-    expect(cleanWatch({ reply: "x", relation: "conflict", relatedId: "nope" }, [save({})])).toMatchObject({ relation: "none", relatedId: "" });
-    expect(cleanWatch({ reply: "x", relation: "conflict", relatedId: "a1" }, [save({})])).toMatchObject({ relation: "conflict", relatedId: "a1", reply: "x" });
+    expect(cleanWatch({ reply: "x", relation: "alternative", relatedId: "nope" }, [save({})])).toMatchObject({ relation: "none", relatedId: "" });
+    expect(cleanWatch({ reply: "x", relation: "alternative", relatedId: "a1" }, [save({})])).toMatchObject({ relation: "alternative", relatedId: "a1", reply: "x" });
   });
 });
 
@@ -96,5 +96,16 @@ describe("buildFixPrompt", () => {
     expect(p).toContain("their correction wins");
     expect(p).toContain("the barrier goes on the wall, not the ceiling");
     expect(p).toContain("Throw a Kiba barrier onto the ceiling");
+  });
+});
+
+describe("buildWrapUpPrompt", () => {
+  it("lists what they kept and what they already had", () => {
+    const base = { userId: 7, topic: "Siege, Bank", type: "setup", summary: "", steps: [], details: "", needsWords: false, words: "", source: "", sourceUrl: "", practiced: 0, createdAt: "" } as const;
+    const p = buildWrapUpPrompt([{ ...base, id: "n1", title: "Mira on CCTV", steps: [] }], [{ ...base, id: "o1", title: "Mira on lockers", steps: [] }], ["Plays on PC"]);
+    expect(p).toContain("you kept 1");
+    expect(p).toContain("Mira on CCTV");
+    expect(p).toContain("[id o1]");
+    expect(p).toContain("Plays on PC");
   });
 });

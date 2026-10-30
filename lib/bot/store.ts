@@ -5,7 +5,7 @@
  *   (server only). Tables are in docs/supabase.sql.
  * - `MemoryStore` keeps everything in memory, for tests.
  */
-import type { BotUser, Save, Store } from "./types";
+import type { BotUser, Save, Sitting, Store } from "./types";
 
 /** Turns kept per user for follow-up questions. */
 export const TURNS_KEPT = 12;
@@ -13,11 +13,17 @@ export const TURNS_KEPT = 12;
 /** Lasting facts kept per user. */
 export const FACTS_KEPT = 40;
 
-export const newUser = (id: number): BotUser => ({ id, facts: [], turns: [], awaitingWordsFor: null, usage: { day: "", videos: 0, questions: 0 } });
+export const newUser = (id: number): BotUser => ({ id, facts: [], turns: [], awaitingWordsFor: null, usage: { day: "", videos: 0, questions: 0 }, sitting: null });
 
 function readUsage(raw: unknown): BotUser["usage"] {
   const r = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
   return { day: typeof r.day === "string" ? r.day : "", videos: Number(r.videos) || 0, questions: Number(r.questions) || 0 };
+}
+
+function readSitting(raw: unknown): Sitting | null {
+  const r = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : null;
+  if (!r || typeof r.last !== "string" || !Array.isArray(r.ids)) return null;
+  return { last: r.last, ids: r.ids.map(String) };
 }
 
 /** A short id that fits inside Telegram's 64-byte button data. */
@@ -54,6 +60,9 @@ export class MemoryStore implements Store {
   }
   async listSaves(userId: number, limit = 200) {
     return this.saves.filter((s) => s.userId === userId).slice(0, limit).map((s) => structuredClone(s));
+  }
+  async listOpenSittings() {
+    return [...this.users.values()].filter((u) => u.sitting).map((u) => structuredClone(u));
   }
 }
 
@@ -108,6 +117,24 @@ const fromRow = (r: SaveRow): Save => ({
   createdAt: r.created_at,
 });
 
+interface UserRow {
+  id: number;
+  facts: unknown;
+  turns: BotUser["turns"];
+  awaiting_words_for: string | null;
+  usage: unknown;
+  sitting?: unknown;
+}
+
+const fromUserRow = (r: UserRow): BotUser => ({
+  id: Number(r.id),
+  facts: Array.isArray(r.facts) ? r.facts.map(String) : [],
+  turns: Array.isArray(r.turns) ? r.turns : [],
+  awaitingWordsFor: r.awaiting_words_for ?? null,
+  usage: readUsage(r.usage),
+  sitting: readSitting(r.sitting),
+});
+
 export class SupabaseStore implements Store {
   constructor(
     private readonly url: string,
@@ -125,16 +152,13 @@ export class SupabaseStore implements Store {
   }
 
   async getUser(id: number): Promise<BotUser> {
-    const rows = await this.rest<Array<{ id: number; facts: unknown; turns: BotUser["turns"]; awaiting_words_for: string | null; usage: unknown }>>(`bot_users?id=eq.${id}&select=*`);
-    const r = rows[0];
-    if (!r) return newUser(id);
-    return {
-      id,
-      facts: Array.isArray(r.facts) ? r.facts.map(String) : [],
-      turns: Array.isArray(r.turns) ? r.turns : [],
-      awaitingWordsFor: r.awaiting_words_for ?? null,
-      usage: readUsage(r.usage),
-    };
+    const rows = await this.rest<UserRow[]>(`bot_users?id=eq.${id}&select=*`);
+    return rows[0] ? fromUserRow(rows[0]) : newUser(id);
+  }
+
+  async listOpenSittings(): Promise<BotUser[]> {
+    const rows = await this.rest<UserRow[]>("bot_users?sitting=not.is.null&select=*");
+    return rows.map(fromUserRow);
   }
 
   async saveUser(user: BotUser): Promise<void> {
@@ -147,6 +171,7 @@ export class SupabaseStore implements Store {
         turns: user.turns.slice(-TURNS_KEPT),
         awaiting_words_for: user.awaitingWordsFor,
         usage: user.usage,
+        sitting: user.sitting,
         updated_at: new Date().toISOString(),
       }),
     });

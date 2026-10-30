@@ -5,9 +5,10 @@
  * - A link (shared from TikTok) or a video: watch it, save it, and react in
  *   a sentence or two (how it connects to their other saves). No coaching.
  * - Any other text: answer from their saves and what they've told us.
- * - Buttons: Show steps, Start now, Add what it says, Keep both / Replace.
+ * - Buttons: Show steps, Start now, Add what it says, Fix something, Keep both / Replace.
  * - /start, /help, /saved, /memory, /delete.
  * - Daily limits per user, and an alert to the owner when something breaks.
+ * - Shares close together make a sitting, wrapped up later in wrapup.ts.
  */
 import { timingSafeEqual } from "node:crypto";
 import { answerText, escapeHtml as esc, reactionButtons, reactionText, saveButtons, saveCard, savedList, stepButtons, stepText } from "./format";
@@ -16,6 +17,7 @@ import { relevantSaves } from "./prompts";
 import { groupHits, searchQuery, type Retriever } from "./rag";
 import { FACTS_KEPT, newSaveId, TURNS_KEPT } from "./store";
 import { findUrl } from "./tiktok";
+import { trackSitting } from "./wrapup";
 import type { Brain, BotUser, InlineButton, Media, Save, Store, TelegramApi, WatchInput } from "./types";
 
 export interface Deps {
@@ -203,11 +205,12 @@ async function saveWatched(chatId: number, status: number, user: BotUser, input:
     practiced: 0,
     createdAt: new Date().toISOString(),
   };
+  trackSitting(user, save.id, Date.now());
   await deps.store.saveUser(user); // saves belong to a user row, so make sure it exists
   await deps.store.addSave(save);
   await reindex(save, deps);
-  const decide = watched.relation === "conflict" || watched.relation === "duplicate" ? saves.find((s) => s.id === watched.relatedId) : null;
-  await deps.tg.editMessage(chatId, status, reactionText(watched.reply, save, input.notes), reactionButtons(save, decide));
+  const decide = watched.relation === "alternative" || watched.relation === "duplicate" ? saves.find((s) => s.id === watched.relatedId) : null;
+  await deps.tg.editMessage(chatId, status, reactionText(watched.reply, save, input.notes), reactionButtons(save, decide, watched.relation === "alternative" ? "alternative" : "duplicate"));
 }
 
 /** The message after Add what it says or Fix something: remake that save with it. */

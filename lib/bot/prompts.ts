@@ -8,7 +8,7 @@
  */
 import { SAVE_TYPE_LABEL, SAVE_TYPES, type Answer, type BotUser, type Relation, type Save, type SaveDraft, type SaveType, type WatchResult } from "./types";
 
-const RELATIONS: readonly Relation[] = ["none", "related", "duplicate", "conflict"];
+const RELATIONS: readonly Relation[] = ["none", "related", "duplicate", "alternative"];
 
 export const WATCH_SCHEMA = {
   type: "object",
@@ -40,9 +40,9 @@ const WATCH_RULES = `Record what it actually teaches, with every specific detail
 For a game setup, name the map, site, operators or characters and where each goes, including the exact surface (wall, floor, ceiling, hatch, window) and which one. For a drill, give reps, distances and cues.
 Only write what you can actually see or hear. If you can't tell where something goes, say that plainly instead of guessing.
 
-Then react in "reply" the way a friend who just watched it with them would, warm and casual, in 1 to 3 short sentences: say in plain words what it is, and point out anything that connects to what they've already saved or told you (same map or skill; it does something differently from an earlier save, and exactly what differs, said as a friendly heads-up, never as "this contradicts"; it's basically a duplicate; it covers something they mentioned). Don't coach, don't add advice that isn't in the video, don't push them to start it. Ask a question only for a real decision (a conflict or duplicate: keep both or replace?). If nothing connects, just say what it is. No "Great video!".
-- relation: none, related, duplicate or conflict, compared with their existing saves.
-- relatedId: the id of the existing save it duplicates or conflicts with (or relates to most), else "".`;
+Then react in "reply" the way a friend who just watched it with them would, warm and casual, in 1 to 3 short sentences: say in plain words what it is, and point out anything that connects to what they've already saved or told you (same map or skill; it's another way to do something they already saved: say what's different and when each one fits, never as a contradiction; it's basically a duplicate; it covers something they mentioned). Don't coach, don't add advice that isn't in the video, don't push them to start it. Ask a question only when it's basically a duplicate (keep both or replace?). If nothing connects, just say what it is. No "Great video!".
+- relation: none, related, duplicate, or alternative (another way to do the same thing as an existing save), compared with their existing saves.
+- relatedId: the id of the existing save it duplicates or offers another way to (or relates to most), else "".`;
 
 /** What they've told us and what they've saved, for spotting connections. */
 function contextBlock(facts: string[], saves: Save[]): string {
@@ -145,10 +145,11 @@ ${user.facts.length ? user.facts.map((f) => `- ${f}`).join("\n") : "(nothing yet
 
 How to answer:
 - If a save answers the question, answer from it. Lead with the steps or setup itself, exact details (names, positions, reps). No generic tips on top unless asked.
-- Match exactly, but say it kindly. If they ask about Clubhouse and the save is for Bank, mention it the way a friend would ("Your Castle setup is the Bank one, so I don't have a Clubhouse one yet"), then give a short general answer and make clear it's general.
-- If nothing saved fits, say so casually ("I don't have that one saved yet") then a short general answer.
-- Never tell them they're wrong or correct how they named something. If they mix things up, gently point to the save that's closest ("the closest thing you've got is your Azami bathroom setup") without spelling out what it isn't.
-- Help with what they ask, and only that. If a saved video disagrees with what they're about to do, mention it in one friendly sentence ("heads up, your Oct 12 video does it the other way"); don't lecture.
+- If nothing saved matches exactly, don't stop at what's missing: find a way to get them what they need. Adapt the closest save to their situation (take the idea behind the Bank Castle setup and work out how it carries over to Clubhouse), combine pieces from several saves, and fill any gap with what you know. Say in a few words which parts come straight from their videos and which you worked out ("From your Bank video: ... Carried over to Clubhouse: ..."), so they always know what's exact.
+- If something in their way (a different map, missing gear, no partner, not enough time) means a save doesn't fit as is, work around it: change the steps so it still works for them.
+- If two saves do it differently, don't point out a contradiction. Use both: say when each one fits best, or blend them into one plan.
+- Never tell them they're wrong or correct how they named something. Just give them the closest useful thing.
+- Help with what they ask, and only that. Don't lecture.
 - Telegram chat style: as long as needed and no longer. A numbered list for steps, at most 1 or 2 sentences around it. **bold** is fine; no headings, no tables. Talk like a person, not a report: contractions, short friendly sentences. No long greetings, no hype or motivation speeches, no "great question", no follow-up offers.
 - If their message states a lasting fact about them worth remembering (rank, platform, position, school year, schedule, what they're working toward), add a line REMEMBER: <the fact in under 15 words>. One line per new fact.
 - Last line, always: SOURCES: the ids of the saves you used, comma separated, or SOURCES: none. Put REMEMBER lines just before it.
@@ -159,6 +160,20 @@ ${hits.length ? hits.map((h) => saveText(h) + ((passages.get(h.id) ?? []).length
 ${mindsets.length ? `\nTHEIR SAVED WAYS OF THINKING (use when relevant):\n${mindsets.map(saveText).join("\n\n")}\n` : ""}
 EVERYTHING ELSE THEY'VE SAVED (you may use and cite these too):
 ${rest.map((s) => `[id ${s.id}] "${s.title}" (${s.topic || "?"}) ${s.summary}`).join("\n") || "(nothing)"}`;
+}
+
+/** The wrap-up after a scroll session: what they kept and how it connects. */
+export function buildWrapUpPrompt(kept: Save[], others: Save[], facts: string[]): string {
+  return `Someone just finished scrolling and sent you ${kept.length} videos to keep. Write a short wrap-up the way a friend who watched them too would, warm and casual.
+
+- Start with one line like "From that scroll you kept ${kept.length}:" then one short bullet per video: what it is, and how it fits with what they already had (it adds to a save, it's another way to do one, it fills a gap, it matches something they told you). Use the exact titles and names.
+- If a few of them fit together into something they could use (a session, a full setup, a plan), say so in one line at the end.
+- No coaching, no pushing them to start, no questions, no advice that isn't in the videos. Under 90 words. **bold** is fine; no headings.
+
+WHAT THEY KEPT:
+${kept.map(saveText).join("\n\n")}
+
+${contextBlock(facts, others)}`;
 }
 
 /** Split Claude's reply into the visible text and the trailing control lines. */

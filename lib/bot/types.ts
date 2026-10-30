@@ -72,6 +72,16 @@ export interface BotUser {
    */
   awaitingWordsFor: string | null;
   usage: Usage;
+  /** Videos shared in the current scroll session, for the wrap-up once they stop. */
+  sitting: Sitting | null;
+}
+
+/** One scroll session: videos shared close together. */
+export interface Sitting {
+  /** When the last video in it was saved (ISO). */
+  last: string;
+  /** Ids of the saves made in it, oldest first. */
+  ids: string[];
 }
 
 export interface Store {
@@ -85,6 +95,8 @@ export interface Store {
   deleteUser(userId: number): Promise<void>;
   /** Newest first. */
   listSaves(userId: number, limit?: number): Promise<Save[]>;
+  /** Users with a scroll session that hasn't had its wrap-up yet. */
+  listOpenSittings(): Promise<BotUser[]>;
 }
 
 /** What we could get out of a video: frames to look at, speech, and the caption. */
@@ -113,7 +125,7 @@ export interface Answer {
 }
 
 /** How a new save relates to what's already saved. */
-export type Relation = "none" | "related" | "duplicate" | "conflict";
+export type Relation = "none" | "related" | "duplicate" | "alternative";
 
 /** What watching a video produces: the save, plus a short reaction to send back. */
 export interface WatchResult {
@@ -121,7 +133,7 @@ export interface WatchResult {
   /** 1 to 3 sentences: what it is, and how it connects to their saves. Not coaching. */
   reply: string;
   relation: Relation;
-  /** The existing save it duplicates or conflicts with, if any. */
+  /** The existing save it duplicates or is another way to do, if any. */
   relatedId: string;
 }
 
@@ -135,10 +147,11 @@ export interface AskInput {
 
 export interface Brain {
   watch(input: WatchInput & { note: string; facts: string[]; saves: Save[] }): Promise<WatchResult>;
-  /** Rewrite a save once we have what the video actually says. */
   /** Remake a save from its spoken words, or from the user's correction. */
   rewrite(save: Save, text: string, kind?: "words" | "fix"): Promise<SaveDraft>;
   answer(input: AskInput): Promise<Answer>;
+  /** A few friendly lines on what they kept in one scroll session and how it connects. */
+  wrapUp(input: { kept: Save[]; others: Save[]; facts: string[] }): Promise<string>;
 }
 
 export interface InlineButton {

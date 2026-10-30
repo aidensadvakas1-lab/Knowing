@@ -8,7 +8,7 @@ import "server-only";
 import type Anthropic from "@anthropic-ai/sdk";
 import { MODELS } from "../constants";
 import { getAnthropic } from "../server";
-import { buildAskSystem, buildFixPrompt, buildRewritePrompt, buildWatchPrompt, cleanDraft, cleanWatch, parseAnswer, WATCH_SCHEMA } from "./prompts";
+import { buildAskSystem, buildFixPrompt, buildRewritePrompt, buildWatchPrompt, buildWrapUpPrompt, cleanDraft, cleanWatch, parseAnswer, WATCH_SCHEMA } from "./prompts";
 import type { Brain } from "./types";
 
 const today = () => new Date().toISOString().slice(0, 10);
@@ -54,6 +54,16 @@ export function createBrain(): Brain {
       if (response.stop_reason === "refusal") throw new Error("refused");
       const text = response.content.map((b) => (b.type === "text" ? b.text : "")).join("");
       return parseAnswer(text, saves.map((s) => s.id));
+    },
+
+    async wrapUp({ kept, others, facts }) {
+      const response = await getAnthropic().messages.create({
+        model: MODELS.bot,
+        max_tokens: 2_000,
+        messages: [{ role: "user", content: buildWrapUpPrompt(kept, others, facts) }],
+      });
+      if (response.stop_reason === "refusal") throw new Error("refused");
+      return response.content.map((b) => (b.type === "text" ? b.text : "")).join("").trim();
     },
   };
 }

@@ -10,10 +10,12 @@ It's a memory tool, not a coach: no one has to save captions or re-explain anyth
 
 | You do | Knowing does |
 |---|---|
-| Share a TikTok link (or send any video) | Saves exactly what it showed and reacts in a sentence or two: what it is, and how it connects to what you've saved ("This one puts Mira on CCTV, not lockers like your last Bank save"). It doesn't coach |
-| Tap **Keep both** / **Replace the old one** | Shown only when a new video conflicts with or duplicates an older save |
+| Share a TikTok link (or send any video) | Saves exactly what it showed and reacts in a sentence or two: what it is, and how it connects to what you've saved ("Another way to hold Bank: Mira on CCTV instead of lockers"). It doesn't coach |
+| Share 3 or more in one scroll | About 15 minutes after the last one, a short wrap-up: what you kept and how it fits with your other saves |
+| Tap **Keep both** / **Replace the old one** | Asked only when a new video duplicates an older save. Another way to do something is kept next to the old one, with **Replace the old one** if you want it |
+| Tap **Fix something** | Tell it what it got wrong and the save is rewritten |
 | Tap **Show steps** / **Start now** | The full steps, or a step-by-step run with **Next** / **Back** that counts each time you finish |
-| Ask a question | Answers from the matching saves and names them. If your save is for a different map or skill, it says so |
+| Ask a question | Answers from the matching saves and names them. If nothing matches exactly, it adapts the closest saves to your situation and says which parts are straight from your videos |
 | Mention something lasting ("I'm Gold on PC", "I'm a junior") | Remembers it, so you never repeat it |
 | `/memory` | Shows what it remembers about you, with a button to forget each one |
 | `/saved` | Lists everything, grouped by topic |
@@ -69,6 +71,7 @@ Add these in Vercel under **Project Settings → Environment Variables**, then r
 | `KNOWING_DAILY_VIDEOS` | Optional. Videos per person per day (default 15) |
 | `KNOWING_DAILY_QUESTIONS` | Optional. Questions per person per day (default 50) |
 | `KNOWING_OWNER_ID` | Optional. Who gets error alerts (default: the first id in `TELEGRAM_ALLOWED_USERS`) |
+| `KNOWING_CRON_SECRET` | For wrap-ups (step 7). Another random string you make up, different from the webhook secret |
 
 ### 5. Connect Telegram to your app
 
@@ -88,6 +91,21 @@ Send your bot any message. Because you're not on the list yet, it replies with y
 Put that number in `TELEGRAM_ALLOWED_USERS` in Vercel, redeploy, and send `/start`.
 
 The bot only answers people on that list, so a stranger who finds it can't spend your credits.
+
+### 7. Turn on wrap-ups (optional)
+
+Wrap-ups need something to check every few minutes whether someone stopped scrolling. Supabase
+can do that for free. In Supabase, open **SQL Editor**, paste this with your values filled in, and
+run it once:
+
+```sql
+create extension if not exists pg_cron;
+create extension if not exists pg_net;
+select cron.schedule('knowing-wrapups', '*/5 * * * *',
+  $$ select net.http_get('https://<your-app>.vercel.app/api/telegram/wrapup?key=<KNOWING_CRON_SECRET>') $$);
+```
+
+To turn them off again: `select cron.unschedule('knowing-wrapups');`
 
 ## Keeping it safe and cheap
 
