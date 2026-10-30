@@ -24,19 +24,20 @@ export function reactionText(reply: string, s: Save, notes: string[] = []): stri
   return lines.join("\n");
 }
 
-export function reactionButtons(s: Save, decideAgainst?: Save | null): InlineButton[][] {
+/**
+ * Buttons under a reaction. Against a duplicate, ask keep both or replace.
+ * Against another way to do something, both are kept, with Replace there if wanted.
+ */
+export function reactionButtons(s: Save, decideAgainst?: Save | null, kind: "duplicate" | "alternative" = "duplicate"): InlineButton[][] {
   const rows: InlineButton[][] = [];
-  if (decideAgainst) {
-    rows.push([
-      { text: "Keep both", callback_data: `keep:${s.id}` },
-      { text: "Replace the old one", callback_data: `repl:${s.id}:${decideAgainst.id}` },
-    ]);
-  }
+  const replace = decideAgainst && { text: "Replace the old one", callback_data: `repl:${s.id}:${decideAgainst.id}` };
+  if (replace) rows.push(kind === "duplicate" ? [{ text: "Keep both", callback_data: `keep:${s.id}` }, replace] : [replace]);
   const row: InlineButton[] = [];
   if (s.steps.length) row.push({ text: "Show steps", callback_data: `show:${s.id}` });
   if (canRun(s)) row.push({ text: "Start now", callback_data: `open:${s.id}` });
   if (row.length) rows.push(row);
   if (s.needsWords && !s.words) rows.push([{ text: "Add what it says", callback_data: `words:${s.id}` }]);
+  rows.push([{ text: "Fix something", callback_data: `fix:${s.id}` }]);
   return rows;
 }
 
@@ -57,6 +58,7 @@ export function saveButtons(s: Save): InlineButton[][] {
   const rows: InlineButton[][] = [];
   if (canRun(s)) rows.push([{ text: "Start now", callback_data: `open:${s.id}` }]);
   if (s.needsWords && !s.words) rows.push([{ text: "Add what it says", callback_data: `words:${s.id}` }]);
+  rows.push([{ text: "Fix something", callback_data: `fix:${s.id}` }]);
   return rows;
 }
 

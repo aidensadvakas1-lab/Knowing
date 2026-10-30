@@ -15,10 +15,10 @@ import { isTranscriptionConfigured, transcribeAudio } from "../transcribe";
 import { isTikTok, resolveTikTok } from "./tiktok";
 import type { Media, WatchInput } from "./types";
 
-/** Frames shown to Claude per video. */
-export const FRAME_COUNT = 8;
-/** Longest side of each frame, in pixels. */
-const FRAME_SIDE = 768;
+/** Frames shown to Claude per video. Setups change every few seconds, so 8 missed whole placements. */
+export const FRAME_COUNT = 20;
+/** Longest side of each frame, in pixels. Big enough to tell a wall from a ceiling. */
+const FRAME_SIDE = 960;
 /** Biggest video we'll download. TikToks are usually 2 to 20 MB. */
 const MAX_VIDEO_BYTES = 60 * 1024 * 1024;
 
@@ -67,6 +67,12 @@ export function frameFilter(count: number, durationSec: number): string {
   return `${fps},${scale}`;
 }
 
+/** When each frame from frameFilter is taken, in seconds: the first at 0, then evenly spaced. */
+export function frameFilterTimes(count: number, durationSec: number): number[] {
+  const gap = durationSec > 0 ? Math.max(1, durationSec) / count : 2;
+  return Array.from({ length: count }, (_, i) => Math.round(i * gap * 100) / 100);
+}
+
 async function probeDuration(file: string): Promise<number> {
   try {
     await ffmpeg(["-i", file]);
@@ -78,7 +84,7 @@ async function probeDuration(file: string): Promise<number> {
 }
 
 /** Frames plus speech from one video file. */
-async function watchVideoBytes(video: Buffer, durationHint: number): Promise<{ frames: string[]; transcript: string; notes: string[] }> {
+async function watchVideoBytes(video: Buffer, durationHint: number): Promise<{ frames: string[]; frameTimes: number[]; transcript: string; notes: string[] }> {
   const dir = await mkdtemp(join(tmpdir(), "knowing-"));
   const notes: string[] = [];
   try {
@@ -95,6 +101,7 @@ async function watchVideoBytes(video: Buffer, durationHint: number): Promise<{ f
       console.error("Frame extraction failed", error);
       notes.push("Couldn't pull frames from the video.");
     }
+    const frameTimes = frameFilterTimes(FRAME_COUNT, duration).slice(0, frames.length);
 
     let transcript = "";
     if (isTranscriptionConfigured()) {
@@ -109,7 +116,7 @@ async function watchVideoBytes(video: Buffer, durationHint: number): Promise<{ f
     } else {
       notes.push("I can't hear audio yet (no OPENAI_API_KEY), so I only looked at it.");
     }
-    return { frames, transcript, notes };
+    return { frames, frameTimes, transcript, notes };
   } finally {
     await rm(dir, { recursive: true, force: true }).catch(() => {});
   }

@@ -21,6 +21,7 @@ function setup(opts: { answer?: Partial<Answer>; draft?: Partial<SaveDraft>; wat
     watch: vi.fn(async ({ saves }: { saves: Save[] }) => ({ draft, reply: "A split dodge drill for your weak hand.", relation: "none" as const, relatedId: "", ...opts.watch?.(saves) })),
     rewrite: vi.fn(async (s: Save) => ({ ...s, steps: ["Exact step"] })),
     answer: vi.fn(async ({ saves }: { saves: Save[] }) => ({ text: "Do the split dodge.", sources: saves.map((s) => s.id), remember: [], ...opts.answer })),
+    wrapUp: vi.fn(async ({ kept }: { kept: Save[] }) => `From that scroll you kept **${kept.length}**.`),
   };
   const media: Media = {
     fromLink: vi.fn(async () => ({ frames: ["aGk="], transcript: "", caption: "dodge tips", notes: [] })),
@@ -73,20 +74,20 @@ describe("handleUpdate", () => {
     expect(edits[0]?.html).toContain("A split dodge drill for your weak hand.");
     expect(edits[0]?.html).toContain("Saved: Split dodge drill");
     expect(edits[0]?.html).not.toContain("1. Jog");
-    expect(datas(edits[0]?.buttons)).toEqual([expect.stringMatching(/^show:/), expect.stringMatching(/^open:/)]);
+    expect(datas(edits[0]?.buttons)).toEqual([expect.stringMatching(/^show:/), expect.stringMatching(/^open:/), expect.stringMatching(/^fix:/)]);
     expect(store.saves[0]?.sourceUrl).toBe("https://vm.tiktok.com/ZMabc/");
   });
 
-  it("gives the watcher what's already saved and known, and offers keep or replace on a conflict", async () => {
-    const { deps, edits, store, brain } = setup({ watch: (saves) => (saves[0] ? { relation: "conflict", relatedId: saves[0].id, reply: "This one puts Mira on CCTV, not lockers." } : {}) });
+  it("gives the watcher what's already saved and known, keeps both ways by default and offers Replace", async () => {
+    const { deps, edits, store, brain } = setup({ watch: (saves) => (saves[0] ? { relation: "alternative", relatedId: saves[0].id, reply: "This one puts Mira on CCTV, not lockers." } : {}) });
     await handleUpdate(text("https://vm.tiktok.com/one/"), deps);
     const oldId = store.saves[0]!.id;
     await handleUpdate(text("https://vm.tiktok.com/two/"), deps);
     expect(vi.mocked(brain.watch).mock.calls[1]?.[0].saves.map((s) => s.id)).toEqual([oldId]);
     const reaction = edits.at(-1)!;
-    expect(datas(reaction.buttons)[0]).toMatch(/^keep:/);
-    expect(datas(reaction.buttons)[1]).toBe(`repl:${store.saves[0]!.id}:${oldId}`);
-    await handleUpdate(tap(datas(reaction.buttons)[1]!, reaction.id), deps);
+    expect(datas(reaction.buttons)[0]).toBe(`repl:${store.saves[0]!.id}:${oldId}`);
+    expect(datas(reaction.buttons)).not.toContainEqual(expect.stringMatching(/^keep:/));
+    await handleUpdate(tap(datas(reaction.buttons)[0]!, reaction.id), deps);
     expect(store.saves.map((s) => s.id)).not.toContain(oldId);
     expect(edits.at(-1)?.html).toContain("Replaced the old one");
   });
@@ -181,6 +182,30 @@ describe("handleUpdate", () => {
     expect(sent.at(-1)?.html).toContain("Updated");
   });
 
+  it("marks a scroll session for the wrap-up, and still saves if that fails", async () => {
+    const { deps, store, edits } = setup();
+    await handleUpdate(text("https://vm.tiktok.com/one/"), deps);
+    expect((await store.getUser(7)).sitting?.last).toBe(store.saves[0]?.createdAt);
+    vi.spyOn(store, "touchSitting").mockRejectedValueOnce(new Error("no sitting column"));
+    await handleUpdate(text("https://vm.tiktok.com/two/"), deps);
+    expect(store.saves).toHaveLength(2);
+    expect(edits.at(-1)?.html).toContain("Saved: Split dodge drill");
+  });
+
+  it("takes the next message as a correction after Fix something, without touching the video's words", async () => {
+    const { deps, store, brain, sent } = setup();
+    await handleUpdate(text("https://vm.tiktok.com/ZMabc/"), deps);
+    const id = store.saves[0]!.id;
+    await handleUpdate(tap(`fix:${id}`), deps);
+    expect(sent.at(-1)?.html).toContain("What did I get wrong");
+    await handleUpdate(text("the barrier goes on the wall, not the ceiling"), deps);
+    expect(brain.rewrite).toHaveBeenCalledWith(expect.objectContaining({ id }), "the barrier goes on the wall, not the ceiling", "fix");
+    expect(brain.answer).not.toHaveBeenCalled();
+    expect(store.saves[0]?.words).toBe("");
+    expect(sent.at(-1)?.html).toContain("Fixed.");
+    expect((await store.getUser(7)).awaitingWordsFor).toBeNull();
+  });
+
   it("tells the user when something fails instead of going silent, and alerts the owner", async () => {
     const { deps, sent, brain, alerts } = setup();
     vi.mocked(brain.answer).mockRejectedValueOnce(new Error("boom"));
@@ -211,7 +236,7 @@ describe("handleUpdate", () => {
   });
 
   it("resets the limits on a new day", () => {
-    const user = { id: 7, facts: [], turns: [], awaitingWordsFor: null, usage: { day: "2000-01-01", videos: 9, questions: 9 } };
+    const user = { id: 7, facts: [], turns: [], awaitingWordsFor: null, usage: { day: "2000-01-01", videos: 9, questions: 9 }, sitting: null };
     expect(spend(user, "videos", 1)).toBe(true);
     expect(user.usage.videos).toBe(1);
     expect(spend(user, "videos", 1)).toBe(false);

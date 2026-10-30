@@ -19,8 +19,8 @@ describe("saveCard / saveButtons", () => {
     expect(card).toContain("Split dodge &lt;weak hand&gt;");
     expect(card).toContain("2. Plant &amp; split");
     expect(card).toContain("Only read the caption.");
-    expect(saveButtons(drill).flat().map((b) => b.callback_data)).toEqual(["open:d1", "words:d1"]);
-    expect(saveButtons({ ...drill, type: "setup", needsWords: false }).flat()).toEqual([]);
+    expect(saveButtons(drill).flat().map((b) => b.callback_data)).toEqual(["open:d1", "words:d1", "fix:d1"]);
+    expect(saveButtons({ ...drill, type: "setup", needsWords: false }).flat().map((b) => b.callback_data)).toEqual(["fix:d1"]);
   });
 });
 
@@ -48,7 +48,7 @@ describe("reaction", () => {
     expect(t).toContain("A <b>split</b> dodge.");
     expect(t).toContain("Saved: Split dodge &lt;weak hand&gt;");
     expect(t).not.toContain("Jog 10 yards");
-    expect(reactionButtons(drill).flat().map((b) => b.callback_data)).toEqual(["show:d1", "open:d1", "words:d1"]);
+    expect(reactionButtons(drill).flat().map((b) => b.callback_data)).toEqual(["show:d1", "open:d1", "words:d1", "fix:d1"]);
     const old = { ...drill, id: "o1" };
     expect(reactionButtons(drill, old).flat().map((b) => b.callback_data).slice(0, 2)).toEqual(["keep:d1", "repl:d1:o1"]);
   });

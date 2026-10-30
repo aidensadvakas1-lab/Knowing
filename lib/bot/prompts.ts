@@ -6,9 +6,10 @@
  * remembers what the user has mentioned about themselves, and hands both back
  * when asked, so nobody has to save captions or re-explain anything.
  */
+import { formatTimestamp } from "../video-math";
 import { SAVE_TYPE_LABEL, SAVE_TYPES, type Answer, type BotUser, type Relation, type Save, type SaveDraft, type SaveType, type WatchResult } from "./types";
 
-const RELATIONS: readonly Relation[] = ["none", "related", "duplicate", "conflict"];
+const RELATIONS: readonly Relation[] = ["none", "related", "duplicate", "alternative"];
 
 export const WATCH_SCHEMA = {
   type: "object",
@@ -37,11 +38,12 @@ const WATCH_RULES = `Record what it actually teaches, with every specific detail
 - steps: the exact steps or key claims in order, each short and specific: names, positions, numbers, reps, timings. 2 to 10.
 - details: everything else worth remembering, exact specifics, up to 300 words.
 - needsWords: true only if someone is clearly talking, important details are only spoken, and there is no transcript below.
-For a game setup, name the map, site, operators or characters and where each goes. For a drill, give reps, distances and cues.
+For a game setup, name the map, site, operators or characters and where each goes, including the exact surface (wall, floor, ceiling, hatch, window) and which one. A wall stands upright, often with doors, windows or pictures on it and the floor meeting it at the bottom; a ceiling is flat overhead, often with lights, vents or beams, and only shows when the view tilts up. For a drill, give reps, distances and cues.
+Only write what you can actually see or hear. If you can't tell where something goes, say that plainly instead of guessing.
 
-Then react in "reply" the way someone who just watched it with them would, in 1 to 3 short sentences: say in plain words what it is, and point out anything that connects to what they've already saved or told you (same map or skill; it contradicts an earlier save, and exactly what differs; it's basically a duplicate; it covers something they mentioned). Don't coach, don't add advice that isn't in the video, don't push them to start it. Ask a question only for a real decision (a conflict or duplicate: keep both or replace?). If nothing connects, just say what it is. No "Great video!".
-- relation: none, related, duplicate or conflict, compared with their existing saves.
-- relatedId: the id of the existing save it duplicates or conflicts with (or relates to most), else "".`;
+Then react in "reply" the way a friend who just watched it with them would, warm and casual, in 1 to 3 short sentences: say in plain words what it is, and point out anything that connects to what they've already saved or told you (same map or skill; it's another way to do something they already saved: say what's different and when each one fits, never as a contradiction; it's basically a duplicate; it covers something they mentioned). Don't coach, don't add advice that isn't in the video, don't push them to start it. Ask a question only when it's basically a duplicate (keep both or replace?). If nothing connects, just say what it is. No "Great video!".
+- relation: none, related, duplicate, or alternative (another way to do the same thing as an existing save), compared with their existing saves.
+- relatedId: the id of the existing save it duplicates or offers another way to (or relates to most), else "".`;
 
 /** What they've told us and what they've saved, for spotting connections. */
 function contextBlock(facts: string[], saves: Save[]): string {
@@ -50,13 +52,18 @@ THEIR EXISTING SAVES:
 ${saves.slice(0, 100).map((s) => `[id ${s.id}] "${s.title}" (${s.topic || "?"}): ${s.summary} ${s.steps.slice(0, 4).join(" / ")}`).join("\n") || "(none yet)"}`;
 }
 
+/** The label before each frame, so Claude can tell them apart and follow the camera between them. */
+export function frameLabel(index: number, seconds?: number): string {
+  return seconds === undefined ? `Frame ${index + 1}:` : `Frame ${index + 1}, at ${formatTimestamp(seconds)}:`;
+}
+
 /** The text that goes before the frames when Claude watches a video. */
 export function buildWatchPrompt(input: { caption: string; transcript: string; note: string; frameCount: number; facts?: string[]; saves?: Save[] }): string {
   const parts = [`Someone shared a short video so you'll remember it for them.`];
-  if (input.frameCount) parts.push(`The ${input.frameCount} images are frames from across it, in order.`);
+  if (input.frameCount) parts.push(`The ${input.frameCount} images are frames from across it, in order. Read any text on screen word for word (titles, labels, captions burned into the video), and notice arrows or circles drawn on it, since they usually mark the exact spot.`);
   if (input.note) parts.push(`They said: "${input.note}"`);
   if (input.caption) parts.push(`CAPTION:\n${input.caption.slice(0, 2_000)}`);
-  parts.push(input.transcript ? `WHAT IS SAID (transcript):\n${input.transcript.slice(0, 15_000)}` : "There is no transcript, so read on-screen text and what happens.");
+  parts.push(input.transcript ? `WHAT IS SAID (transcript):\n${input.transcript.slice(0, 15_000)}` : "There is no transcript, so go by what's on screen.");
   parts.push(WATCH_RULES);
   parts.push(contextBlock(input.facts ?? [], input.saves ?? []));
   return parts.join("\n\n");
@@ -64,6 +71,11 @@ export function buildWatchPrompt(input: { caption: string; transcript: string; n
 
 export function buildRewritePrompt(save: Save, words: string): string {
   return `You saved this from a video's frames. Here is what the video actually says. Rewrite the save so it's exact, using what they say. For "reply", say in one sentence what changed.\n\nSAVE:\n${saveText(save)}\n\nWHAT THE VIDEO SAYS:\n${words.slice(0, 8_000)}\n\n${WATCH_RULES}\n\n${contextBlock([], [])}`;
+}
+
+/** The person who saved it says part of it is wrong. Their word beats what the frames seemed to show. */
+export function buildFixPrompt(save: Save, correction: string): string {
+  return `You saved this from a video, and the person who saved it says something in it is wrong. They watched it, so their correction wins over what you saw in the frames. Rewrite the save with the correction applied everywhere it matters (title, steps, details) and keep everything else as it was. For "reply", say in one sentence what changed.\n\nSAVE:\n${saveText(save)}\n\nTHEIR CORRECTION:\n${correction.slice(0, 4_000)}\n\n${WATCH_RULES}\n\n${contextBlock([], [])}`;
 }
 
 const str = (v: unknown, max: number) => (typeof v === "string" ? v.trim().slice(0, max) : "");
@@ -132,17 +144,19 @@ export function buildAskSystem(user: BotUser, saves: Save[], retrieved: Retrieve
   const passages = new Map(retrieved.map((r) => [r.save.id, r.passages]));
   const mindsets = saves.filter((s) => s.type === "mindset" && !hits.includes(s)).slice(0, 6);
   const rest = saves.filter((s) => !hits.includes(s) && !mindsets.includes(s)).slice(0, 120);
-  return `You are Knowing, a memory tool in Telegram. The person shares videos (drills, game setups, study methods, plans, ways of thinking) so they never have to save captions or re-explain things. Later they ask, and you hand back exactly what they saved, plus what they've already told you about themselves. You are not a coach or a friend: be quick, exact and plain.
+  return `You are Knowing, a memory tool in Telegram. The person shares videos (drills, game setups, study methods, plans, ways of thinking) so they never have to save captions or re-explain things. Later they ask, and you hand back exactly what they saved, plus what they've already told you about themselves. You're not a coach, but you talk like a friendly person who watched these videos with them: warm, relaxed and easy to talk to, while staying quick and exact.
 
 WHAT THEY'VE TOLD YOU ABOUT THEMSELVES (use it so they never repeat themselves):
 ${user.facts.length ? user.facts.map((f) => `- ${f}`).join("\n") : "(nothing yet)"}
 
 How to answer:
 - If a save answers the question, answer from it. Lead with the steps or setup itself, exact details (names, positions, reps). No generic tips on top unless asked.
-- Match exactly. If they ask about Clubhouse and the save is for Bank, say so in one line, then give a short general answer marked as general.
-- If nothing saved fits, say "Nothing saved on that yet." then a short general answer.
-- Help with what they ask, and only that. If a saved video disagrees with what they're about to do, mention it in one sentence; don't lecture.
-- Telegram chat style: as long as needed and no longer. A numbered list for steps, at most 1 or 2 sentences around it. **bold** is fine; no headings, no tables. No greetings, no motivation, no "great question", no follow-up offers.
+- If nothing saved matches exactly, don't stop at what's missing: find a way to get them what they need. Adapt the closest save to their situation (take the idea behind the Bank Castle setup and work out how it carries over to Clubhouse), combine pieces from several saves, and fill any gap with what you know. Say in a few words which parts come straight from their videos and which you worked out ("From your Bank video: ... Carried over to Clubhouse: ..."), so they always know what's exact.
+- If something in their way (a different map, missing gear, no partner, not enough time) means a save doesn't fit as is, work around it: change the steps so it still works for them.
+- If two saves do it differently, don't point out a contradiction. Use both: say when each one fits best, or blend them into one plan.
+- Never tell them they're wrong or correct how they named something. Just give them the closest useful thing.
+- Help with what they ask, and only that. Don't lecture.
+- Telegram chat style: as long as needed and no longer. A numbered list for steps, at most 1 or 2 sentences around it. **bold** is fine; no headings, no tables. Talk like a person, not a report: contractions, short friendly sentences. No long greetings, no hype or motivation speeches, no "great question", no follow-up offers.
 - If their message states a lasting fact about them worth remembering (rank, platform, position, school year, schedule, what they're working toward), add a line REMEMBER: <the fact in under 15 words>. One line per new fact.
 - Last line, always: SOURCES: the ids of the saves you used, comma separated, or SOURCES: none. Put REMEMBER lines just before it.
 Today is ${today}.
@@ -152,6 +166,20 @@ ${hits.length ? hits.map((h) => saveText(h) + ((passages.get(h.id) ?? []).length
 ${mindsets.length ? `\nTHEIR SAVED WAYS OF THINKING (use when relevant):\n${mindsets.map(saveText).join("\n\n")}\n` : ""}
 EVERYTHING ELSE THEY'VE SAVED (you may use and cite these too):
 ${rest.map((s) => `[id ${s.id}] "${s.title}" (${s.topic || "?"}) ${s.summary}`).join("\n") || "(nothing)"}`;
+}
+
+/** The wrap-up after a scroll session: what they kept and how it connects. */
+export function buildWrapUpPrompt(kept: Save[], others: Save[], facts: string[]): string {
+  return `Someone just finished scrolling and sent you ${kept.length} videos to keep. Write a short wrap-up the way a friend who watched them too would, warm and casual.
+
+- Start with one line like "From that scroll you kept ${kept.length}:" then one short bullet per video: what it is, and how it fits with what they already had (it adds to a save, it's another way to do one, it fills a gap, it matches something they told you). Use the exact titles and names.
+- If a few of them fit together into something they could use (a session, a full setup, a plan), say so in one line at the end.
+- No coaching, no pushing them to start, no questions, no advice that isn't in the videos. Under 90 words. **bold** is fine; no headings.
+
+WHAT THEY KEPT:
+${kept.map(saveText).join("\n\n")}
+
+${contextBlock(facts, others)}`;
 }
 
 /** Split Claude's reply into the visible text and the trailing control lines. */

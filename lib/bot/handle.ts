@@ -5,9 +5,10 @@
  * - A link (shared from TikTok) or a video: watch it, save it, and react in
  *   a sentence or two (how it connects to their other saves). No coaching.
  * - Any other text: answer from their saves and what they've told us.
- * - Buttons: Show steps, Start now, Add what it says, Keep both / Replace.
+ * - Buttons: Show steps, Start now, Add what it says, Fix something, Keep both / Replace.
  * - /start, /help, /saved, /memory, /delete.
  * - Daily limits per user, and an alert to the owner when something breaks.
+ * - Shares close together make a sitting, wrapped up later in wrapup.ts.
  */
 import { timingSafeEqual } from "node:crypto";
 import { answerText, escapeHtml as esc, reactionButtons, reactionText, saveButtons, saveCard, savedList, stepButtons, stepText } from "./format";
@@ -205,23 +206,29 @@ async function saveWatched(chatId: number, status: number, user: BotUser, input:
   };
   await deps.store.saveUser(user); // saves belong to a user row, so make sure it exists
   await deps.store.addSave(save);
+  // For the wrap-up. If this fails, only the wrap-up is lost, so the save still goes through.
+  await deps.store.touchSitting(user.id, save.createdAt).catch((error) => console.error("Sitting update failed", error));
   await reindex(save, deps);
-  const decide = watched.relation === "conflict" || watched.relation === "duplicate" ? saves.find((s) => s.id === watched.relatedId) : null;
-  await deps.tg.editMessage(chatId, status, reactionText(watched.reply, save, input.notes), reactionButtons(save, decide));
+  const decide = watched.relation === "alternative" || watched.relation === "duplicate" ? saves.find((s) => s.id === watched.relatedId) : null;
+  await deps.tg.editMessage(chatId, status, reactionText(watched.reply, save, input.notes), reactionButtons(save, decide, watched.relation === "alternative" ? "alternative" : "duplicate"));
 }
 
-async function addWords(chatId: number, user: BotUser, words: string, deps: Deps) {
-  const id = user.awaitingWordsFor ?? "";
+/** The message after Add what it says or Fix something: remake that save with it. */
+async function addWords(chatId: number, user: BotUser, text: string, deps: Deps) {
+  const pending = user.awaitingWordsFor ?? "";
+  const fixing = pending.startsWith("fix:");
   user.awaitingWordsFor = null;
   await deps.store.saveUser(user);
-  const save = await deps.store.getSave(user.id, id);
-  if (!save) return answer(chatId, user, words, deps);
+  const save = await deps.store.getSave(user.id, fixing ? pending.slice(4) : pending);
+  if (!save) return answer(chatId, user, text, deps);
   await deps.tg.typing(chatId);
-  const draft = await deps.brain.rewrite(save, words);
-  const updated: Save = { ...save, ...draft, words: words.slice(0, 8_000), needsWords: false };
+  const draft = await deps.brain.rewrite(save, text, fixing ? "fix" : "words");
+  const updated: Save = fixing
+    ? { ...save, ...draft, needsWords: save.needsWords && !save.words }
+    : { ...save, ...draft, words: text.slice(0, 8_000), needsWords: false };
   await deps.store.updateSave(updated);
   await reindex(updated, deps);
-  await deps.tg.sendMessage(chatId, `Updated with what it says.\n\n${saveCard(updated)}`, saveButtons(updated));
+  await deps.tg.sendMessage(chatId, `${fixing ? "Fixed." : "Updated with what it says."}\n\n${saveCard(updated)}`, saveButtons(updated));
 }
 
 async function answer(chatId: number, user: BotUser, question: string, deps: Deps) {
@@ -275,7 +282,7 @@ async function onButton(q: NonNullable<Update["callback_query"]>, deps: Deps) {
       if (save) await deps.tg.editMessage(chatId, messageId, `${kind === "repl" ? "Replaced the old one." : "Kept both."}\n\n✓ <i>Saved: ${esc(save.title)}</i>`, reactionButtons(save));
       return;
     }
-    if (kind === "open" || kind === "run" || kind === "done" || kind === "words" || kind === "show") {
+    if (kind === "open" || kind === "run" || kind === "done" || kind === "words" || kind === "fix" || kind === "show") {
       const save = await deps.store.getSave(q.from.id, id);
       if (!save) return deps.tg.answerCallback(q.id, "That save is gone.");
       if (kind === "show") {
@@ -299,10 +306,15 @@ async function onButton(q: NonNullable<Update["callback_query"]>, deps: Deps) {
         return;
       }
       const user = await deps.store.getUser(q.from.id);
-      user.awaitingWordsFor = save.id;
+      user.awaitingWordsFor = kind === "fix" ? `fix:${save.id}` : save.id;
       await deps.store.saveUser(user);
       await deps.tg.answerCallback(q.id);
-      await deps.tg.sendMessage(chatId, `Paste the caption or type what they say in <b>${esc(save.title)}</b>, and I'll make the save exact.`);
+      await deps.tg.sendMessage(
+        chatId,
+        kind === "fix"
+          ? `What did I get wrong in <b>${esc(save.title)}</b>? Tell me in your own words, like "the barrier goes on the wall, not the ceiling".`
+          : `Paste the caption or type what they say in <b>${esc(save.title)}</b>, and I'll make the save exact.`,
+      );
       return;
     }
     await deps.tg.answerCallback(q.id);

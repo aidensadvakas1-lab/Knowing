@@ -7,7 +7,7 @@ create table if not exists bot_users (
   id bigint primary key,                 -- Telegram user id
   facts jsonb not null default '[]',     -- lasting things they've mentioned
   turns jsonb not null default '[]',     -- last few questions and answers
-  awaiting_words_for text,               -- save id waiting for "what it says"
+  awaiting_words_for text,               -- save id waiting for "what it says", or "fix:<id>" for a correction
   updated_at timestamptz not null default now()
 );
 
@@ -38,6 +38,11 @@ alter table saves add column if not exists source text not null default '';
 
 -- Today's usage per user, for the daily limits ({day, videos, questions}).
 alter table bot_users add column if not exists usage jsonb not null default '{}';
+
+-- When the latest video of the current scroll session was saved ({last}), so
+-- the bot can send a wrap-up once someone stops sharing. Empty when there's
+-- nothing to wrap up.
+alter table bot_users add column if not exists sitting jsonb;
 
 -- Retrieval (RAG): each save is split into chunks with an embedding (meaning)
 -- and a full-text index (exact words). match_chunks merges both rankings.
