@@ -6,7 +6,7 @@ import ffmpegPath from "ffmpeg-static";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
-const { createMedia, frameFilter, parseDuration, FRAME_COUNT } = await import("@/lib/bot/media");
+const { createMedia, frameFilter, frameFilterTimes, parseDuration, FRAME_COUNT } = await import("@/lib/bot/media");
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -22,6 +22,10 @@ describe("parseDuration / frameFilter", () => {
     expect(frameFilter(8, 32)).toMatch(/^fps=8\/32\.00,scale=/);
     expect(frameFilter(8, 0)).toMatch(/^fps=1\/2,/);
   });
+  it("knows when each frame is taken", () => {
+    expect(frameFilterTimes(4, 8)).toEqual([0, 2, 4, 6]);
+    expect(frameFilterTimes(3, 0)).toEqual([0, 2, 4]);
+  });
 });
 
 describe("createMedia (real ffmpeg)", () => {
@@ -36,6 +40,8 @@ describe("createMedia (real ffmpeg)", () => {
     const got = await media.fromTelegramFile("F", 0);
     expect(got.frames.length).toBeGreaterThanOrEqual(FRAME_COUNT - 1);
     expect(Buffer.from(got.frames[0]!, "base64").subarray(0, 2).toString("hex")).toBe("ffd8");
+    expect(got.frameTimes).toHaveLength(got.frames.length);
+    expect(got.frameTimes?.[1]).toBeCloseTo(6 / FRAME_COUNT);
     expect(got.notes.join(" ")).toContain("can't hear");
   }, 30_000);
 

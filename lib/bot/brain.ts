@@ -8,7 +8,7 @@ import "server-only";
 import type Anthropic from "@anthropic-ai/sdk";
 import { MODELS } from "../constants";
 import { getAnthropic } from "../server";
-import { buildAskSystem, buildFixPrompt, buildRewritePrompt, buildWatchPrompt, buildWrapUpPrompt, cleanDraft, cleanWatch, parseAnswer, WATCH_SCHEMA } from "./prompts";
+import { buildAskSystem, buildFixPrompt, buildRewritePrompt, buildWatchPrompt, buildWrapUpPrompt, cleanDraft, cleanWatch, frameLabel, parseAnswer, WATCH_SCHEMA } from "./prompts";
 import type { Brain } from "./types";
 
 const today = () => new Date().toISOString().slice(0, 10);
@@ -29,11 +29,14 @@ async function watchJson(content: Anthropic.ContentBlockParam[], model: string =
 
 export function createBrain(): Brain {
   return {
-    async watch({ frames, transcript, caption, note, facts, saves }) {
+    async watch({ frames, frameTimes, transcript, caption, note, facts, saves }) {
       const content: Anthropic.ContentBlockParam[] = [
         { type: "text", text: buildWatchPrompt({ caption, transcript, note, frameCount: frames.length, facts, saves }) },
-        ...frames.map((data): Anthropic.ContentBlockParam => ({ type: "image", source: { type: "base64", media_type: "image/jpeg", data } })),
       ];
+      for (const [i, data] of frames.entries()) {
+        content.push({ type: "text", text: frameLabel(i, frameTimes?.[i]) });
+        content.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data } });
+      }
       return cleanWatch(await watchJson(content), saves, caption.slice(0, 60) || "Saved video");
     },
 

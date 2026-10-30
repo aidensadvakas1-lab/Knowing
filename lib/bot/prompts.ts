@@ -6,6 +6,7 @@
  * remembers what the user has mentioned about themselves, and hands both back
  * when asked, so nobody has to save captions or re-explain anything.
  */
+import { formatTimestamp } from "../video-math";
 import { SAVE_TYPE_LABEL, SAVE_TYPES, type Answer, type BotUser, type Relation, type Save, type SaveDraft, type SaveType, type WatchResult } from "./types";
 
 const RELATIONS: readonly Relation[] = ["none", "related", "duplicate", "alternative"];
@@ -37,7 +38,7 @@ const WATCH_RULES = `Record what it actually teaches, with every specific detail
 - steps: the exact steps or key claims in order, each short and specific: names, positions, numbers, reps, timings. 2 to 10.
 - details: everything else worth remembering, exact specifics, up to 300 words.
 - needsWords: true only if someone is clearly talking, important details are only spoken, and there is no transcript below.
-For a game setup, name the map, site, operators or characters and where each goes, including the exact surface (wall, floor, ceiling, hatch, window) and which one. For a drill, give reps, distances and cues.
+For a game setup, name the map, site, operators or characters and where each goes, including the exact surface (wall, floor, ceiling, hatch, window) and which one. A wall stands upright, often with doors, windows or pictures on it and the floor meeting it at the bottom; a ceiling is flat overhead, often with lights, vents or beams, and only shows when the view tilts up. For a drill, give reps, distances and cues.
 Only write what you can actually see or hear. If you can't tell where something goes, say that plainly instead of guessing.
 
 Then react in "reply" the way a friend who just watched it with them would, warm and casual, in 1 to 3 short sentences: say in plain words what it is, and point out anything that connects to what they've already saved or told you (same map or skill; it's another way to do something they already saved: say what's different and when each one fits, never as a contradiction; it's basically a duplicate; it covers something they mentioned). Don't coach, don't add advice that isn't in the video, don't push them to start it. Ask a question only when it's basically a duplicate (keep both or replace?). If nothing connects, just say what it is. No "Great video!".
@@ -51,13 +52,18 @@ THEIR EXISTING SAVES:
 ${saves.slice(0, 100).map((s) => `[id ${s.id}] "${s.title}" (${s.topic || "?"}): ${s.summary} ${s.steps.slice(0, 4).join(" / ")}`).join("\n") || "(none yet)"}`;
 }
 
+/** The label before each frame, so Claude can tell them apart and follow the camera between them. */
+export function frameLabel(index: number, seconds?: number): string {
+  return seconds === undefined ? `Frame ${index + 1}:` : `Frame ${index + 1}, at ${formatTimestamp(seconds)}:`;
+}
+
 /** The text that goes before the frames when Claude watches a video. */
 export function buildWatchPrompt(input: { caption: string; transcript: string; note: string; frameCount: number; facts?: string[]; saves?: Save[] }): string {
   const parts = [`Someone shared a short video so you'll remember it for them.`];
-  if (input.frameCount) parts.push(`The ${input.frameCount} images are frames from across it, in order.`);
+  if (input.frameCount) parts.push(`The ${input.frameCount} images are frames from across it, in order. Read any text on screen word for word (titles, labels, captions burned into the video), and notice arrows or circles drawn on it, since they usually mark the exact spot.`);
   if (input.note) parts.push(`They said: "${input.note}"`);
   if (input.caption) parts.push(`CAPTION:\n${input.caption.slice(0, 2_000)}`);
-  parts.push(input.transcript ? `WHAT IS SAID (transcript):\n${input.transcript.slice(0, 15_000)}` : "There is no transcript, so read on-screen text and what happens.");
+  parts.push(input.transcript ? `WHAT IS SAID (transcript):\n${input.transcript.slice(0, 15_000)}` : "There is no transcript, so go by what's on screen.");
   parts.push(WATCH_RULES);
   parts.push(contextBlock(input.facts ?? [], input.saves ?? []));
   return parts.join("\n\n");

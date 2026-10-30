@@ -1,7 +1,7 @@
 # The Knowing Telegram bot
 
 Share a TikTok to Knowing in one tap: **TikTok → Share → Telegram → your bot**.
-The bot downloads the video, looks at 8 frames, transcribes what's said, and
+The bot downloads the video, looks at 20 frames, transcribes what's said, and
 saves exactly what it showed. Later, ask in your own words and it hands back
 that drill, setup or plan, plus what you've already told it about yourself.
 It's a memory tool, not a coach: no one has to save captions or re-explain anything.
@@ -131,9 +131,9 @@ To turn them off again: `select cron.unschedule('knowing-wrapups');`
 TikTok Share → Telegram → POST /api/telegram (Vercel)
   → answers Telegram right away, then keeps working:
   → TikTok link → video file (lib/bot/tiktok.ts, via a resolver service)
-  → ffmpeg: 8 frames + audio (lib/bot/media.ts)
+  → ffmpeg: 20 frames + audio (lib/bot/media.ts)
   → speech to text (OpenAI)
-  → Claude Haiku turns it into a save (lib/bot/brain.ts, lib/bot/prompts.ts)
+  → Claude (Sonnet by default) turns it into a save (lib/bot/brain.ts, lib/bot/prompts.ts)
   → Supabase (lib/bot/store.ts), plus search chunks with embeddings (lib/bot/rag*.ts)
   → card with buttons back in Telegram (lib/bot/format.ts)
 ```

@@ -107,6 +107,8 @@ export interface Store {
 /** What we could get out of a video: frames to look at, speech, and the caption. */
 export interface WatchInput {
   frames: string[];
+  /** When each frame was taken (seconds), if known. */
+  frameTimes?: number[];
   transcript: string;
   caption: string;
   /** Problems worth telling the user about (no audio, couldn't download...). */

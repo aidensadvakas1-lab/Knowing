@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildAskSystem, buildFixPrompt, buildWatchPrompt, buildWrapUpPrompt, cleanDraft, cleanWatch, parseAnswer, relevantSaves } from "@/lib/bot/prompts";
+import { buildAskSystem, buildFixPrompt, buildWatchPrompt, buildWrapUpPrompt, cleanDraft, cleanWatch, frameLabel, parseAnswer, relevantSaves } from "@/lib/bot/prompts";
 import { newUser } from "@/lib/bot/store";
 import type { Save } from "@/lib/bot/types";
 
@@ -33,12 +33,21 @@ describe("buildWatchPrompt", () => {
   it("includes caption, transcript and the note", () => {
     const p = buildWatchPrompt({ caption: "Bank setup", transcript: "put mira here", note: "for ranked", frameCount: 8 });
     expect(p).toContain("8 images");
+    expect(p).toContain("word for word");
     expect(p).toContain("Bank setup");
     expect(p).toContain("put mira here");
     expect(p).toContain('"for ranked"');
   });
   it("says when there is no transcript", () => {
     expect(buildWatchPrompt({ caption: "", transcript: "", note: "", frameCount: 0 })).toContain("no transcript");
+  });
+});
+
+describe("frameLabel", () => {
+  it("numbers each frame and adds its time when known", () => {
+    expect(frameLabel(2, 6.3)).toBe("Frame 3, at 0:06:");
+    expect(frameLabel(19, 75)).toBe("Frame 20, at 1:15:");
+    expect(frameLabel(0)).toBe("Frame 1:");
   });
 });
 
