@@ -2,7 +2,7 @@
  * The bot's Claude calls: watch a video into a save, and answer questions
  * from saves. Watching uses MODELS.watch (Sonnet by default: it happens once
  * per video and has to read the details right). Answering uses MODELS.bot
- * (Haiku by default, to stay cheap).
+ * (Sonnet by default too, so it knows the topic; Haiku makes answers almost free).
  */
 import "server-only";
 import type Anthropic from "@anthropic-ai/sdk";
@@ -21,7 +21,7 @@ async function watchJson(content: Anthropic.ContentBlockParam[], model: string =
     messages: [{ role: "user", content }],
   });
   // A gaming clip can trip the strong model's safety filter by mistake; the cheap model gets a second look.
-  if (response.stop_reason === "refusal" && model !== MODELS.bot) return watchJson(content, MODELS.bot);
+  if (response.stop_reason === "refusal" && model !== MODELS.fallback) return watchJson(content, MODELS.fallback);
   if (response.stop_reason === "refusal") throw new Error("refused");
   const text = response.content.find((b) => b.type === "text");
   return JSON.parse(text?.type === "text" ? text.text : "{}");
@@ -48,13 +48,20 @@ export function createBrain(): Brain {
     async answer({ user, question, saves, retrieved, name, memories }) {
       const history: Anthropic.MessageParam[] = user.turns.map((t) => ({ role: t.role, content: t.content }));
       while (history.length && history[0]?.role !== "user") history.shift();
-      const response = await getAnthropic().messages.create({
-        model: MODELS.bot,
-        // Thinking counts toward this too, and a cut-off answer loses its SOURCES line.
-        max_tokens: 8_000,
-        system: buildAskSystem(user, saves, retrieved, today(), { name, memories }),
-        messages: [...history, { role: "user", content: question }],
-      });
+      const system = buildAskSystem(user, saves, retrieved, today(), { name, memories });
+      const ask = (model: string) =>
+        getAnthropic().messages.create({
+          model,
+          // Thinking counts toward this too, and a cut-off answer loses its SOURCES line.
+          max_tokens: 8_000,
+          // Chat needs knowledge more than long thinking, and low effort keeps replies quick.
+          output_config: { effort: "low" },
+          system,
+          messages: [...history, { role: "user", content: question }],
+        });
+      let response = await ask(MODELS.bot);
+      // A safety filter can misfire on a harmless chat too; the cheap model gets a second look.
+      if (response.stop_reason === "refusal" && MODELS.bot !== MODELS.fallback) response = await ask(MODELS.fallback);
       if (response.stop_reason === "refusal") throw new Error("refused");
       const text = response.content.map((b) => (b.type === "text" ? b.text : "")).join("");
       return parseAnswer(text, saves.map((s) => s.id));
@@ -64,6 +71,7 @@ export function createBrain(): Brain {
       const response = await getAnthropic().messages.create({
         model: MODELS.bot,
         max_tokens: 8_000,
+        output_config: { effort: "low" },
         messages: [{ role: "user", content: buildWrapUpPrompt(kept, others, facts) }],
       });
       if (response.stop_reason === "refusal") throw new Error("refused");

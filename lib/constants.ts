@@ -93,10 +93,12 @@ export const MODELS = {
   extract: process.env.KNOWING_EXTRACT_MODEL || "claude-haiku-5-5",
   /** Model that watches uploaded videos (reads frames and transcript). */
   video: process.env.KNOWING_VIDEO_MODEL || "claude-sonnet-5-5",
-  /** Model behind the Telegram bot's answers. Cheap, since people ask many questions. */
-  bot: process.env.KNOWING_BOT_MODEL || "claude-haiku-5-5",
+  /** Model behind the Telegram bot's answers and chat. Sonnet, so it knows the topic and gets details right. */
+  bot: process.env.KNOWING_BOT_MODEL || "claude-sonnet-5-5",
   /** Model that watches each video sent to the bot. Runs once per video, so it can be stronger than the one answering. */
   watch: process.env.KNOWING_WATCH_MODEL || "claude-sonnet-5-5",
+  /** Cheap model that takes a second look when a safety filter blocks something harmless by mistake. */
+  fallback: process.env.KNOWING_FALLBACK_MODEL || "claude-haiku-5-5",
   /** Speech-to-text model at the transcription endpoint. */
   transcribe: process.env.KNOWING_TRANSCRIBE_MODEL || "gpt-4o-mini-transcribe",
 } as const;
