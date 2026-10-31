@@ -50,7 +50,8 @@ export function createBrain(): Brain {
       while (history.length && history[0]?.role !== "user") history.shift();
       const response = await getAnthropic().messages.create({
         model: MODELS.bot,
-        max_tokens: 2_000,
+        // Thinking counts toward this too, and a cut-off answer loses its SOURCES line.
+        max_tokens: 8_000,
         system: buildAskSystem(user, saves, retrieved, today(), { name, memories }),
         messages: [...history, { role: "user", content: question }],
       });
@@ -62,7 +63,7 @@ export function createBrain(): Brain {
     async wrapUp({ kept, others, facts }) {
       const response = await getAnthropic().messages.create({
         model: MODELS.bot,
-        max_tokens: 2_000,
+        max_tokens: 8_000,
         messages: [{ role: "user", content: buildWrapUpPrompt(kept, others, facts) }],
       });
       if (response.stop_reason === "refusal") throw new Error("refused");
