@@ -4,7 +4,8 @@ Share a TikTok to Knowing in one tap: **TikTok → Share → Telegram → your b
 The bot downloads the video, looks at 20 frames, transcribes what's said, and
 saves exactly what it showed. Later, ask in your own words and it hands back
 that drill, setup or plan, plus what you've already told it about yourself.
-It's a memory tool, not a coach: no one has to save captions or re-explain anything.
+It's a memory and a companion, not a coach: it keeps every video and every chat, so no one has to
+save captions or repeat themselves, and you can talk to it about anything.
 
 ## What it does
 
@@ -16,7 +17,8 @@ It's a memory tool, not a coach: no one has to save captions or re-explain anyth
 | Tap **Fix something** | Tell it what it got wrong and the save is rewritten |
 | Tap **Show steps** / **Start now** | The full steps, or a step-by-step run with **Next** / **Back** that counts each time you finish |
 | Ask a question | Answers from the matching saves and names them, each linked to its video (ask "send me the link to that video" and it's right there). If nothing matches exactly, it adapts the closest saves to your situation and says which parts are straight from your videos |
-| Mention something lasting ("I'm Gold on PC", "I'm a junior") | Remembers it, so you never repeat it |
+| Just talk (about a video, a car, your game, your day) | Chats like a friend who knows a lot. It can tell you about what's in a video even when the video doesn't say ("that's Clubhouse"), marked as its own read |
+| Mention something about you ("I'm Gold on PC", "I love Ferraris") | Remembers it, so you never repeat it. Every chat is also kept and searchable, so "what did I tell you about my tryout?" works weeks later |
 | `/memory` | Shows what it remembers about you, with a button to forget each one |
 | `/saved` | Lists everything, grouped by topic, each linked to its video |
 
@@ -121,7 +123,7 @@ To turn them off again: `select cron.unschedule('knowing-wrapups');`
   questions a day (reset at midnight UTC). Failed attempts don't count.
 - **Alerts.** When something breaks, the owner gets a Telegram message from the bot saying what
   (at most one every 5 minutes). If the AI credit runs out, users are told the bot is paused, not broken.
-- **Delete.** `/delete` wipes a person's saves, search index and memory after they confirm.
+- **Delete.** `/delete` wipes a person's saves, chats, search index and memory after they confirm.
 - **Already set up before these existed?** Run [`supabase.sql`](supabase.sql) again. It only adds
   what's missing.
 
@@ -153,9 +155,13 @@ When you ask something, Knowing doesn't read every save. It searches them first,
    "where does the one-way mirror go" finds your Mira save) and by **exact words** (Postgres full-text, so
    names like "Mira" or "Bank" always hit). The two rankings are merged with reciprocal rank fusion
    (`match_chunks` in `supabase.sql`).
-3. **Follow-ups** like "and the other one?" are searched together with your previous message.
+3. **Follow-ups** like "and the other one?" are searched together with your previous message. A video you
+   just shared counts as your previous message, so "how fast is it?" finds it.
 4. **Claude gets the top saves plus their best passages verbatim** from the video, so a detail the summary
    dropped is still there.
+5. **Chats are searched the same way.** Every message and its answer goes into `chat_memories`, and each new
+   message pulls up to 4 older chats that match (`match_memories` in `supabase.sql`). The last 16 turns are
+   always included as they are.
 
 Embeddings use your `OPENAI_API_KEY` (`text-embedding-3-small`, about $0.02 per million tokens: well under
 a cent a month). Without a key, search still works on exact words. `KNOWING_EMBED_URL`, `KNOWING_EMBED_KEY`

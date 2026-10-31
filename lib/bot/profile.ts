@@ -20,6 +20,6 @@ export const SHORT_DESCRIPTION = "Remembers the videos you send it, so you can a
 
 export const WELCOME = `Send me videos you want to keep. In TikTok, tap Share, then Telegram, then me.
 
-I'll remember exactly what each one showed. Ask me about any of them later, in your own words.
+I'll remember exactly what each one showed. Ask me about any of them later, in your own words, or just talk to me about anything. I remember our chats too, so you never have to repeat yourself.
 
 /saved lists everything. /memory shows what I remember about you. /delete wipes it all.`;

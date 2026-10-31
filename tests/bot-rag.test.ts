@@ -99,6 +99,16 @@ describe("MemoryRetriever", () => {
     expect(await r.search(1, "bank")).toEqual([]);
   });
 
+  it("remembers chats and finds them again by meaning or by all their words, per user", async () => {
+    const r = new MemoryRetriever(fake);
+    await r.remember(1, { said: "My SAT is in March", answered: "Got it.", at: "2026-10-20T00:00:00Z" });
+    await r.remember(1, { said: "I love Ferraris", answered: "Same!", at: "2026-10-21T00:00:00Z" });
+    await r.remember(2, { said: "My SAT is in May", answered: "Ok", at: "2026-10-21T00:00:00Z" });
+    expect((await r.recall(1, "when is my test")).map((m) => m.said)).toEqual(["My SAT is in March"]);
+    expect((await r.recall(1, "ferraris")).map((m) => m.said)).toEqual(["I love Ferraris"]);
+    expect(await r.recall(1, "ferraris in march")).toEqual([]);
+  });
+
   it("cosine handles zero vectors", () => {
     expect(cosine([0, 0], [1, 1])).toBe(0);
     expect(cosine([1, 0], [1, 0])).toBe(1);

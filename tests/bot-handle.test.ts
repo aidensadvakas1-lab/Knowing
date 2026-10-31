@@ -152,12 +152,36 @@ describe("handleUpdate", () => {
     expect(retriever.chunks.some((c) => c.saveId === oldId)).toBe(false);
   });
 
-  it("still answers when search is down", async () => {
-    const { deps, brain, retriever } = setup();
+  it("still answers when search and chat memory are down", async () => {
+    const { deps, brain, retriever, sent } = setup();
     await handleUpdate(text("https://vm.tiktok.com/ZMabc/"), deps);
     vi.spyOn(retriever, "search").mockRejectedValueOnce(new Error("db down"));
+    vi.spyOn(retriever, "recall").mockRejectedValueOnce(new Error("db down"));
+    vi.spyOn(retriever, "remember").mockRejectedValueOnce(new Error("db down"));
     await handleUpdate(text("split dodge drill?"), deps);
     expect(vi.mocked(brain.answer).mock.calls[0]?.[0].retrieved[0]?.save.title).toBe("Split dodge drill");
+    expect(sent.at(-1)?.html).toContain("Do the split dodge.");
+  });
+
+  it("knows which video a follow-up means, and their name", async () => {
+    const { deps, brain, retriever } = setup({ draft: { title: "Ferrari F80 launch", topic: "Cars, Ferrari", type: "info" }, watch: () => ({ reply: "That's the F80, 1,200 hp." }) });
+    const search = vi.spyOn(retriever, "search");
+    await handleUpdate(text("https://vm.tiktok.com/ZMcar/"), deps);
+    await handleUpdate({ message: { message_id: 2, chat: { id: 7 }, from: { id: 7, first_name: "Aiden" }, text: "how fast is it?" } }, deps);
+    const input = vi.mocked(brain.answer).mock.calls[0]![0];
+    expect(input.name).toBe("Aiden");
+    expect(input.user.turns.slice(0, 2).map((t) => t.content)).toEqual(['[Shared a video, saved as "Ferrari F80 launch" (Cars, Ferrari)]', "That's the F80, 1,200 hp."]);
+    expect(search.mock.calls[0]?.[1]).toContain("Ferrari F80 launch");
+  });
+
+  it("keeps every chat, and brings back what they said in older ones", async () => {
+    const { deps, brain, retriever } = setup();
+    await retriever.remember(7, { said: "my tryout is on friday", answered: "Good luck!", at: "2026-10-01T00:00:00Z" });
+    await handleUpdate(text("my tryout"), deps);
+    expect(vi.mocked(brain.answer).mock.calls[0]?.[0].memories?.map((m) => m.said)).toEqual(["my tryout is on friday"]);
+    expect(retriever.memories.map((m) => m.said)).toEqual(["my tryout is on friday", "my tryout"]);
+    await handleUpdate(text("my tryout"), deps);
+    expect(vi.mocked(brain.answer).mock.calls[1]?.[0].memories?.map((m) => m.said)).toEqual(["my tryout is on friday"]);
   });
 
   it("shows and forgets remembered facts", async () => {
