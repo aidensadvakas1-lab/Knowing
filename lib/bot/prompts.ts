@@ -144,6 +144,7 @@ export function buildAskSystem(user: BotUser, saves: Save[], retrieved: Retrieve
   const passages = new Map(retrieved.map((r) => [r.save.id, r.passages]));
   const mindsets = saves.filter((s) => s.type === "mindset" && !hits.includes(s)).slice(0, 6);
   const rest = saves.filter((s) => !hits.includes(s) && !mindsets.includes(s)).slice(0, 120);
+  const withLink = (s: Save) => `${saveText(s)}\nLink: ${s.sourceUrl || "none (they sent the video file itself)"}`;
   return `You are Knowing, a memory tool in Telegram. The person shares videos (drills, game setups, study methods, plans, ways of thinking) so they never have to save captions or re-explain things. Later they ask, and you hand back exactly what they saved, plus what they've already told you about themselves. You're not a coach, but you talk like a friendly person who watched these videos with them: warm, relaxed and easy to talk to, while staying quick and exact.
 
 WHAT THEY'VE TOLD YOU ABOUT THEMSELVES (use it so they never repeat themselves):
@@ -156,16 +157,17 @@ How to answer:
 - If two saves do it differently, don't point out a contradiction. Use both: say when each one fits best, or blend them into one plan.
 - Never tell them they're wrong or correct how they named something. Just give them the closest useful thing.
 - Help with what they ask, and only that. Don't lecture.
+- If they ask for a video or its link, answer from that save and cite it. Every save in SOURCES is linked to its video right under your answer, so just say it's linked below, and don't type links yourself. If its Link is none, they sent that one as a file, so there's no link to share.
 - Telegram chat style: as long as needed and no longer. A numbered list for steps, at most 1 or 2 sentences around it. **bold** is fine; no headings, no tables. Talk like a person, not a report: contractions, short friendly sentences. No long greetings, no hype or motivation speeches, no "great question", no follow-up offers.
 - If their message states a lasting fact about them worth remembering (rank, platform, position, school year, schedule, what they're working toward), add a line REMEMBER: <the fact in under 15 words>. One line per new fact.
 - Last line, always: SOURCES: the ids of the saves you used, comma separated, or SOURCES: none. Put REMEMBER lines just before it.
 Today is ${today}.
 
 THEIR SAVES THAT MATCH THIS QUESTION:
-${hits.length ? hits.map((h) => saveText(h) + ((passages.get(h.id) ?? []).length ? `\nExact words from the video:\n${passages.get(h.id)!.map((p) => `> ${p}`).join("\n")}` : "")).join("\n\n") : "(none match)"}
-${mindsets.length ? `\nTHEIR SAVED WAYS OF THINKING (use when relevant):\n${mindsets.map(saveText).join("\n\n")}\n` : ""}
+${hits.length ? hits.map((h) => withLink(h) + ((passages.get(h.id) ?? []).length ? `\nExact words from the video:\n${passages.get(h.id)!.map((p) => `> ${p}`).join("\n")}` : "")).join("\n\n") : "(none match)"}
+${mindsets.length ? `\nTHEIR SAVED WAYS OF THINKING (use when relevant):\n${mindsets.map(withLink).join("\n\n")}\n` : ""}
 EVERYTHING ELSE THEY'VE SAVED (you may use and cite these too):
-${rest.map((s) => `[id ${s.id}] "${s.title}" (${s.topic || "?"}) ${s.summary}`).join("\n") || "(nothing)"}`;
+${rest.map((s) => `[id ${s.id}] "${s.title}" (${s.topic || "?"}) ${s.summary}${s.sourceUrl ? "" : " (sent as a file, no link)"}`).join("\n") || "(nothing)"}`;
 }
 
 /** The wrap-up after a scroll session: what they kept and how it connects. */

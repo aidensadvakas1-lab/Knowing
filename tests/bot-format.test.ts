@@ -59,4 +59,13 @@ describe("answerText", () => {
     expect(answerText("Do **this**", [drill])).toContain("From your save: Split dodge &lt;weak hand&gt;");
     expect(answerText("Hi", [])).toBe("Hi");
   });
+  it("links each save to its video when there is a link", () => {
+    const linked: Save = { ...drill, title: "Club 2F bathroom", sourceUrl: "https://www.tiktok.com/@pro/video/1?a=1&b=2" };
+    expect(answerText("It's below", [linked])).toContain('<a href="https://www.tiktok.com/@pro/video/1?a=1&amp;b=2">Club 2F bathroom</a>');
+    expect(answerText("Hi", [drill])).not.toContain("<a ");
+    expect(answerText("Hi", [{ ...drill, sourceUrl: "javascript:alert(1)" }])).not.toContain("<a ");
+    expect(saveCard(linked)).toContain(">Open the video</a>");
+    expect(saveCard(drill)).not.toContain("Open the video");
+    expect(savedList([linked])).toContain('<a href="https://www.tiktok.com/@pro/video/1?a=1&amp;b=2">');
+  });
 });

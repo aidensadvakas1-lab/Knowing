@@ -73,6 +73,13 @@ describe("buildAskSystem", () => {
     expect(p).toContain("REMEMBER:");
     expect(p).not.toMatch(/goal|SWITCH/i);
   });
+  it("gives each matching save's link, so it can hand a video back", () => {
+    const linked = save({ sourceUrl: "https://www.tiktok.com/@pro/video/123" });
+    const p = buildAskSystem(newUser(1), [linked, save({ id: "f1", title: "Sent as a file" })], [{ save: linked, passages: [] }], "2026-10-31");
+    expect(p).toContain("Link: https://www.tiktok.com/@pro/video/123");
+    expect(p).toContain("linked below");
+    expect(p).toContain('"Sent as a file" (Siege, Bank) Basement defense on Bank. (sent as a file, no link)');
+  });
 });
 
 describe("watch prompt and cleanWatch", () => {

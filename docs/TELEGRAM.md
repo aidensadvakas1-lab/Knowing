@@ -15,10 +15,10 @@ It's a memory tool, not a coach: no one has to save captions or re-explain anyth
 | Tap **Keep both** / **Replace the old one** | Asked only when a new video duplicates an older save. Another way to do something is kept next to the old one, with **Replace the old one** if you want it |
 | Tap **Fix something** | Tell it what it got wrong and the save is rewritten |
 | Tap **Show steps** / **Start now** | The full steps, or a step-by-step run with **Next** / **Back** that counts each time you finish |
-| Ask a question | Answers from the matching saves and names them. If nothing matches exactly, it adapts the closest saves to your situation and says which parts are straight from your videos |
+| Ask a question | Answers from the matching saves and names them, each linked to its video (ask "send me the link to that video" and it's right there). If nothing matches exactly, it adapts the closest saves to your situation and says which parts are straight from your videos |
 | Mention something lasting ("I'm Gold on PC", "I'm a junior") | Remembers it, so you never repeat it |
 | `/memory` | Shows what it remembers about you, with a button to forget each one |
-| `/saved` | Lists everything, grouped by topic |
+| `/saved` | Lists everything, grouped by topic, each linked to its video |
 
 If a video is mostly talking and audio isn't available, the card offers **Add what it says**: paste the caption and the save is rewritten to be exact.
 
