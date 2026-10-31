@@ -7,8 +7,8 @@
  */
 import type { BotUser, Save, Sitting, Store } from "./types";
 
-/** Turns kept per user for follow-up questions. */
-export const TURNS_KEPT = 12;
+/** Recent turns kept per user, so follow-ups make sense. Older chats are kept as searchable memories. */
+export const TURNS_KEPT = 16;
 
 /** Lasting facts kept per user. */
 export const FACTS_KEPT = 40;
@@ -215,7 +215,7 @@ export class SupabaseStore implements Store {
     await this.rest(`saves?id=eq.${encodeURIComponent(id)}&user_id=eq.${userId}`, { method: "DELETE" });
   }
 
-  /** Saves and their search chunks go with the user row (on delete cascade). */
+  /** Saves, their search chunks and chat memories go with the user row (on delete cascade). */
   async deleteUser(userId: number): Promise<void> {
     await this.rest(`bot_users?id=eq.${userId}`, { method: "DELETE" });
   }

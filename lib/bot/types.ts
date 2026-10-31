@@ -150,6 +150,18 @@ export interface AskInput {
   saves: Save[];
   /** The saves retrieval picked for this question, best first, with passages from the video. */
   retrieved: Array<{ save: Save; passages: string[] }>;
+  /** Their first name on Telegram, if it shares one. */
+  name?: string;
+  /** Older chats that match this message, best first. */
+  memories?: ChatMemory[];
+}
+
+/** One exchange from the chat, kept so it can be found again weeks later. */
+export interface ChatMemory {
+  said: string;
+  answered: string;
+  /** When it was said (ISO). */
+  at: string;
 }
 
 export interface Brain {

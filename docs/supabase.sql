@@ -101,3 +101,51 @@ language sql stable as $$
   order by f.score desc
   limit p_k;
 $$;
+
+-- Every chat (what they said and what the bot answered), so the bot remembers
+-- conversations, not just videos. Found again by match_memories below.
+-- Deleting the user (/delete) deletes these too.
+create table if not exists chat_memories (
+  id bigint generated always as identity primary key,
+  user_id bigint not null references bot_users (id) on delete cascade,
+  said text not null,
+  answered text not null default '',
+  embedding vector(1536),                -- null when no embeddings key
+  fts tsvector generated always as (to_tsvector('simple', said || ' ' || answered)) stored,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists chat_memories_user on chat_memories (user_id, created_at desc);
+create index if not exists chat_memories_fts on chat_memories using gin (fts);
+create index if not exists chat_memories_embedding on chat_memories using hnsw (embedding vector_cosine_ops);
+alter table chat_memories enable row level security;
+
+-- Older chats that match a message: close in meaning, or containing all its words.
+create or replace function match_memories(p_user_id bigint, p_query text, p_embedding vector(1536), p_k int default 6)
+returns table (said text, answered text, created_at timestamptz, score float)
+language sql stable as $$
+  with by_meaning as (
+    select m.id, row_number() over (order by m.embedding <=> p_embedding) as rank
+    from chat_memories m
+    where m.user_id = p_user_id and p_embedding is not null and m.embedding is not null
+      and (m.embedding <=> p_embedding) < 0.75
+    order by m.embedding <=> p_embedding
+    limit 50
+  ),
+  by_words as (
+    select m.id, row_number() over (order by ts_rank_cd(m.fts, q) desc) as rank
+    from chat_memories m, websearch_to_tsquery('simple', p_query) q
+    where m.user_id = p_user_id and m.fts @@ q
+    order by ts_rank_cd(m.fts, q) desc
+    limit 50
+  ),
+  fused as (
+    select id, sum(1.0 / (60 + rank)) as score
+    from (select * from by_meaning union all select * from by_words) r
+    group by id
+  )
+  select m.said, m.answered, m.created_at, f.score
+  from fused f join chat_memories m on m.id = f.id
+  order by f.score desc
+  limit p_k;
+$$;

@@ -12,7 +12,7 @@
  * - Answers get the best-matching saves plus their best passages verbatim,
  *   so details the summary dropped are still there.
  */
-import type { Save } from "./types";
+import type { ChatMemory, Save } from "./types";
 
 export interface Chunk {
   saveId: string;
@@ -37,7 +37,14 @@ export interface Retriever {
   remove(userId: number, saveId: string): Promise<void>;
   /** Best chunks for a query, highest score first. */
   search(userId: number, query: string, k?: number): Promise<Hit[]>;
+  /** Keep one exchange from the chat, so it can be found again later. */
+  remember(userId: number, memory: ChatMemory): Promise<void>;
+  /** Older chats that match a query, best first: close in meaning, or containing all its words. */
+  recall(userId: number, query: string, k?: number): Promise<ChatMemory[]>;
 }
+
+/** The text a chat memory is searched by: what they said, and the start of the answer. */
+export const chatText = (m: ChatMemory) => `${m.said}\n${m.answered.slice(0, 500)}`;
 
 /** Characters per transcript chunk, and how much neighbouring chunks overlap. */
 export const CHUNK_CHARS = 900;
@@ -135,7 +142,31 @@ const terms = (t: string) => t.toLowerCase().match(/[a-z0-9]{2,}/g) ?? [];
 /** The same hybrid search, in memory. Used in tests and as a reference for the SQL. */
 export class MemoryRetriever implements Retriever {
   chunks: Array<Chunk & { embedding: number[] | null }> = [];
+  memories: Array<ChatMemory & { userId: number; embedding: number[] | null }> = [];
   constructor(private readonly embedder: Embedder | null = null) {}
+
+  async remember(userId: number, memory: ChatMemory) {
+    const [vector] = this.embedder ? await this.embedder.embed([chatText(memory)]) : [];
+    this.memories.push({ ...memory, userId, embedding: vector ?? null });
+  }
+  async recall(userId: number, query: string, k = 6): Promise<ChatMemory[]> {
+    const mine = this.memories.filter((m) => m.userId === userId);
+    const q = terms(query);
+    const byWords = q.length ? mine.filter((m) => { const t = new Set(terms(chatText(m))); return q.every((w) => t.has(w)); }) : [];
+    let byMeaning: typeof mine = [];
+    if (this.embedder) {
+      const [qv] = await this.embedder.embed([query]);
+      byMeaning = mine
+        .filter((m) => m.embedding && qv)
+        .map((m) => ({ m, s: cosine(m.embedding!, qv!) }))
+        .filter((x) => x.s > MIN_SIMILARITY)
+        .sort((a, b) => b.s - a.s)
+        .map((x) => x.m);
+    }
+    return fuseRanks([byWords, byMeaning], (m) => `${m.at}|${m.said}`)
+      .slice(0, k)
+      .map(({ item: { said, answered, at } }) => ({ said, answered, at }));
+  }
 
   async index(save: Save) {
     await this.remove(save.userId, save.id);

@@ -4,8 +4,8 @@
  * same hybrid search as MemoryRetriever: meaning + exact words, fused by rank.
  */
 import "server-only";
-import { chunkSave, type Embedder, type Hit, type Retriever } from "./rag";
-import type { Save } from "./types";
+import { chatText, chunkSave, type Embedder, type Hit, type Retriever } from "./rag";
+import type { ChatMemory, Save } from "./types";
 
 const DEFAULT_EMBED_URL = "https://api.openai.com/v1/embeddings";
 /** text-embedding-3-small: 1536 dimensions, about $0.02 per million tokens. */
@@ -78,5 +78,23 @@ export class SupabaseRetriever implements Retriever {
       body: JSON.stringify({ p_user_id: userId, p_query: query, p_embedding: vector ? `[${vector.join(",")}]` : null, p_k: k }),
     })) as Array<{ save_id: string; kind: Hit["kind"]; content: string; score: number }> | null;
     return (rows ?? []).map((r) => ({ saveId: r.save_id, kind: r.kind, text: r.content, score: Number(r.score) }));
+  }
+
+  async remember(userId: number, memory: ChatMemory): Promise<void> {
+    const [vector] = this.embedder ? await this.embedder.embed([chatText(memory)]) : [];
+    await this.rest("chat_memories", {
+      method: "POST",
+      headers: { prefer: "return=minimal" },
+      body: JSON.stringify({ user_id: userId, said: memory.said, answered: memory.answered, created_at: memory.at, embedding: vector ? `[${vector.join(",")}]` : null }),
+    });
+  }
+
+  async recall(userId: number, query: string, k = 6): Promise<ChatMemory[]> {
+    const [vector] = this.embedder ? await this.embedder.embed([query]) : [];
+    const rows = (await this.rest("rpc/match_memories", {
+      method: "POST",
+      body: JSON.stringify({ p_user_id: userId, p_query: query, p_embedding: vector ? `[${vector.join(",")}]` : null, p_k: k }),
+    })) as Array<{ said: string; answered: string; created_at: string }> | null;
+    return (rows ?? []).map((r) => ({ said: r.said, answered: r.answered, at: r.created_at }));
   }
 }

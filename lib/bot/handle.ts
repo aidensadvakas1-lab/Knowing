@@ -13,11 +13,11 @@
 import { timingSafeEqual } from "node:crypto";
 import { answerText, escapeHtml as esc, reactionButtons, reactionText, saveButtons, saveCard, savedList, stepButtons, stepText } from "./format";
 import { WELCOME } from "./profile";
-import { relevantSaves } from "./prompts";
+import { relevantSaves, sharedVideoTurns } from "./prompts";
 import { groupHits, searchQuery, type Retriever } from "./rag";
 import { FACTS_KEPT, newSaveId, TURNS_KEPT } from "./store";
 import { findUrl } from "./tiktok";
-import type { Brain, BotUser, InlineButton, Media, Save, Store, TelegramApi, WatchInput } from "./types";
+import type { Brain, BotUser, ChatMemory, InlineButton, Media, Save, Store, TelegramApi, WatchInput } from "./types";
 
 export interface Deps {
   tg: TelegramApi;
@@ -39,7 +39,7 @@ export interface Update {
   message?: {
     message_id: number;
     chat: { id: number };
-    from?: { id: number };
+    from?: { id: number; first_name?: string };
     text?: string;
     caption?: string;
     video?: { file_id: string; duration?: number; file_size?: number };
@@ -129,7 +129,7 @@ export async function handleUpdate(update: Update, deps: Deps): Promise<void> {
     }
     if (text.startsWith("/delete")) {
       const count = (await deps.store.listSaves(userId)).length;
-      await deps.tg.sendMessage(chatId, `This deletes your ${count} save${count === 1 ? "" : "s"} and everything I remember about you. It can't be undone.`, [
+      await deps.tg.sendMessage(chatId, `This deletes your ${count} save${count === 1 ? "" : "s"}, our chats and everything I remember about you. It can't be undone.`, [
         [{ text: "Delete everything", callback_data: "wipe:yes" }],
         [{ text: "Cancel", callback_data: "wipe:no" }],
       ]);
@@ -154,15 +154,16 @@ export async function handleUpdate(update: Update, deps: Deps): Promise<void> {
     if (!text) return;
     if (user.awaitingWordsFor) return await addWords(chatId, user, text, deps);
     if (!spend(user, "questions", deps.limits.questions)) return void (await deps.tg.sendMessage(chatId, limitText("questions", deps.limits.questions)));
-    await answer(chatId, user, text, deps);
+    await answer(chatId, user, text, deps, msg.from.first_name);
   } catch (error) {
     await deps.tg.sendMessage(chatId, await failed(error, "handling a message", deps)).catch(() => {});
   }
 }
 
 function memoryText(user: BotUser): string {
-  if (!user.facts.length) return "Nothing yet. When you mention something lasting, like your rank or your position, I'll remember it.";
-  return ["What I remember about you:", ...user.facts.map((f, i) => `${i + 1}. ${esc(f)}`)].join("\n");
+  const chats = "I also keep our chats, so I can look back at them later. /delete wipes everything.";
+  if (!user.facts.length) return `Nothing yet. When you mention something lasting, like your rank or your position, I'll remember it.\n\n${chats}`;
+  return ["What I remember about you:", ...user.facts.map((f, i) => `${i + 1}. ${esc(f)}`), "", chats].join("\n");
 }
 
 function memoryButtons(user: BotUser) {
@@ -204,6 +205,8 @@ async function saveWatched(chatId: number, status: number, user: BotUser, input:
     practiced: 0,
     createdAt: new Date().toISOString(),
   };
+  // In the chat history too, so a follow-up like "how fast is it?" knows which video "it" is.
+  user.turns = [...user.turns, ...sharedVideoTurns(save, watched.reply, note)].slice(-TURNS_KEPT);
   await deps.store.saveUser(user); // saves belong to a user row, so make sure it exists
   await deps.store.addSave(save);
   // For the wrap-up. If this fails, only the wrap-up is lost, so the save still goes through.
@@ -231,11 +234,11 @@ async function addWords(chatId: number, user: BotUser, text: string, deps: Deps)
   await deps.tg.sendMessage(chatId, `${fixing ? "Fixed." : "Updated with what it says."}\n\n${saveCard(updated)}`, saveButtons(updated));
 }
 
-async function answer(chatId: number, user: BotUser, question: string, deps: Deps) {
+async function answer(chatId: number, user: BotUser, question: string, deps: Deps, name = "") {
   await deps.tg.typing(chatId);
   const saves = await deps.store.listSaves(user.id);
-  const retrieved = await retrieve(user, question, saves, deps);
-  const reply = await deps.brain.answer({ user, question: question.slice(0, 4_000), saves, retrieved });
+  const [retrieved, memories] = await Promise.all([retrieve(user, question, saves, deps), recall(user, question, deps)]);
+  const reply = await deps.brain.answer({ user, question: question.slice(0, 4_000), saves, retrieved, name, memories });
   const used = reply.sources.map((id) => saves.find((s) => s.id === id)).filter((s): s is Save => Boolean(s));
 
   const fresh = reply.remember.filter((f) => !user.facts.includes(f));
@@ -247,6 +250,9 @@ async function answer(chatId: number, user: BotUser, question: string, deps: Dep
   const runnable = used.find((s) => (s.type === "drill" || s.type === "plan") && s.steps.length);
   if (runnable) buttons.push([{ text: `Start: ${runnable.title.slice(0, 40)}`, callback_data: `open:${runnable.id}` }]);
   await deps.tg.sendMessage(chatId, answerText(reply.text, used), buttons);
+  // Every chat is kept and searchable, so something said weeks ago can still come back.
+  const memory: ChatMemory = { said: question.slice(0, 4_000), answered: reply.text.slice(0, 4_000), at: new Date().toISOString() };
+  await deps.retriever.remember(user.id, memory).catch((error) => console.error("Remembering the chat failed", error));
 }
 
 async function onButton(q: NonNullable<Update["callback_query"]>, deps: Deps) {
@@ -260,7 +266,7 @@ async function onButton(q: NonNullable<Update["callback_query"]>, deps: Deps) {
     if (kind === "wipe") {
       if (id === "yes") await deps.store.deleteUser(q.from.id);
       await deps.tg.answerCallback(q.id, id === "yes" ? "Deleted" : undefined);
-      await deps.tg.editMessage(chatId, messageId, id === "yes" ? "Deleted. Everything you saved and everything I remembered about you is gone." : "Cancelled. Nothing was deleted.");
+      await deps.tg.editMessage(chatId, messageId, id === "yes" ? "Deleted. Everything you saved, our chats and everything I remembered about you are gone." : "Cancelled. Nothing was deleted.");
       return;
     }
     if (kind === "forget") {
@@ -326,6 +332,18 @@ async function onButton(q: NonNullable<Update["callback_query"]>, deps: Deps) {
 /** Search failures never block saving: the save is still kept and found by words. */
 async function reindex(save: Save, deps: Deps) {
   await deps.retriever.index(save).catch((error) => console.error("Indexing failed", error));
+}
+
+/** Older chats that match, minus the ones still in the recent history. Never blocks an answer. */
+async function recall(user: BotUser, question: string, deps: Deps): Promise<ChatMemory[]> {
+  const previous = [...user.turns].reverse().find((t) => t.role === "user")?.content ?? "";
+  const recent = new Set(user.turns.filter((t) => t.role === "user").map((t) => t.content));
+  try {
+    return (await deps.retriever.recall(user.id, searchQuery(question, previous), 8)).filter((m) => !recent.has(m.said)).slice(0, 4);
+  } catch (error) {
+    console.error("Recall failed", error);
+    return [];
+  }
 }
 
 /** Retrieval for a question, falling back to simple word matching if search is down. */
