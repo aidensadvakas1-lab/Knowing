@@ -118,13 +118,13 @@ describe("handleUpdate", () => {
     expect(store.saves[0]?.practiced).toBe(1);
   });
 
-  it("answers from saves, names them, and remembers facts the user mentions", async () => {
+  it("answers from saves, names and links them, and remembers facts the user mentions", async () => {
     const { deps, sent, store, brain } = setup({ answer: { remember: ["Plays Siege on PC, Gold rank"] } });
     await handleUpdate(text("https://vm.tiktok.com/ZMabc/"), deps);
     await handleUpdate(text("I'm gold on PC. what was that dodge drill?"), deps);
     const reply = sent.at(-1)!;
     expect(reply.html).toContain("Do the split dodge.");
-    expect(reply.html).toContain("From your save: Split dodge drill");
+    expect(reply.html).toContain('From your save: <a href="https://vm.tiktok.com/ZMabc/">Split dodge drill</a>');
     expect(datas(reply.buttons)).toEqual([expect.stringMatching(/^open:/)]);
     expect((await store.getUser(7)).facts).toEqual(["Plays Siege on PC, Gold rank"]);
     await handleUpdate(text("and again?"), deps);

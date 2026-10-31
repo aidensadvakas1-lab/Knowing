@@ -17,6 +17,15 @@ export function mdToHtml(md: string): string {
 
 const canRun = (s: Save) => (s.type === "drill" || s.type === "plan") && s.steps.length > 0;
 
+/** The link to the video a save came from, ready for an href. Empty for a video sent as a file. */
+const videoHref = (s: Save) => (/^https?:\/\//.test(s.sourceUrl) ? escapeHtml(s.sourceUrl).replace(/"/g, "&quot;") : "");
+
+/** A save's title, linked to its video when there is one. */
+export function linkedTitle(s: Save): string {
+  const href = videoHref(s);
+  return href ? `<a href="${href}">${escapeHtml(s.title)}</a>` : escapeHtml(s.title);
+}
+
 /** The reply to a shared video: a short reaction, then a one-line receipt. Details stay behind "Show steps". */
 export function reactionText(reply: string, s: Save, notes: string[] = []): string {
   const lines = [mdToHtml(reply || `Saved: ${s.title}.`), "", `✓ <i>Saved: ${escapeHtml(s.title)}</i>`];
@@ -49,6 +58,7 @@ export function saveCard(s: Save, notes: string[] = []): string {
   ];
   if (s.summary) lines.push("", escapeHtml(s.summary));
   if (s.steps.length) lines.push("", ...s.steps.map((x, i) => `${i + 1}. ${escapeHtml(x)}`));
+  if (videoHref(s)) lines.push("", `<a href="${videoHref(s)}">Open the video</a>`);
   if (s.needsWords && !s.words) lines.push("", "<i>I couldn't hear what's said. Tap Add what it says if the details are spoken.</i>");
   if (notes.length) lines.push("", ...notes.map((n) => `<i>${escapeHtml(n)}</i>`));
   return lines.join("\n");
@@ -85,13 +95,13 @@ export function savedList(saves: Save[]): string {
   }
   const out: string[] = [`<b>Your saves</b> (${saves.length})`];
   for (const [topic, list] of groups) {
-    out.push("", `<b>${escapeHtml(topic)}</b>`, ...list.slice(0, 15).map((s) => `• ${escapeHtml(s.title)} <i>(${SAVE_TYPE_LABEL[s.type]})</i>`));
+    out.push("", `<b>${escapeHtml(topic)}</b>`, ...list.slice(0, 15).map((s) => `• ${linkedTitle(s)} <i>(${SAVE_TYPE_LABEL[s.type]})</i>`));
   }
   return out.join("\n");
 }
 
-/** An answer plus where it came from. */
+/** An answer plus where it came from, each save linked to its video. */
 export function answerText(text: string, sources: Save[]): string {
-  const from = sources.length ? `\n\n<i>From your save${sources.length > 1 ? "s" : ""}: ${sources.map((s) => escapeHtml(s.title)).join(", ")}</i>` : "";
+  const from = sources.length ? `\n\n<i>From your save${sources.length > 1 ? "s" : ""}: ${sources.map(linkedTitle).join(", ")}</i>` : "";
   return mdToHtml(text) + from;
 }
