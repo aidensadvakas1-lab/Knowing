@@ -99,9 +99,19 @@ export const MODELS = {
   watch: process.env.KNOWING_WATCH_MODEL || "claude-sonnet-5-5",
   /** Cheap model that takes a second look when a safety filter blocks something harmless by mistake. */
   fallback: process.env.KNOWING_FALLBACK_MODEL || "claude-haiku-5-5",
+  /** Cheap model that copies the text off frames taken about every second, so nothing that flashes by is missed. */
+  read: process.env.KNOWING_READ_MODEL || "claude-haiku-5-5",
   /** Speech-to-text model at the transcription endpoint. */
   transcribe: process.env.KNOWING_TRANSCRIBE_MODEL || "gpt-4o-mini-transcribe",
 } as const;
+
+const EFFORTS = ["low", "medium", "high"] as const;
+
+/**
+ * How hard the bot thinks before answering. Medium gives real troubleshooting
+ * when someone is following a tutorial; low is cheaper and quicker.
+ */
+export const BOT_EFFORT: (typeof EFFORTS)[number] = EFFORTS.find((e) => e === process.env.KNOWING_BOT_EFFORT) ?? "medium";
 
 /** localStorage keys. Versioned so a future schema change can migrate. */
 export const STORAGE_KEYS = {

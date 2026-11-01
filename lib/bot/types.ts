@@ -110,6 +110,8 @@ export interface WatchInput {
   /** When each frame was taken (seconds), if known. */
   frameTimes?: number[];
   transcript: string;
+  /** Text read off the screen from frames about every second, so a command or link that flashes by isn't lost. */
+  screenText?: string;
   caption: string;
   /** Problems worth telling the user about (no audio, couldn't download...). */
   notes: string[];
@@ -125,8 +127,10 @@ export interface Media {
 /** The parsed reply to a question. */
 export interface Answer {
   text: string;
-  /** Ids of the saves it used. */
+  /** Ids of the saves the answer came from. */
   sources: string[];
+  /** Ids of saves the chat is about when the useful part came from Claude's own knowledge (like install steps a video skips). */
+  about: string[];
   /** New lasting facts the user mentioned. */
   remember: string[];
 }

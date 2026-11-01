@@ -44,6 +44,19 @@ describe("buildWatchPrompt", () => {
   it("says when there is no transcript", () => {
     expect(buildWatchPrompt({ caption: "", transcript: "", note: "", frameCount: 0 })).toContain("no transcript");
   });
+  it("adds the text read off the screen every second, and keeps commands exact", () => {
+    const p = buildWatchPrompt({ caption: "", transcript: "", screenText: "claude mcp add playwright npx @playwright/mcp@latest", note: "", frameCount: 20 });
+    expect(p).toContain("ON-SCREEN TEXT");
+    expect(p).toContain("claude mcp add playwright npx @playwright/mcp@latest");
+    expect(p).toContain("every command, link, package or app name and setting");
+    expect(buildWatchPrompt({ caption: "", transcript: "", note: "", frameCount: 20 })).not.toContain("ON-SCREEN TEXT");
+  });
+  it("names the group instead of trailing off, and offers help only on hands-on how-tos", () => {
+    const p = buildWatchPrompt({ caption: "", transcript: "", note: "", frameCount: 2 });
+    expect(p).toContain('Never trail off with "more" or "etc."');
+    expect(p).toContain("Want help installing them? I'll go one step at a time.");
+    expect(p).toContain("No offer on anything else, like recipes, workouts, game setups, facts or mindsets");
+  });
 });
 
 describe("interests and sharedVideoTurns", () => {
@@ -104,6 +117,18 @@ describe("buildAskSystem", () => {
     expect(plain).not.toContain("FROM EARLIER CHATS");
   });
 
+  it("recaps first, helps one step at a time, and never guesses a command", () => {
+    const p = buildAskSystem(newUser(1), [save({})], [], "2026-11-01");
+    expect(p).toContain("don't open with what's missing. Start with a quick recap of what the video does show");
+    expect(p).toContain("Go one step at a time, two at most");
+    expect(p).toContain("read the error closely, say in a sentence what it means and give the fix");
+    expect(p).toContain("Want me to walk you through installing them?");
+    expect(p).toContain("point them to the official source");
+    expect(p).toContain("so they can tap it to copy");
+    expect(p).toContain("```");
+    expect(p).toContain("put its id on an ABOUT: line instead");
+  });
+
   it("gives each matching save's link, so it can hand a video back", () => {
     const linked = save({ sourceUrl: "https://www.tiktok.com/@pro/video/123" });
     const p = buildAskSystem(newUser(1), [linked, save({ id: "f1", title: "Sent as a file" })], [{ save: linked, passages: [] }], "2026-10-31");
@@ -128,7 +153,12 @@ describe("watch prompt and cleanWatch", () => {
 describe("parseAnswer", () => {
   it("splits off REMEMBER and SOURCES and keeps only known ids", () => {
     const a = parseAnswer("1. Reinforce\n2. Mira\nREMEMBER: Plays on PC\nREMEMBER: Gold rank\nSOURCES: a1, zz", ["a1"]);
-    expect(a).toEqual({ text: "1. Reinforce\n2. Mira", sources: ["a1"], remember: ["Plays on PC", "Gold rank"] });
+    expect(a).toEqual({ text: "1. Reinforce\n2. Mira", sources: ["a1"], about: [], remember: ["Plays on PC", "Gold rank"] });
+  });
+  it("keeps saves the chat is only about apart from the ones the answer came from", () => {
+    const a = parseAnswer("Run this first.\nREMEMBER: Uses a Mac\nABOUT: m1, zz, a1\nSOURCES: a1", ["a1", "m1"]);
+    expect(a).toEqual({ text: "Run this first.", sources: ["a1"], about: ["m1"], remember: ["Uses a Mac"] });
+    expect(parseAnswer("Steps from me.\nABOUT: m1\nSOURCES: none", ["m1"])).toMatchObject({ text: "Steps from me.", sources: [], about: ["m1"] });
   });
   it("handles a plain answer", () => {
     expect(parseAnswer("Nothing saved on that yet.\nSOURCES: none", [])).toMatchObject({ text: "Nothing saved on that yet.", sources: [], remember: [] });
