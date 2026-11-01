@@ -18,7 +18,9 @@ import { apiError } from "@/lib/server";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const maxDuration = 60;
+// Watching a video (download, frames, speech, on-screen text, then Claude) can take over a minute.
+// Vercel's Hobby plan allows up to 300 seconds with Fluid compute, which new projects have on.
+export const maxDuration = 120;
 
 /** Defaults for the daily limits per user; override with KNOWING_DAILY_VIDEOS / KNOWING_DAILY_QUESTIONS. */
 const DAILY_VIDEOS = 15;

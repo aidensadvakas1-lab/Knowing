@@ -11,6 +11,14 @@ describe("mdToHtml", () => {
   it("escapes HTML and converts bold, italics and code", () => {
     expect(mdToHtml("**a** <b> *c* `d`")).toBe("<b>a</b> &lt;b&gt; <i>c</i> <code>d</code>");
   });
+  it("turns a command block into tap-to-copy text, untouched by bold, italics or headings", () => {
+    expect(mdToHtml("Run this:\n```bash\nclaude mcp add playwright npx @playwright/mcp@latest\n```\nThen /mcp")).toBe(
+      "Run this:\n<pre>claude mcp add playwright npx @playwright/mcp@latest</pre>\nThen /mcp",
+    );
+    expect(mdToHtml("```\n# list them\nls *.log **\n```")).toBe("<pre># list them\nls *.log **</pre>");
+    expect(mdToHtml("`rm *.log` then *wait*")).toBe("<code>rm *.log</code> then <i>wait</i>");
+    expect(mdToHtml("`a<b && c`")).toBe("<code>a&lt;b &amp;&amp; c</code>");
+  });
 });
 
 describe("saveCard / saveButtons", () => {
@@ -58,6 +66,13 @@ describe("answerText", () => {
   it("names the saves it used", () => {
     expect(answerText("Do **this**", [drill])).toContain("From your save: Split dodge &lt;weak hand&gt;");
     expect(answerText("Hi", [])).toBe("Hi");
+    const about = answerText("Here's how to set them up.", [], [drill]);
+    expect(about).toContain("Your video: Split dodge &lt;weak hand&gt;");
+    expect(about).not.toContain("From your save");
+    const other = { ...drill, id: "d2", title: "Bank setup" };
+    expect(answerText("Both", [drill], [other, drill])).toBe(
+      "Both\n\n<i>From your save: Split dodge &lt;weak hand&gt;</i>\n<i>Your video: Bank setup</i>",
+    );
   });
   it("links each save to its video when there is a link", () => {
     const linked: Save = { ...drill, title: "Club 2F bathroom", sourceUrl: "https://www.tiktok.com/@pro/video/1?a=1&b=2" };

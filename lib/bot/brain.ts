@@ -2,11 +2,12 @@
  * The bot's Claude calls: watch a video into a save, and answer questions
  * from saves. Watching uses MODELS.watch (Sonnet by default: it happens once
  * per video and has to read the details right). Answering uses MODELS.bot
- * (Sonnet by default too, so it knows the topic; Haiku makes answers almost free).
+ * (Sonnet by default too, so it knows the topic; Haiku makes answers almost free),
+ * thinking at BOT_EFFORT so it can troubleshoot a tutorial step by step.
  */
 import "server-only";
 import type Anthropic from "@anthropic-ai/sdk";
-import { MODELS } from "../constants";
+import { BOT_EFFORT, MODELS } from "../constants";
 import { getAnthropic } from "../server";
 import { buildAskSystem, buildFixPrompt, buildRewritePrompt, buildWatchPrompt, buildWrapUpPrompt, cleanDraft, cleanWatch, frameLabel, parseAnswer, WATCH_SCHEMA } from "./prompts";
 import type { Brain } from "./types";
@@ -29,9 +30,9 @@ async function watchJson(content: Anthropic.ContentBlockParam[], model: string =
 
 export function createBrain(): Brain {
   return {
-    async watch({ frames, frameTimes, transcript, caption, note, facts, saves }) {
+    async watch({ frames, frameTimes, transcript, screenText, caption, note, facts, saves }) {
       const content: Anthropic.ContentBlockParam[] = [
-        { type: "text", text: buildWatchPrompt({ caption, transcript, note, frameCount: frames.length, facts, saves }) },
+        { type: "text", text: buildWatchPrompt({ caption, transcript, screenText, note, frameCount: frames.length, facts, saves }) },
       ];
       for (const [i, data] of frames.entries()) {
         content.push({ type: "text", text: frameLabel(i, frameTimes?.[i]) });
@@ -53,9 +54,9 @@ export function createBrain(): Brain {
         getAnthropic().messages.create({
           model,
           // Thinking counts toward this too, and a cut-off answer loses its SOURCES line.
-          max_tokens: 8_000,
-          // Chat needs knowledge more than long thinking, and low effort keeps replies quick.
-          output_config: { effort: "low" },
+          max_tokens: 12_000,
+          // Medium by default: enough thinking to read an error and find the real fix.
+          output_config: { effort: BOT_EFFORT },
           system,
           messages: [...history, { role: "user", content: question }],
         });

@@ -6,13 +6,21 @@ import { SAVE_TYPE_LABEL, type InlineButton, type Save } from "./types";
 
 export const escapeHtml = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
-/** Claude's light markdown (bold, italics, code) to Telegram HTML. */
+/**
+ * Claude's light markdown (bold, italics, code) to Telegram HTML. Code goes
+ * first and is set aside, so a `*` or `#` in a command stays as typed, and
+ * Telegram shows it tap-to-copy without turning `/mcp` or `@name` into links.
+ */
 export function mdToHtml(md: string): string {
+  const code: string[] = [];
+  const keep = (html: string) => `\u0000${code.push(html) - 1}\u0000`;
   return escapeHtml(md)
+    .replace(/```[\w+-]*\n?([\s\S]*?)```/g, (_, body: string) => keep(`<pre>${body.replace(/\n$/, "")}</pre>`))
+    .replace(/`([^`\n]+)`/g, (_, body: string) => keep(`<code>${body}</code>`))
     .replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>")
     .replace(/(^|[^*\w])\*([^*\n]+)\*(?!\w)/g, "$1<i>$2</i>")
-    .replace(/`([^`\n]+)`/g, "<code>$1</code>")
-    .replace(/^#{1,4}\s+(.*)$/gm, "<b>$1</b>");
+    .replace(/^#{1,4}\s+(.*)$/gm, "<b>$1</b>")
+    .replace(/\u0000(\d+)\u0000/g, (_, i: string) => code[Number(i)] ?? "");
 }
 
 const canRun = (s: Save) => (s.type === "drill" || s.type === "plan") && s.steps.length > 0;
@@ -100,8 +108,17 @@ export function savedList(saves: Save[]): string {
   return out.join("\n");
 }
 
-/** An answer plus where it came from, each save linked to its video. */
-export function answerText(text: string, sources: Save[]): string {
-  const from = sources.length ? `\n\n<i>From your save${sources.length > 1 ? "s" : ""}: ${sources.map(linkedTitle).join(", ")}</i>` : "";
-  return mdToHtml(text) + from;
+/**
+ * An answer plus where it came from, each save linked to its video. "From your
+ * save" only when the answer came from it; a save the chat was just about
+ * (install steps its video skips, say) is "Your video" instead.
+ */
+export function answerText(text: string, sources: Save[], about: Save[] = []): string {
+  const plural = (list: Save[]) => (list.length > 1 ? "s" : "");
+  const others = about.filter((s) => !sources.includes(s));
+  const lines = [
+    sources.length ? `<i>From your save${plural(sources)}: ${sources.map(linkedTitle).join(", ")}</i>` : "",
+    others.length ? `<i>Your video${plural(others)}: ${others.map(linkedTitle).join(", ")}</i>` : "",
+  ].filter(Boolean);
+  return mdToHtml(text) + (lines.length ? `\n\n${lines.join("\n")}` : "");
 }

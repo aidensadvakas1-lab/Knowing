@@ -11,7 +11,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import ffmpegPath from "ffmpeg-static";
 import { fetchSource } from "../fetch-source";
+import { isAiConfigured } from "../server";
 import { isTranscriptionConfigured, transcribeAudio } from "../transcribe";
+import { readScreenText } from "./screen";
 import { isTikTok, resolveTikTok } from "./tiktok";
 import type { Media, WatchInput } from "./types";
 
@@ -19,6 +21,10 @@ import type { Media, WatchInput } from "./types";
 export const FRAME_COUNT = 20;
 /** Longest side of each frame, in pixels. Big enough to tell a wall from a ceiling. */
 const FRAME_SIDE = 960;
+/** Most frames read for on-screen text. About one a second for a one-minute video. */
+export const SCAN_MAX = 60;
+/** Never read more often than this per second; a caption stays up longer than half a second. */
+const SCAN_FPS = 2;
 /** Biggest video we'll download. TikToks are usually 2 to 20 MB. */
 const MAX_VIDEO_BYTES = 60 * 1024 * 1024;
 
@@ -60,17 +66,29 @@ export function parseDuration(ffmpegOutput: string): number {
   return m ? Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]) : 0;
 }
 
+/** Shrinks the longest side to FRAME_SIDE. It has commas inside, so never split a filter string on them. */
+const SCALE = `scale='if(gt(iw,ih),min(${FRAME_SIDE},iw),-2)':'if(gt(iw,ih),-2,min(${FRAME_SIDE},ih))'`;
+
 /** The ffmpeg filter that spreads `count` frames across `durationSec` and shrinks them. */
 export function frameFilter(count: number, durationSec: number): string {
   const fps = durationSec > 0 ? `fps=${count}/${Math.max(1, durationSec).toFixed(2)}` : "fps=1/2";
-  const scale = `scale='if(gt(iw,ih),min(${FRAME_SIDE},iw),-2)':'if(gt(iw,ih),-2,min(${FRAME_SIDE},ih))'`;
-  return `${fps},${scale}`;
+  return `${fps},${SCALE}`;
 }
 
 /** When each frame from frameFilter is taken, in seconds: the first at 0, then evenly spaced. */
 export function frameFilterTimes(count: number, durationSec: number): number[] {
   const gap = durationSec > 0 ? Math.max(1, durationSec) / count : 2;
   return Array.from({ length: count }, (_, i) => Math.round(i * gap * 100) / 100);
+}
+
+/**
+ * The ffmpeg filter for reading on-screen text: frames about every second
+ * (up to SCAN_MAX across the whole video), dropping ones that barely changed,
+ * so a still screen costs one frame and a new line of text gets its own.
+ */
+export function scanFilter(durationSec: number): string {
+  const rate = durationSec > 0 ? Math.min(SCAN_FPS, SCAN_MAX / durationSec) : 1;
+  return `fps=${rate.toFixed(3)},mpdecimate,${SCALE}`;
 }
 
 async function probeDuration(file: string): Promise<number> {
@@ -83,10 +101,14 @@ async function probeDuration(file: string): Promise<number> {
   }
 }
 
-/** Frames plus speech from one video file. */
-async function watchVideoBytes(video: Buffer, durationHint: number): Promise<{ frames: string[]; frameTimes: number[]; transcript: string; notes: string[] }> {
+/** Frames, speech and on-screen text from one video file. */
+async function watchVideoBytes(video: Buffer, durationHint: number): Promise<{ frames: string[]; frameTimes: number[]; transcript: string; screenText: string; notes: string[] }> {
   const dir = await mkdtemp(join(tmpdir(), "knowing-"));
   const notes: string[] = [];
+  const jpegs = async (prefix: string) => {
+    const names = (await readdir(dir)).filter((n) => new RegExp(`^${prefix}\\d+\\.jpg$`).test(n)).sort();
+    return Promise.all(names.map(async (n) => (await readFile(join(dir, n))).toString("base64")));
+  };
   try {
     const input = join(dir, "in.mp4");
     await writeFile(input, video);
@@ -95,30 +117,47 @@ async function watchVideoBytes(video: Buffer, durationHint: number): Promise<{ f
     let frames: string[] = [];
     try {
       await ffmpeg(["-loglevel", "error", "-i", input, "-vf", frameFilter(FRAME_COUNT, duration), "-frames:v", String(FRAME_COUNT), "-q:v", "5", join(dir, "f%02d.jpg")]);
-      const names = (await readdir(dir)).filter((n) => /^f\d+\.jpg$/.test(n)).sort();
-      frames = await Promise.all(names.map(async (n) => (await readFile(join(dir, n))).toString("base64")));
+      frames = await jpegs("f");
     } catch (error) {
       console.error("Frame extraction failed", error);
       notes.push("Couldn't pull frames from the video.");
     }
     const frameTimes = frameFilterTimes(FRAME_COUNT, duration).slice(0, frames.length);
 
-    let transcript = "";
-    if (isTranscriptionConfigured()) {
-      try {
-        const audio = join(dir, "audio.m4a");
-        await ffmpeg(["-loglevel", "error", "-i", input, "-vn", "-ac", "1", "-ar", "16000", "-b:a", "32k", audio]);
-        transcript = await transcribeAudio(new Blob([new Uint8Array(await readFile(audio))], { type: "audio/mp4" }), undefined, "audio.m4a");
-      } catch (error) {
-        // No audio track, or the transcription service failed.
-        console.error("Audio failed", error);
-      }
-    } else {
-      notes.push("I can't hear audio yet (no OPENAI_API_KEY), so I only looked at it.");
-    }
-    return { frames, frameTimes, transcript, notes };
+    // Hearing and reading the screen run side by side, and either can fail without losing the save.
+    const [transcript, screenText] = await Promise.all([hear(input, dir, notes), readScreen(input, dir, duration, jpegs)]);
+    return { frames, frameTimes, transcript, screenText, notes };
   } finally {
     await rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+/** The speech in a video, or "" when there's no audio or no transcription key. */
+async function hear(input: string, dir: string, notes: string[]): Promise<string> {
+  if (!isTranscriptionConfigured()) {
+    notes.push("I can't hear audio yet (no OPENAI_API_KEY), so I only looked at it.");
+    return "";
+  }
+  try {
+    const audio = join(dir, "audio.m4a");
+    await ffmpeg(["-loglevel", "error", "-i", input, "-vn", "-ac", "1", "-ar", "16000", "-b:a", "32k", audio]);
+    return await transcribeAudio(new Blob([new Uint8Array(await readFile(audio))], { type: "audio/mp4" }), undefined, "audio.m4a");
+  } catch (error) {
+    // No audio track, or the transcription service failed.
+    console.error("Audio failed", error);
+    return "";
+  }
+}
+
+/** The text shown on screen across the whole video, or "" if it can't be read. */
+async function readScreen(input: string, dir: string, duration: number, jpegs: (prefix: string) => Promise<string[]>): Promise<string> {
+  if (!isAiConfigured()) return "";
+  try {
+    await ffmpeg(["-loglevel", "error", "-i", input, "-vf", scanFilter(duration), "-fps_mode", "vfr", "-frames:v", String(SCAN_MAX), "-q:v", "5", join(dir, "s%02d.jpg")]);
+    return await readScreenText(await jpegs("s"));
+  } catch (error) {
+    console.error("Reading the screen failed", error);
+    return "";
   }
 }
 
@@ -132,7 +171,7 @@ async function imagesToFrames(urls: string[]): Promise<string[]> {
         const src = join(dir, `src${i}`);
         await writeFile(src, await downloadBytes(url, 15 * 1024 * 1024));
         const jpg = join(dir, `img${i}.jpg`);
-        await ffmpeg(["-loglevel", "error", "-i", src, "-vf", frameFilter(1, 0).split(",")[1] ?? "", "-frames:v", "1", "-q:v", "5", jpg]);
+        await ffmpeg(["-loglevel", "error", "-i", src, "-vf", SCALE, "-frames:v", "1", "-q:v", "5", jpg]);
         out.push((await readFile(jpg)).toString("base64"));
       } catch (error) {
         console.error("Image failed", error);

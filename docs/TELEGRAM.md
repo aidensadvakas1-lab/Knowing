@@ -27,11 +27,14 @@ If a video is mostly talking and audio isn't available, the card offers **Add wh
 ## Cost
 
 Claude Sonnet (`KNOWING_WATCH_MODEL`) watches each video once, so the details are read right:
-about **5–8 cents a video**. Claude Sonnet (`KNOWING_BOT_MODEL`) also answers and chats, so it
-knows the topic and gets details right: about **2–3 cents a message**. Speech goes through OpenAI's
-`gpt-4o-mini-transcribe`, and Vercel, Supabase and Telegram stay on free plans. For one person sharing
-about 5 videos and sending about 15 messages a day, expect roughly **$20 a month**. The daily limits
-below cap what any one person can spend.
+about **5–8 cents a video**. Before that, Claude Haiku (`KNOWING_READ_MODEL`) copies the text on
+screen from frames about a second apart, so a command or link that flashes by isn't missed: about
+**half a cent more**. Claude Sonnet (`KNOWING_BOT_MODEL`) also answers and chats, thinking at medium
+effort so it can troubleshoot a tutorial step by step: about **2–3 cents a message**, and up to about
+5 cents when it has to work through an error. Speech goes through OpenAI's `gpt-4o-mini-transcribe`,
+and Vercel, Supabase and Telegram stay on free plans. For one person sharing about 5 videos and
+sending about 15 messages a day, expect roughly **$25 a month**. Setting `KNOWING_BOT_EFFORT=low`
+brings answers back to about 2 cents. The daily limits below cap what any one person can spend.
 
 To change how videos are watched, set `KNOWING_WATCH_MODEL` in Vercel and redeploy:
 

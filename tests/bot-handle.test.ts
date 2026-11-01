@@ -20,7 +20,7 @@ function setup(opts: { answer?: Partial<Answer>; draft?: Partial<SaveDraft>; wat
   const brain: Brain = {
     watch: vi.fn(async ({ saves }: { saves: Save[] }) => ({ draft, reply: "A split dodge drill for your weak hand.", relation: "none" as const, relatedId: "", ...opts.watch?.(saves) })),
     rewrite: vi.fn(async (s: Save) => ({ ...s, steps: ["Exact step"] })),
-    answer: vi.fn(async ({ saves }: { saves: Save[] }) => ({ text: "Do the split dodge.", sources: saves.map((s) => s.id), remember: [], ...opts.answer })),
+    answer: vi.fn(async ({ saves }: { saves: Save[] }) => ({ text: "Do the split dodge.", sources: saves.map((s) => s.id), about: [], remember: [], ...opts.answer })),
     wrapUp: vi.fn(async ({ kept }: { kept: Save[] }) => `From that scroll you kept **${kept.length}**.`),
   };
   const media: Media = {
@@ -129,6 +129,24 @@ describe("handleUpdate", () => {
     expect((await store.getUser(7)).facts).toEqual(["Plays Siege on PC, Gold rank"]);
     await handleUpdate(text("and again?"), deps);
     expect(vi.mocked(brain.answer).mock.calls[1]?.[0].user.facts).toEqual(["Plays Siege on PC, Gold rank"]);
+  });
+
+  it("says Your video, not From your save, when the answer came from its own knowledge", async () => {
+    const { deps, sent, brain } = setup();
+    await handleUpdate(text("https://vm.tiktok.com/ZMabc/"), deps);
+    vi.mocked(brain.answer).mockImplementationOnce(async ({ saves }) => ({ text: "Your video shows the drill. Here's a warm-up:", sources: [], about: saves.map((s) => s.id), remember: [] }));
+    await handleUpdate(text("how do I warm up for it?"), deps);
+    const reply = sent.at(-1)!.html;
+    expect(reply).toContain('Your video: <a href="https://vm.tiktok.com/ZMabc/">Split dodge drill</a>');
+    expect(reply).not.toContain("From your save");
+  });
+
+  it("keeps the text read off the screen with the save, so a command shown for a second is found later", async () => {
+    const { deps, brain, media, store } = setup();
+    vi.mocked(media.fromLink).mockResolvedValueOnce({ frames: ["aGk="], transcript: "", screenText: "npx -y firecrawl-mcp", caption: "5 MCPs", notes: [] });
+    await handleUpdate(text("https://vm.tiktok.com/ZMmcp/"), deps);
+    expect(vi.mocked(brain.watch).mock.calls[0]?.[0].screenText).toBe("npx -y firecrawl-mcp");
+    expect(store.saves[0]?.source).toContain("On screen: npx -y firecrawl-mcp");
   });
 
   it("indexes the video's own words and hands the matching passages to the answer", async () => {

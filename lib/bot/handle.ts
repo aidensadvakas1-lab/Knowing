@@ -201,7 +201,7 @@ async function saveWatched(chatId: number, status: number, user: BotUser, input:
     userId: user.id,
     sourceUrl,
     words: "",
-    source: [input.caption && `Caption: ${input.caption}`, input.transcript && `Transcript: ${input.transcript}`].filter(Boolean).join("\n").slice(0, 20_000),
+    source: [input.caption && `Caption: ${input.caption}`, input.screenText && `On screen: ${input.screenText}`, input.transcript && `Transcript: ${input.transcript}`].filter(Boolean).join("\n").slice(0, 20_000),
     practiced: 0,
     createdAt: new Date().toISOString(),
   };
@@ -239,7 +239,8 @@ async function answer(chatId: number, user: BotUser, question: string, deps: Dep
   const saves = await deps.store.listSaves(user.id);
   const [retrieved, memories] = await Promise.all([retrieve(user, question, saves, deps), recall(user, question, deps)]);
   const reply = await deps.brain.answer({ user, question: question.slice(0, 4_000), saves, retrieved, name, memories });
-  const used = reply.sources.map((id) => saves.find((s) => s.id === id)).filter((s): s is Save => Boolean(s));
+  const find = (ids: string[]) => ids.map((id) => saves.find((s) => s.id === id)).filter((s): s is Save => Boolean(s));
+  const used = find(reply.sources);
 
   const fresh = reply.remember.filter((f) => !user.facts.includes(f));
   user.facts = [...user.facts, ...fresh].slice(-FACTS_KEPT);
@@ -249,7 +250,7 @@ async function answer(chatId: number, user: BotUser, question: string, deps: Dep
   const buttons: InlineButton[][] = [];
   const runnable = used.find((s) => (s.type === "drill" || s.type === "plan") && s.steps.length);
   if (runnable) buttons.push([{ text: `Start: ${runnable.title.slice(0, 40)}`, callback_data: `open:${runnable.id}` }]);
-  await deps.tg.sendMessage(chatId, answerText(reply.text, used), buttons);
+  await deps.tg.sendMessage(chatId, answerText(reply.text, used, find(reply.about)), buttons);
   // Every chat is kept and searchable, so something said weeks ago can still come back.
   const memory: ChatMemory = { said: question.slice(0, 4_000), answered: reply.text.slice(0, 4_000), at: new Date().toISOString() };
   await deps.retriever.remember(user.id, memory).catch((error) => console.error("Remembering the chat failed", error));
