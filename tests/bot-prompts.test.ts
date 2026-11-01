@@ -35,6 +35,8 @@ describe("buildWatchPrompt", () => {
     expect(p).toContain("8 images");
     expect(p).toContain("word for word");
     expect(p).toContain("the video doesn't say");
+    expect(p).toContain("keep a whole and its parts apart");
+    expect(p).toContain("A recipe: every ingredient with amounts");
     expect(p).toContain("Bank setup");
     expect(p).toContain("put mira here");
     expect(p).toContain('"for ranked"');
@@ -95,7 +97,8 @@ describe("buildAskSystem", () => {
     expect(p).toContain("WHAT THEY'RE INTO (from what they save, most first): Siege (2), Cars (1)");
     expect(p).toContain("[2026-10-20] They said: My tryout is Friday\nYou answered: Good luck!");
     expect(p).toContain("If they just want to talk");
-    expect(p).toContain("Don't stop at \"it wasn't mentioned\"");
+    expect(p).toContain("Never pass a guess off as being in their save, its title or the video");
+    expect(p).toContain("a site isn't the map, a trim isn't the model");
     const plain = buildAskSystem(newUser(1), [], [], "2026-10-31");
     expect(plain).not.toContain("first name");
     expect(plain).not.toContain("FROM EARLIER CHATS");

@@ -27,10 +27,11 @@ If a video is mostly talking and audio isn't available, the card offers **Add wh
 ## Cost
 
 Claude Sonnet (`KNOWING_WATCH_MODEL`) watches each video once, so the details are read right:
-about **5–8 cents a video**. Claude Haiku (`KNOWING_BOT_MODEL`) answers questions and writes
-wrap-ups for a fraction of a cent each. Speech goes through OpenAI's `gpt-4o-mini-transcribe`,
-and Vercel, Supabase and Telegram stay on free plans. For one person sharing about 5 videos and
-asking about 15 questions a day, expect roughly **$10–15 a month**.
+about **5–8 cents a video**. Claude Sonnet (`KNOWING_BOT_MODEL`) also answers and chats, so it
+knows the topic and gets details right: about **2–3 cents a message**. Speech goes through OpenAI's
+`gpt-4o-mini-transcribe`, and Vercel, Supabase and Telegram stay on free plans. For one person sharing
+about 5 videos and sending about 15 messages a day, expect roughly **$20 a month**. The daily limits
+below cap what any one person can spend.
 
 To change how videos are watched, set `KNOWING_WATCH_MODEL` in Vercel and redeploy:
 
@@ -39,6 +40,13 @@ To change how videos are watched, set `KNOWING_WATCH_MODEL` in Vercel and redepl
 | `claude-haiku-5-5` | under 1 cent | Fine for clear, talky videos |
 | `claude-sonnet-5-5` (default) | about 5–8 cents | Strong at reading positions and surfaces |
 | `claude-opus-5-5` | about 10–15 cents | The strongest, at about twice Sonnet's cost |
+
+To change who answers, set `KNOWING_BOT_MODEL` the same way:
+
+| Value | Per message | Answers |
+|---|---|---|
+| `claude-haiku-5-5` | about a tenth of a cent | Fine for simple recall, but knows less and makes more mistakes |
+| `claude-sonnet-5-5` (default) | about 2–3 cents | Knows the topic and gets details right |
 
 Use prepaid credits with auto-reload off so it can never charge more.
 
