@@ -188,6 +188,8 @@ export interface AskInput {
   name?: string;
   /** Older chats that match this message, best first. */
   memories?: ChatMemory[];
+  /** What they have left today and bought (the /usage text, plain), so "how many do I have left?" in any words gets real numbers. */
+  usage?: string;
 }
 
 /** One exchange from the chat, kept so it can be found again weeks later. */

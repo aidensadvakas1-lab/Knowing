@@ -115,6 +115,14 @@ describe("buildAskSystem", () => {
     const plain = buildAskSystem(newUser(1), [], [], "2026-10-31");
     expect(plain).not.toContain("first name");
     expect(plain).not.toContain("FROM EARLIER CHATS");
+    expect(plain).not.toContain("THEIR LIMITS");
+  });
+
+  it("knows their limits, so it can say what's left in any wording", () => {
+    const p = buildAskSystem(newUser(1), [], [], "2026-11-02", { usage: "Free today, back to full in about 6 hours:\nVideos: 3 of 5 left" });
+    expect(p).toContain("THEIR LIMITS IN KNOWING RIGHT NOW (this message already counted)");
+    expect(p).toContain("Videos: 3 of 5 left");
+    expect(p).toContain("/usage shows it any time without using a question");
   });
 
   it("recaps first, helps one step at a time, and never guesses a command", () => {

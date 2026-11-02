@@ -7,6 +7,7 @@
 export const COMMANDS = [
   { command: "saved", description: "Everything you've saved" },
   { command: "memory", description: "What I remember about you" },
+  { command: "usage", description: "What you have left today" },
   { command: "help", description: "How to send me videos" },
   { command: "delete", description: "Delete all your data" },
   { command: "support", description: "Ask the owner for help" },
@@ -23,4 +24,4 @@ export const WELCOME = `Send me videos you want to keep. In TikTok, tap Share, t
 
 I'll remember exactly what each one showed. Ask me about any of them later, in your own words, or just talk to me about anything. I remember our chats too, so you never have to repeat yourself.
 
-/saved lists everything. /memory shows what I remember about you. /delete wipes it all.`;
+/saved lists everything. /memory shows what I remember about you. /usage shows how many videos and questions you have left today. /delete wipes it all.`;

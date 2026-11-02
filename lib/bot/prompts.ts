@@ -160,7 +160,7 @@ export function sharedVideoTurns(save: Save, reply: string, note: string): Turn[
   ];
 }
 
-export function buildAskSystem(user: BotUser, saves: Save[], retrieved: Retrieved[], today: string, extra: { name?: string; memories?: ChatMemory[] } = {}): string {
+export function buildAskSystem(user: BotUser, saves: Save[], retrieved: Retrieved[], today: string, extra: { name?: string; memories?: ChatMemory[]; usage?: string } = {}): string {
   const hits = retrieved.map((r) => r.save);
   const passages = new Map(retrieved.map((r) => [r.save.id, r.passages]));
   const mindsets = saves.filter((s) => s.type === "mindset" && !hits.includes(s)).slice(0, 6);
@@ -175,7 +175,7 @@ WHAT THEY'VE TOLD YOU ABOUT THEMSELVES (use it so they never repeat themselves):
 ${user.facts.length ? user.facts.map((f) => `- ${f}`).join("\n") : "(nothing yet)"}
 
 WHAT THEY'RE INTO (from what they save, most first): ${interests(saves) || "(nothing saved yet)"}
-${memories.length ? `\nFROM EARLIER CHATS (things said before that may matter now, best match first):\n${memories.map((m) => `[${m.at.slice(0, 10)}] They said: ${m.said.slice(0, 500)}\nYou answered: ${m.answered.slice(0, 400)}`).join("\n\n")}\n` : ""}
+${extra.usage ? `\nTHEIR LIMITS IN KNOWING RIGHT NOW (this message already counted). If they ask what they have left, when it resets or how to get more, answer from this exactly, and say /usage shows it any time without using a question:\n${extra.usage}\n` : ""}${memories.length ? `\nFROM EARLIER CHATS (things said before that may matter now, best match first):\n${memories.map((m) => `[${m.at.slice(0, 10)}] They said: ${m.said.slice(0, 500)}\nYou answered: ${m.answered.slice(0, 400)}`).join("\n\n")}\n` : ""}
 How to answer:
 - If a save answers the question, answer from it. Lead with the steps or setup itself, exact details (names, positions, reps). No generic tips on top unless asked.
 - If they ask for something a video doesn't cover (like how to install what it shows), don't open with what's missing. Start with a quick recap of what the video does show, then get them what they need from what you know, making clear in passing which part is yours ("Your video shows what each one does. Here's how to set them up:").

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { handleUpdate, inviteCode, isOutOfCredit, limitText, parseAllowed, resetsIn, secretMatches, spend, type Deps, type Update } from "@/lib/bot/handle";
+import { asksAboutUsage, handleUpdate, inviteCode, isOutOfCredit, limitText, parseAllowed, resetsIn, secretMatches, spend, usageText, type Deps, type Update } from "@/lib/bot/handle";
 import { MemoryRetriever } from "@/lib/bot/rag";
 import { MemoryStore } from "@/lib/bot/store";
 import type { Answer, Brain, InlineButton, Media, Save, SaveDraft, TelegramApi, WatchResult } from "@/lib/bot/types";
@@ -213,6 +213,51 @@ describe("buying extras with Stars", () => {
     await handleUpdate(paid("ch1"), deps);
     await handleUpdate(tap("wipe:yes", 100, 99), deps);
     expect((await store.getWallet(99)).videos).toBe(10);
+  });
+});
+
+describe("usage", () => {
+  const at = Date.parse("2026-11-02T18:00:00Z");
+  const usage = { day: "2026-11-02", videos: 2, questions: 7 };
+  const limits = { videos: 5, questions: 10 };
+
+  it("shows what's left today, when it resets, and what they bought", () => {
+    expect(usageText(usage, limits, null, 100, at)).toBe(
+      "<b>Free today</b>, back to full in about 6 hours:\nVideos: 3 of 5 left\nQuestions: 3 of 10 left\n\nWhen your free ones run out, you can get 10 more videos or 20 more questions for 100 ⭐ each.",
+    );
+    expect(usageText(usage, limits, { videos: 1, questions: 20, paid: [] }, 100, at)).toContain("<b>Extras you bought:</b> 1 video and 20 questions. They never expire");
+    expect(usageText(usage, limits, null, 0, at)).not.toContain("⭐");
+  });
+
+  it("counts from zero on a new day, and never shows less than 0 left", () => {
+    expect(usageText({ day: "2026-11-01", videos: 5, questions: 10 }, limits, null, 0, at)).toContain("Videos: 5 of 5 left\nQuestions: 10 of 10 left");
+    expect(usageText({ day: "2026-11-02", videos: 9, questions: 10 }, limits, null, 0, at)).toContain("Videos: 0 of 5 left\nQuestions: 0 of 10 left");
+  });
+
+  it("spots questions about what's left, but not real questions about videos", () => {
+    for (const q of ["How many questions do I have left?", "how many videos left today", "how many more videos can I send", "How many questions can I ask?", "any questions left?", "what's my limit", "My usage", "Whats my daily limit?", "videos remaining?"]) expect(asksAboutUsage(q), q).toBe(true);
+    for (const q of ["how many videos have I saved about pasta?", "do you still have my pasta video?", "the video where he turns left", "how do I push my limits in the gym?", "what was the speed limit in that video?", "how many questions are on the SAT?"]) expect(asksAboutUsage(q), q).toBe(false);
+  });
+
+  it("answers /usage and \"how many do I have left?\" without using a question, even at the limit", async () => {
+    const { deps, sent, brain } = setup({ limits: { videos: 5, questions: 1 } });
+    await handleUpdate(text("what was that drill?"), deps);
+    await handleUpdate(text("/usage"), deps);
+    expect(sent.at(-1)?.html).toContain("Questions: 0 of 1 left");
+    await handleUpdate(text("how many questions do I have left?"), deps);
+    expect(sent.at(-1)?.html).toContain("Questions: 0 of 1 left");
+    expect(sent.at(-1)?.buttons).toBeUndefined();
+    expect(brain.answer).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows bought extras, and tells the bot the numbers so any wording works", async () => {
+    const { deps, sent, brain, store } = setup({ limits: { videos: 5, questions: 10 } });
+    await store.saveWallet(7, { videos: 10, questions: 0, paid: [] });
+    await handleUpdate(text("/usage"), deps);
+    expect(sent.at(-1)?.html).toContain("Extras you bought:</b> 10 videos and 0 questions");
+    await handleUpdate(text("can I still send stuff today?"), deps);
+    expect(brain.answer).toHaveBeenCalledWith(expect.objectContaining({ usage: expect.stringContaining("Questions: 9 of 10 left") }));
+    expect(vi.mocked(brain.answer).mock.calls[0][0].usage).not.toContain("<b>");
   });
 });
 

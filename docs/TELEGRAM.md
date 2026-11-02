@@ -21,6 +21,7 @@ save captions or repeat themselves, and you can talk to it about anything.
 | Mention something about you ("I'm Gold on PC", "I love Ferraris") | Remembers it, so you never repeat it. Every chat is also kept and searchable, so "what did I tell you about my tryout?" works weeks later |
 | `/memory` | Shows what it remembers about you, with a button to forget each one |
 | `/saved` | Lists everything, grouped by topic, each linked to its video |
+| `/usage` (or ask "how many questions do I have left?") | Shows the free videos and questions left today, when they reset, and any extras you bought. Checking never uses up a question |
 
 If a video is mostly talking and audio isn't available, the card offers **Add what it says**: paste the caption and the save is rewritten to be exact.
 
@@ -106,7 +107,7 @@ https://<your-app>.vercel.app/api/telegram/setup?key=<TELEGRAM_WEBHOOK_SECRET>
 ```
 
 It should say `"ok": true` and your bot's name. This points Telegram at your app and fills in the
-bot's commands menu (`/saved`, `/memory`, `/help`, `/delete`, `/support`) and the text people see
+bot's commands menu (`/saved`, `/memory`, `/usage`, `/help`, `/delete`, `/support`) and the text people see
 before they tap Start. Running it again is harmless, and it's needed once after updates that change
 what Telegram sends the bot (like payments).
 
