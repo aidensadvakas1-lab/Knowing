@@ -7,6 +7,7 @@
  *
  * Setup is in docs/TELEGRAM.md.
  */
+import { createHash } from "node:crypto";
 import { after } from "next/server";
 import { createBrain } from "@/lib/bot/brain";
 import { pricedPacks } from "@/lib/bot/costs";
@@ -74,7 +75,13 @@ export async function POST(request: Request): Promise<Response> {
     retriever: new SupabaseRetriever(process.env.SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!, createEmbedder()),
     isAllowed: (id) => allowed.has(id),
     ownerId: owner,
-    invite: { code, spots: positive(process.env.KNOWING_INVITE_SPOTS, INVITE_SPOTS), link: async () => `https://t.me/${await tg.username()}?start=${code}` },
+    invite: {
+      code,
+      spots: positive(process.env.KNOWING_INVITE_SPOTS, INVITE_SPOTS),
+      // Signs everyone's own /invite link, so nobody can make one up for someone else.
+      key: createHash("sha256").update(`knowing-referral:${process.env.TELEGRAM_WEBHOOK_SECRET}`).digest("base64url"),
+      link: async (start = code) => `https://t.me/${await tg.username()}?start=${start}`,
+    },
     packs: packsSetting(process.env.KNOWING_PACK_STARS),
     limits: {
       videos: positive(process.env.KNOWING_FREE_VIDEOS ?? process.env.KNOWING_DAILY_VIDEOS, FREE_VIDEOS),

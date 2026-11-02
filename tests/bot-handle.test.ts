@@ -3,6 +3,7 @@ import { asksAboutUsage, handleUpdate, inviteCode, isOutOfCredit, limitText, par
 import { MemoryRetriever } from "@/lib/bot/rag";
 import { MemoryStore } from "@/lib/bot/store";
 import { WELCOME } from "@/lib/bot/profile";
+import { readReferral, referralCode } from "@/lib/bot/referral";
 import { NoTranscription, type Answer, type Brain, type InlineButton, type Media, type Pack, type Save, type SaveDraft, type TelegramApi, type WatchResult } from "@/lib/bot/types";
 
 /** Packs on sale in these tests. */
@@ -47,7 +48,7 @@ function setup(opts: { answer?: Partial<Answer>; draft?: Partial<SaveDraft>; wat
   if (!opts.newcomers) for (const id of [7, FRIEND]) store.digests.set(id, { on: false, offered: true, sent: "", quiet: 0 });
   const retriever = new MemoryRetriever();
   const alerts: string[] = [];
-  const deps: Deps = { tg, store, brain, media, retriever, isAllowed: (id) => id === 7 || id === FRIEND, ownerId: 7, invite: { code: "join-abc123", spots: opts.spots ?? 10, link: async () => "https://t.me/KnowingTestBot?start=join-abc123" }, limits: opts.limits ?? { videos: 50, questions: 50 }, packs: opts.packs ?? PACKS, alert: async (t) => void alerts.push(t) };
+  const deps: Deps = { tg, store, brain, media, retriever, isAllowed: (id) => id === 7 || id === FRIEND, ownerId: 7, invite: { code: "join-abc123", spots: opts.spots ?? 10, key: "test-key", link: async (start = "join-abc123") => `https://t.me/KnowingTestBot?start=${start}` }, limits: opts.limits ?? { videos: 50, questions: 50 }, packs: opts.packs ?? PACKS, alert: async (t) => void alerts.push(t) };
   return { deps, sent, edits, store, brain, media, retriever, alerts };
 }
 
@@ -107,15 +108,17 @@ describe("invite link", () => {
     expect(sent.filter((m) => m.chatId === 7).at(-1)?.html).toContain("Alex tried to join with your invite link, but all 1 spots are taken");
   });
 
-  it("gives the owner the link and the spots used with /invite, and nobody else", async () => {
+  it("gives the owner the main link and the spots used with /invite, and everyone else their own link", async () => {
     const { deps, sent, brain } = setup();
     await handleUpdate(text("/start join-abc123", 99), deps);
     await handleUpdate(text("/invite"), deps);
     expect(sent.at(-1)?.html).toContain("https://t.me/KnowingTestBot?start=join-abc123");
     expect(sent.at(-1)?.html).toContain("1 of 10 spots used");
     await handleUpdate(text("/invite", 99), deps);
-    expect(sent.at(-1)?.html).not.toContain("t.me");
-    expect(brain.answer).toHaveBeenCalledTimes(1);
+    expect(sent.at(-1)?.html).toContain(`https://t.me/KnowingTestBot?start=${referralCode("test-key", 99)}`);
+    expect(sent.at(-1)?.html).not.toContain("join-abc123");
+    expect(sent.at(-1)?.html).toContain("saves a video and asks me something, you get 3 free videos");
+    expect(brain.answer).not.toHaveBeenCalled();
   });
 
   it("keeps someone's spot and what they've used after /delete, so it can't hand out new free ones", async () => {
@@ -128,6 +131,88 @@ describe("invite link", () => {
     expect(user.facts).toEqual([]);
     expect(user.usage.videos).toBe(1);
     expect(store.saves.filter((s) => s.userId === 99)).toHaveLength(0);
+  });
+});
+
+describe("inviting friends", () => {
+  const link = (inviter: number) => `/start ${referralCode("test-key", inviter)}`;
+
+  it("makes a link only the right key can read, and turns away made-up ones", () => {
+    const code = referralCode("test-key", 8429146259);
+    expect(code).toMatch(/^[A-Za-z0-9_-]{1,64}$/);
+    expect(readReferral("test-key", code)).toBe(8429146259);
+    expect(readReferral("other-key", code)).toBe(0);
+    expect(readReferral("test-key", code.replace(/^r[0-9a-z]+_/, "r1_"))).toBe(0);
+    expect(readReferral("test-key", "join-abc123")).toBe(0);
+    expect(readReferral("", code)).toBe(0);
+  });
+
+  it("lets a friend join with someone's own link, using up a spot, and tells both of them", async () => {
+    const { deps, sent, store } = setup({ spots: 1 });
+    await handleUpdate(text(link(FRIEND), 99, "Sam"), deps);
+    expect(await store.hasUser(99)).toBe(true);
+    expect((await store.getReferral(99)).by).toBe(FRIEND);
+    expect(sent.find((m) => m.chatId === FRIEND)?.html).toBe("Sam joined Knowing with your link. Once they save a video and ask me something, you get 3 free videos.");
+    expect(sent.find((m) => m.chatId === 7)?.html).toContain(`Sam joined Knowing with a friend's invite link (<code>${FRIEND}</code>). 1 of 1 spots used.`);
+    // The spot is taken, so the next friend has to wait.
+    await handleUpdate(text(link(FRIEND), 98), deps);
+    expect(await store.hasUser(98)).toBe(false);
+    expect(sent.filter((m) => m.chatId === 98).at(-1)?.html).toContain("full right now");
+  });
+
+  it("turns away a link that's made up or belongs to someone not in Knowing", async () => {
+    const { deps, store } = setup();
+    await handleUpdate(text("/start r8_AAAAAAAAAA", 99), deps);
+    await handleUpdate(text(link(12345), 98), deps);
+    expect(await store.hasUser(99)).toBe(false);
+    expect(await store.hasUser(98)).toBe(false);
+  });
+
+  it("gives the inviter 3 free videos only once the friend has saved a video and asked something, and only once", async () => {
+    const { deps, sent, store } = setup();
+    await handleUpdate(text(link(FRIEND), 99, "Sam"), deps);
+    await handleUpdate(text("https://vm.tiktok.com/one/", 99), deps);
+    expect((await store.getWallet(FRIEND)).videos).toBe(0);
+    await handleUpdate(text("https://vm.tiktok.com/two/", 99), deps);
+    expect((await store.getWallet(FRIEND)).videos).toBe(0);
+    await handleUpdate(text("what was that drill?", 99), deps);
+    expect((await store.getWallet(FRIEND)).videos).toBe(3);
+    expect(sent.filter((m) => m.chatId === FRIEND).at(-1)?.html).toContain("Sam is using Knowing now, thanks to you, so you got <b>3 free videos</b>");
+    await handleUpdate(text("and the second one?", 99), deps);
+    await handleUpdate(text("https://vm.tiktok.com/three/", 99), deps);
+    expect((await store.getWallet(FRIEND)).videos).toBe(3);
+    expect((await store.getReferral(FRIEND)).rewarded).toBe(1);
+  });
+
+  it("still rewards a friend who saves lots of videos before asking anything", async () => {
+    const { deps, store } = setup();
+    await handleUpdate(text(link(FRIEND), 99), deps);
+    for (const n of [1, 2, 3, 4, 5]) await handleUpdate(text(`https://vm.tiktok.com/v${n}/`, 99), deps);
+    await handleUpdate(text("what was in the last one?", 99), deps);
+    expect((await store.getWallet(FRIEND)).videos).toBe(3);
+  });
+
+  it("stops rewarding after 5 friends, and says so in /invite", async () => {
+    const { deps, sent, store } = setup({ spots: 20 });
+    await store.saveReferral(FRIEND, { by: 0, name: "", credited: false, rewarded: 5 });
+    await handleUpdate(text(link(FRIEND), 99), deps);
+    await handleUpdate(text("https://vm.tiktok.com/one/", 99), deps);
+    await handleUpdate(text("what was that drill?", 99), deps);
+    expect((await store.getWallet(FRIEND)).videos).toBe(0);
+    await handleUpdate(text("/invite", FRIEND), deps);
+    expect(sent.at(-1)?.html).toContain("You've earned free videos for 5 friends, the most there is.");
+  });
+
+  it("keeps who invited them after /delete, so a wipe can't earn the inviter a second reward", async () => {
+    const { deps, store } = setup();
+    await handleUpdate(text(link(FRIEND), 99), deps);
+    await handleUpdate(text("https://vm.tiktok.com/one/", 99), deps);
+    await handleUpdate(text("what was that drill?", 99), deps);
+    await handleUpdate(tap("wipe:yes", 100, 99), deps);
+    expect(await store.getReferral(99)).toMatchObject({ by: FRIEND, credited: true });
+    await handleUpdate(text("https://vm.tiktok.com/two/", 99), deps);
+    await handleUpdate(text("and that one?", 99), deps);
+    expect((await store.getWallet(FRIEND)).videos).toBe(3);
   });
 });
 
@@ -279,7 +364,7 @@ describe("usage", () => {
     expect(usageText(usage, limits, null, PACKS)).toBe(
       "<b>Free to start</b> (given once, they don't refill):\nVideos: 3 of 5 left\nQuestions: 3 of 10 left\n\n<b>Get more any time</b> with /buy: 10 videos for 150 ⭐, 20 for 300 ⭐; 20 questions for 150 ⭐, 40 for 300 ⭐. They never expire.",
     );
-    expect(usageText(usage, limits, { videos: 1, questions: 20, paid: [] }, PACKS)).toContain("<b>Extras you bought:</b> 1 video and 20 questions. They never expire");
+    expect(usageText(usage, limits, { videos: 1, questions: 20, paid: [] }, PACKS)).toContain("<b>Extras:</b> 1 video and 20 questions, bought or earned with /invite. They never expire");
     expect(usageText(usage, limits, null, [])).not.toContain("⭐");
   });
 
@@ -308,7 +393,7 @@ describe("usage", () => {
     const { deps, sent, brain, store } = setup({ limits: { videos: 5, questions: 10 } });
     await store.saveWallet(FRIEND, { videos: 10, questions: 0, paid: [] });
     await handleUpdate(text("/usage", FRIEND), deps);
-    expect(sent.at(-1)?.html).toContain("Extras you bought:</b> 10 videos and 0 questions");
+    expect(sent.at(-1)?.html).toContain("Extras:</b> 10 videos and 0 questions");
     await handleUpdate(text("can I still send stuff today?", FRIEND), deps);
     expect(brain.answer).toHaveBeenCalledWith(expect.objectContaining({ usage: expect.stringContaining("Questions: 9 of 10 left") }));
     expect(vi.mocked(brain.answer).mock.calls[0][0].usage).not.toContain("<b>");

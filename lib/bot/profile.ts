@@ -12,6 +12,7 @@ export const COMMANDS = [
   { command: "memory", description: "What I remember about you" },
   { command: "usage", description: "What you have left" },
   { command: "buy", description: "Get more videos or questions" },
+  { command: "invite", description: "Invite friends, earn free videos" },
   { command: "delete", description: "Delete all your data" },
   { command: "support", description: "Ask the owner for help" },
 ] as const;
@@ -72,7 +73,9 @@ If you turn it on, every Sunday I send a short note with what you saved that wee
     id: "limits",
     button: "⭐ Limits and extras",
     text: (limits) => `<b>Limits and extras</b>
-You start with ${limits.videos} free videos and ${limits.questions} free questions, given once. /usage shows what's left, and /buy gets more any time. Extras never expire.`,
+You start with ${limits.videos} free videos and ${limits.questions} free questions, given once. /usage shows what's left, and /buy gets more any time. Extras never expire.
+
+/invite gives you your own link. When a friend joins with it, saves a video and asks me something, you get 3 free videos (for up to 5 friends).`,
   },
   {
     id: "data",

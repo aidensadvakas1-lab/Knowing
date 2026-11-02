@@ -29,6 +29,7 @@ save captions or repeat themselves, and you can talk to it about anything.
 | `/digest` | The weekly flashback: off until you turn it on (it's offered once, at `/start` or after the next save). Every Sunday around 17:00 UTC: what you saved that week by folder plus one from about a month ago, or, in a week with no saves, a few older ones (about a week, a month and three months old). No AI, so it's free. It pauses after 3 in a row with no reply, and `/digest off` stops it |
 | `/usage` (or ask "how many questions do I have left?") | Shows the free videos and questions left, any extras you bought, and buttons to buy more. Checking never uses up a question |
 | `/buy` | Every pack on sale, any time, even before the free ones run out |
+| `/invite` | Your own invite link. When a friend joins with it, saves a video and asks something, you get 3 free videos, for up to 5 friends. (For the owner, `/invite` gives the main link and the spots used) |
 
 If a video is mostly talking and audio isn't available, the card offers **Add what it says**: paste the caption and the save is rewritten to be exact.
 
@@ -126,7 +127,7 @@ https://<your-app>.vercel.app/api/telegram/setup?key=<TELEGRAM_WEBHOOK_SECRET>
 ```
 
 It should say `"ok": true` and your bot's name. This points Telegram at your app and fills in the
-bot's commands menu (`/help`, `/folders`, `/saved`, `/digest`, `/memory`, `/usage`, `/buy`, `/delete`, `/support`) and the text people see
+bot's commands menu (`/help`, `/folders`, `/saved`, `/digest`, `/memory`, `/usage`, `/buy`, `/invite`, `/delete`, `/support`) and the text people see
 before they tap Start. Running it again is harmless, and it's needed once after updates that change
 what Telegram sends the bot (like payments).
 
@@ -148,6 +149,18 @@ is turned away because it's full. People added in `TELEGRAM_ALLOWED_USERS` don't
 The link's code comes from your webhook secret, so it can't be guessed. If it spreads further than
 you wanted, set `KNOWING_INVITE_CODE` to a new code and redeploy: the old link stops working, and
 people who already joined stay in.
+
+### Friends inviting friends
+
+Everyone else who sends `/invite` gets their own link. A friend who joins with it uses up a spot
+like anyone else, so the total stays capped. The person who invited them gets 3 free videos (added
+to their extras) only after the friend has saved a video **and** asked a question, so a fake
+account that only taps the link earns nothing. That works for up to 5 friends per person, and
+`/delete` doesn't reset it. Both of you get a message when they join, and when the reward lands.
+
+Each link is signed with a key made from your webhook secret, so nobody can make up a link for
+someone else. It needs the `referral` column, which running [`supabase.sql`](supabase.sql) again
+adds. Worst case, 3 videos cost about 50¢ of AI, for a person who's actually using the bot.
 
 ### Sell extra videos and questions (Telegram Stars)
 

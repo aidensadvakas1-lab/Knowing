@@ -12,6 +12,8 @@
  *   at /start or after their next save.
  * - Asking "how many questions do I have left?" gets the same answer as /usage, for free.
  * - An invite link lets people in without editing settings, up to a set number of spots.
+ *   Everyone also has their own link (/invite), and earns free videos once a friend who
+ *   joined with it saves a video and asks something (referral.ts).
  * - Free videos and questions are given once. Packs of extras can be bought with
  *   Telegram Stars any time (/buy), priced so even their worst case leaves a profit (costs.ts).
  *   /terms, /support and /paysupport, plus /refund and /reply for the owner.
@@ -25,6 +27,7 @@ import { isVideoFile } from "./platforms";
 import { GUIDE, guideButtons, WELCOME } from "./profile";
 import { buyButtons, invoiceFor, packName, PAYSUPPORT_HELP, priceList, readPack, SUPPORT_HELP, TERMS } from "./shop";
 import { relevantSaves, sharedVideoTurns } from "./prompts";
+import { hasStarted, readReferral, REFERRAL_MAX, REFERRAL_QUESTIONS, REFERRAL_REWARD, REFERRAL_VIDEOS, referralCode } from "./referral";
 import { groupHits, searchQuery, type Retriever } from "./rag";
 import { FACTS_KEPT, newSaveId, newUser, TURNS_KEPT } from "./store";
 import { findUrl } from "./tiktok";
@@ -41,8 +44,12 @@ export interface Deps {
   isAllowed(userId: number): boolean;
   /** Who gets join notices and may use /invite. 0 if nobody. */
   ownerId: number;
-  /** The invite link: whoever opens it can join, until `spots` people have joined that way. */
-  invite: { code: string; spots: number; link(): Promise<string> };
+  /**
+   * The invite link: whoever opens it can join, until `spots` people have joined
+   * that way (with it or with someone's own link). `key` signs everyone's own
+   * links; `link(start)` makes a link with that code, the owner's by default.
+   */
+  invite: { code: string; spots: number; key: string; link(start?: string): Promise<string> };
   /** Free videos and questions per person, given once (they don't refill), so nobody can run up the API bill. */
   limits: { videos: number; questions: number };
   /** The packs of extras on sale and their prices in Stars (costs.ts pricedPacks). Empty turns buying off. */
@@ -153,7 +160,7 @@ export function usageText(usage: Usage, limits: Deps["limits"], wallet: Wallet |
     `Questions: ${left("questions")} of ${limits.questions} left`,
   ];
   if (wallet && (wallet.videos || wallet.questions)) {
-    lines.push("", `<b>Extras you bought:</b> ${wallet.videos} video${wallet.videos === 1 ? "" : "s"} and ${wallet.questions} question${wallet.questions === 1 ? "" : "s"}. They never expire and are used after your free ones.`);
+    lines.push("", `<b>Extras:</b> ${wallet.videos} video${wallet.videos === 1 ? "" : "s"} and ${wallet.questions} question${wallet.questions === 1 ? "" : "s"}, bought or earned with /invite. They never expire and are used after your free ones.`);
   }
   if (packs.length) {
     lines.push("", `<b>Get more any time</b> with /buy: ${priceList(packs, "videos")}; ${priceList(packs, "questions")}. They never expire.`);
@@ -197,14 +204,16 @@ export async function handleUpdate(update: Update, deps: Deps): Promise<void> {
     if (!(await hasAccess(userId, deps))) {
       const code = text.startsWith("/start ") ? text.slice(7).trim() : "";
       const invited = code !== "" && deps.invite.code !== "" && secretMatches(code, deps.invite.code);
-      if (!invited) return void (await deps.tg.sendMessage(chatId, privateText(userId)));
-      if (!(await join(chatId, userId, msg.from.first_name, deps))) return;
+      const inviter = invited || !code ? 0 : await inviterFrom(code, userId, deps);
+      if (!invited && !inviter) return void (await deps.tg.sendMessage(chatId, privateText(userId)));
+      if (!(await join(chatId, userId, msg.from.first_name, deps, inviter))) return;
     }
     if (text.startsWith("/invite") && userId === deps.ownerId) {
       const used = await spotsUsed(deps);
       await deps.tg.sendMessage(chatId, `Your invite link:\n${await deps.invite.link()}\n\n${used} of ${deps.invite.spots} spots used. Anyone who opens the link can join until the spots run out. I'll message you each time someone joins.`);
       return;
     }
+    if (text.startsWith("/invite")) return await showReferral(chatId, userId, deps);
     if (userId === deps.ownerId && /^\/(refund|reply)\b/.test(text)) return await ownerCommand(chatId, text, deps);
     if (text.startsWith("/terms")) return void (await deps.tg.sendMessage(chatId, TERMS));
     const support = /^\/(pay)?support\b/.exec(text);
@@ -482,17 +491,30 @@ async function tellOwner(deps: Deps, html: string): Promise<void> {
   if (deps.ownerId) await deps.tg.sendMessage(deps.ownerId, html).catch((error) => console.error("Owner notice failed", error));
 }
 
-/** Someone opened the invite link: let them in if a spot is free. Tells the owner either way. */
-async function join(chatId: number, userId: number, name: string | undefined, deps: Deps): Promise<boolean> {
+/**
+ * Someone opened the invite link, or a friend's own link (`inviter`): let them
+ * in if a spot is free. Tells the owner either way, and the friend who invited them.
+ */
+async function join(chatId: number, userId: number, name: string | undefined, deps: Deps, inviter = 0): Promise<boolean> {
   const used = await spotsUsed(deps);
   const who = name ? esc(name) : "Someone";
+  const whose = inviter ? "a friend's invite link" : "your invite link";
   if (used >= deps.invite.spots) {
     await deps.tg.sendMessage(chatId, FULL);
-    await tellOwner(deps, `${who} tried to join with your invite link, but all ${deps.invite.spots} spots are taken. To make room, raise KNOWING_INVITE_SPOTS in Vercel.`);
+    await tellOwner(deps, `${who} tried to join with ${whose}, but all ${deps.invite.spots} spots are taken. To make room, raise KNOWING_INVITE_SPOTS in Vercel.`);
     return false;
   }
   await deps.store.saveUser(newUser(userId));
-  await tellOwner(deps, `${who} joined Knowing with your invite link. ${used + 1} of ${deps.invite.spots} spots used.`);
+  if (inviter) {
+    try {
+      await deps.store.saveReferral(userId, { by: inviter, name: (name ?? "").slice(0, 64), credited: false, rewarded: 0 });
+      await deps.tg.sendMessage(inviter, `${who} joined Knowing with your link. Once they save a video and ask me something, you get ${REFERRAL_REWARD} free videos.`).catch(() => {});
+    } catch (error) {
+      const detail = (error instanceof Error ? error.message : String(error)).slice(0, 200);
+      await deps.alert(`Couldn't record who invited a new user. If you haven't, run docs/supabase.sql again in Supabase. ${detail}`).catch(() => {});
+    }
+  }
+  await tellOwner(deps, `${who} joined Knowing with ${whose}${inviter ? ` (<code>${inviter}</code>)` : ""}. ${used + 1} of ${deps.invite.spots} spots used.`);
   return true;
 }
 
@@ -552,6 +574,7 @@ async function saveWatched(chatId: number, status: number, user: BotUser, input:
   await deps.tg.editMessage(chatId, status, reactionText(watched.reply, save, input.notes), reactionButtons(save, decide, watched.relation === "alternative" ? "alternative" : "duplicate"));
   // People who started before the flashback existed are asked once, here.
   await offerFlashback(chatId, user.id, deps);
+  await rewardInviter(user, "videos", deps);
 }
 
 /** The message after Add what it says or Fix something: remake that save with it. */
@@ -593,6 +616,55 @@ async function answer(chatId: number, user: BotUser, question: string, deps: Dep
   // Every chat is kept and searchable, so something said weeks ago can still come back.
   const memory: ChatMemory = { said: question.slice(0, 4_000), answered: reply.text.slice(0, 4_000), at: new Date().toISOString() };
   await deps.retriever.remember(user.id, memory).catch((error) => console.error("Remembering the chat failed", error));
+  await rewardInviter(user, "questions", deps);
+}
+
+/** Whose own invite link this code is, if it's real and they're still in. 0 otherwise. */
+async function inviterFrom(code: string, userId: number, deps: Deps): Promise<number> {
+  const id = readReferral(deps.invite.key, code);
+  return id && id !== userId && (await hasAccess(id, deps)) ? id : 0;
+}
+
+/** /invite for everyone but the owner: their own link, and what it earns them. */
+async function showReferral(chatId: number, userId: number, deps: Deps): Promise<void> {
+  const link = await deps.invite.link(referralCode(deps.invite.key, userId));
+  const earned = (await deps.store.getReferral(userId).catch(() => null))?.rewarded ?? 0;
+  const how = `When a friend joins with it, saves a video and asks me something, you get ${REFERRAL_REWARD} free videos`;
+  const text =
+    earned >= REFERRAL_MAX
+      ? `Your invite link:\n${link}\n\nYou've earned free videos for ${REFERRAL_MAX} friends, the most there is. Friends can still join with it.`
+      : `Your invite link:\n${link}\n\n${how}. That works for up to ${REFERRAL_MAX} friends${earned ? ` (${earned} so far)` : ""}. Spots are limited while Knowing is invite-only.`;
+  await deps.tg.sendMessage(chatId, text);
+}
+
+/**
+ * Once someone who joined with a friend's link has saved a video and asked
+ * something, give that friend their free videos (once, for up to REFERRAL_MAX
+ * friends). Checked only on their first few saves and first few questions, so
+ * it costs a database read for a handful of messages, not every one, and still
+ * works for someone who saves ten videos before asking anything.
+ */
+async function rewardInviter(user: BotUser, kind: PackKind, deps: Deps): Promise<void> {
+  const needed = kind === "videos" ? REFERRAL_VIDEOS : REFERRAL_QUESTIONS;
+  if (!hasStarted(user.usage) || user.usage[kind] > needed + 2) return;
+  try {
+    const mine = await deps.store.getReferral(user.id);
+    if (!mine.by || mine.credited) return;
+    // Marked first, so a friend is counted once even if two messages land at the same time.
+    await deps.store.saveReferral(user.id, { ...mine, credited: true });
+    const theirs = await deps.store.getReferral(mine.by);
+    if (theirs.rewarded >= REFERRAL_MAX) return;
+    await deps.store.saveReferral(mine.by, { ...theirs, rewarded: theirs.rewarded + 1 });
+    const wallet = await deps.store.getWallet(mine.by);
+    await deps.store.saveWallet(mine.by, { ...wallet, videos: wallet.videos + REFERRAL_REWARD });
+    const who = mine.name ? esc(mine.name) : "A friend you invited";
+    const left = REFERRAL_MAX - theirs.rewarded - 1;
+    await deps.tg
+      .sendMessage(mine.by, `🎉 ${who} is using Knowing now, thanks to you, so you got <b>${REFERRAL_REWARD} free videos</b>. They never expire.${left ? ` You can earn this for ${left} more friend${left === 1 ? "" : "s"}.` : ""}`)
+      .catch(() => {});
+  } catch (error) {
+    console.error("Rewarding an invite failed", error);
+  }
 }
 
 async function onButton(q: NonNullable<Update["callback_query"]>, deps: Deps) {
@@ -634,10 +706,13 @@ async function onButton(q: NonNullable<Update["callback_query"]>, deps: Deps) {
       if (id === "yes") {
         const { usage } = await deps.store.getUser(q.from.id);
         const wallet = await deps.store.getWallet(q.from.id).catch(() => null);
+        const referral = await deps.store.getReferral(q.from.id).catch(() => null);
         await deps.store.deleteUser(q.from.id);
-        // An empty row keeps their spot, what they've used and what they bought, so deleting doesn't lock them out or hand out new free ones.
+        // An empty row keeps their spot, what they've used, what they bought and their invite rewards,
+        // so deleting doesn't lock them out or hand out new free ones.
         await deps.store.saveUser({ ...newUser(q.from.id), usage });
         if (wallet && (wallet.videos || wallet.questions || wallet.paid.length)) await deps.store.saveWallet(q.from.id, wallet);
+        if (referral && (referral.by || referral.rewarded)) await deps.store.saveReferral(q.from.id, referral);
       }
       await deps.tg.answerCallback(q.id, id === "yes" ? "Deleted" : undefined);
       await deps.tg.editMessage(chatId, messageId, id === "yes" ? "Deleted. Everything you saved, our chats and everything I remembered about you are gone." : "Cancelled. Nothing was deleted.");

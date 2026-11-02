@@ -116,6 +116,18 @@ export interface DigestState {
   quiet: number;
 }
 
+/** Who invited them, and how many friends they've earned free videos for (referral.ts). */
+export interface Referral {
+  /** Who invited them, or 0. */
+  by: number;
+  /** Their first name when they joined, for the message to whoever invited them. */
+  name: string;
+  /** True once whoever invited them got their reward, so it's given once. */
+  credited: boolean;
+  /** Friends they invited who earned them free videos. */
+  rewarded: number;
+}
+
 /** One scroll session: videos shared close together. Which videos is worked out from the saves' times. */
 export interface Sitting {
   /** When the latest video in it was saved (ISO). */
@@ -158,6 +170,10 @@ export interface Store {
   saveDigest(userId: number, digest: DigestState): Promise<void>;
   /** Everyone with the flashback on, and when they last messaged the bot (ISO). */
   listDigestUsers(): Promise<Array<{ id: number; digest: DigestState; active: string }>>;
+  /** Their invite record. Throws if the referral column is missing (docs/supabase.sql not run again). */
+  getReferral(userId: number): Promise<Referral>;
+  /** Writes only the invite record, creating the row if needed. */
+  saveReferral(userId: number, referral: Referral): Promise<void>;
 }
 
 /** What we could get out of a video: frames to look at, speech, and the caption. */
