@@ -135,6 +135,22 @@ describe("buying extras with Stars", () => {
     expect(datas(sent.at(-1)?.buttons)).toEqual(["buy:questions"]);
   });
 
+  it("says so when Telegram won't make the payment screen, instead of doing nothing", async () => {
+    const { deps, sent } = setup({ limits: { videos: 1, questions: 1 } });
+    await handleUpdate(text("/start join-abc123", 99), deps);
+    vi.mocked(deps.tg.sendInvoice).mockRejectedValueOnce(new Error("sendInvoice: Bad Request: STARS_INVOICE_INVALID"));
+    await handleUpdate(tap("buy:questions", 100, 99), deps);
+    expect(sent.find((m) => m.chatId === 99 && m.html.includes("payment screen"))?.html).toContain("nothing was charged");
+    expect(sent.at(-1)).toMatchObject({ chatId: 7, html: expect.stringContaining("STARS_INVOICE_INVALID") });
+  });
+
+  it("explains a buy button tapped after buying was turned off", async () => {
+    const { deps, sent } = setup({ packStars: 0 });
+    await handleUpdate(tap("buy:videos"), deps);
+    expect(deps.tg.sendInvoice).not.toHaveBeenCalled();
+    expect(sent.at(-1)?.html).toBe("Buying extras is turned off right now.");
+  });
+
   it("shows no buy button when buying is turned off", async () => {
     const { deps, sent } = setup({ limits: { videos: 1, questions: 1 }, packStars: 0 });
     await handleUpdate(text("https://vm.tiktok.com/one/"), deps);

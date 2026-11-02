@@ -82,6 +82,8 @@ export class Telegram implements TelegramApi {
       title: invoice.title.slice(0, 32),
       description: invoice.description.slice(0, 255),
       payload: invoice.payload,
+      // Empty for Stars, as Telegram's guide says: no payment provider.
+      provider_token: "",
       currency: "XTR",
       prices: [{ label: invoice.title.slice(0, 32), amount: invoice.stars }],
     });
