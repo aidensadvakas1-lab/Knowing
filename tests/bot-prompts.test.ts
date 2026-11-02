@@ -115,6 +115,14 @@ describe("buildAskSystem", () => {
     const plain = buildAskSystem(newUser(1), [], [], "2026-10-31");
     expect(plain).not.toContain("first name");
     expect(plain).not.toContain("FROM EARLIER CHATS");
+    expect(plain).not.toContain("THEIR LIMITS");
+  });
+
+  it("knows their limits, so it can say what's left in any wording", () => {
+    const p = buildAskSystem(newUser(1), [], [], "2026-11-02", { usage: "Free today, back to full in about 6 hours:\nVideos: 3 of 5 left" });
+    expect(p).toContain("THEIR LIMITS IN KNOWING RIGHT NOW (this message already counted)");
+    expect(p).toContain("Videos: 3 of 5 left");
+    expect(p).toContain("/usage shows it any time without using a question");
   });
 
   it("recaps first, helps one step at a time, and never guesses a command", () => {
@@ -126,7 +134,9 @@ describe("buildAskSystem", () => {
     expect(p).toContain("point them to the official source");
     expect(p).toContain("so they can tap it to copy");
     expect(p).toContain("```");
-    expect(p).toContain("put its id on an ABOUT: line instead");
+    expect(p).toContain("so they're never told it came from their save");
+    expect(p).toContain('listed under your answer as "Videos related to this topic"');
+    expect(p).toContain("leave the line out when none do, like in small talk");
   });
 
   it("gives each matching save's link, so it can hand a video back", () => {
@@ -159,6 +169,7 @@ describe("parseAnswer", () => {
     const a = parseAnswer("Run this first.\nREMEMBER: Uses a Mac\nABOUT: m1, zz, a1\nSOURCES: a1", ["a1", "m1"]);
     expect(a).toEqual({ text: "Run this first.", sources: ["a1"], about: ["m1"], remember: ["Uses a Mac"] });
     expect(parseAnswer("Steps from me.\nABOUT: m1\nSOURCES: none", ["m1"])).toMatchObject({ text: "Steps from me.", sources: [], about: ["m1"] });
+    expect(parseAnswer("Here's the plan.\nRELATED: m1, b2, a1\nSOURCES: a1", ["a1", "m1", "b2"])).toMatchObject({ text: "Here's the plan.", sources: ["a1"], about: ["m1", "b2"] });
   });
   it("handles a plain answer", () => {
     expect(parseAnswer("Nothing saved on that yet.\nSOURCES: none", [])).toMatchObject({ text: "Nothing saved on that yet.", sources: [], remember: [] });

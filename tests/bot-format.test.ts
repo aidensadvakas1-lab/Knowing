@@ -67,12 +67,19 @@ describe("answerText", () => {
     expect(answerText("Do **this**", [drill])).toContain("From your save: Split dodge &lt;weak hand&gt;");
     expect(answerText("Hi", [])).toBe("Hi");
     const about = answerText("Here's how to set them up.", [], [drill]);
-    expect(about).toContain("Your video: Split dodge &lt;weak hand&gt;");
+    expect(about).toContain("<b>Videos related to this topic:</b>\n• Split dodge &lt;weak hand&gt;");
     expect(about).not.toContain("From your save");
     const other = { ...drill, id: "d2", title: "Bank setup" };
     expect(answerText("Both", [drill], [other, drill])).toBe(
-      "Both\n\n<i>From your save: Split dodge &lt;weak hand&gt;</i>\n<i>Your video: Bank setup</i>",
+      "Both\n\n<i>From your save: Split dodge &lt;weak hand&gt;</i>\n\n<b>Videos related to this topic:</b>\n• Bank setup",
     );
+  });
+  it("lists at most 5 related videos, each once", () => {
+    const many = Array.from({ length: 8 }, (_, i) => ({ ...drill, id: `r${i}`, title: `Video ${i}` }));
+    const out = answerText("Here you go", [], [...many, many[0]!]);
+    expect(out.match(/• /g)).toHaveLength(5);
+    expect(out).toContain("• Video 4");
+    expect(out).not.toContain("Video 5");
   });
   it("links each save to its video when there is a link", () => {
     const linked: Save = { ...drill, title: "Club 2F bathroom", sourceUrl: "https://www.tiktok.com/@pro/video/1?a=1&b=2" };

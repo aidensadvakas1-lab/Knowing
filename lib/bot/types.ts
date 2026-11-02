@@ -159,7 +159,7 @@ export interface Answer {
   text: string;
   /** Ids of the saves the answer came from. */
   sources: string[];
-  /** Ids of saves the chat is about when the useful part came from Claude's own knowledge (like install steps a video skips). */
+  /** Ids of saves on the same topic that the answer didn't come from (including one the chat is about when the useful part came from Claude, like install steps a video skips). Shown as "Videos related to this topic". */
   about: string[];
   /** New lasting facts the user mentioned. */
   remember: string[];
@@ -188,6 +188,8 @@ export interface AskInput {
   name?: string;
   /** Older chats that match this message, best first. */
   memories?: ChatMemory[];
+  /** What they have left today and bought (the /usage text, plain), so "how many do I have left?" in any words gets real numbers. */
+  usage?: string;
 }
 
 /** One exchange from the chat, kept so it can be found again weeks later. */

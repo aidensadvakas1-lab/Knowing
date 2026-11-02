@@ -46,10 +46,10 @@ export function createBrain(): Brain {
       return cleanDraft(await watchJson([{ type: "text", text: prompt }]), save.title);
     },
 
-    async answer({ user, question, saves, retrieved, name, memories }) {
+    async answer({ user, question, saves, retrieved, name, memories, usage }) {
       const history: Anthropic.MessageParam[] = user.turns.map((t) => ({ role: t.role, content: t.content }));
       while (history.length && history[0]?.role !== "user") history.shift();
-      const system = buildAskSystem(user, saves, retrieved, today(), { name, memories });
+      const system = buildAskSystem(user, saves, retrieved, today(), { name, memories, usage });
       const ask = (model: string) =>
         getAnthropic().messages.create({
           model,

@@ -6,7 +6,8 @@
  *   a sentence or two (how it connects to their other saves). No coaching.
  * - Any other text: answer from their saves and what they've told us.
  * - Buttons: Show steps, Start now, Add what it says, Fix something, Keep both / Replace.
- * - /start, /help, /saved, /memory, /delete, and /invite for the owner.
+ * - /start, /help, /saved, /memory, /usage, /delete, and /invite for the owner.
+ * - Asking "how many questions do I have left?" gets the same answer as /usage, for free.
  * - An invite link lets people in without editing settings, up to a set number of spots.
  * - When the free daily amount runs out, extras can be bought with Telegram Stars (shop.ts).
  *   /terms, /support and /paysupport, plus /refund and /reply for the owner.
@@ -21,7 +22,7 @@ import { relevantSaves, sharedVideoTurns } from "./prompts";
 import { groupHits, searchQuery, type Retriever } from "./rag";
 import { FACTS_KEPT, newSaveId, newUser, TURNS_KEPT } from "./store";
 import { findUrl } from "./tiktok";
-import type { Brain, BotUser, ChatMemory, InlineButton, Media, PackKind, Save, Store, TelegramApi, WatchInput } from "./types";
+import type { Brain, BotUser, ChatMemory, InlineButton, Media, PackKind, Save, Store, TelegramApi, Usage, Wallet, WatchInput } from "./types";
 
 export interface Deps {
   tg: TelegramApi;
@@ -135,6 +136,46 @@ export const limitText = (kind: "videos" | "questions", n: number, now = Date.no
     ? `That's ${n} videos today, the daily limit, so I didn't save this one. Send it again ${resetsIn(now)}.`
     : `That's ${n} questions today, the daily limit. You can ask more ${resetsIn(now)}.`;
 
+/**
+ * What /usage says: free videos and questions left today, when they reset,
+ * and what they bought. Also given to the model, so a question about it in
+ * other words gets the same numbers.
+ */
+export function usageText(usage: Usage, limits: Deps["limits"], wallet: Wallet | null, packStars: number, now = Date.now()): string {
+  const fresh = usage.day !== new Date(now).toISOString().slice(0, 10);
+  const left = (kind: PackKind) => Math.max(0, limits[kind] - (fresh ? 0 : usage[kind]));
+  const lines = [
+    `<b>Free today</b>, back to full ${resetsIn(now)}:`,
+    `Videos: ${left("videos")} of ${limits.videos} left`,
+    `Questions: ${left("questions")} of ${limits.questions} left`,
+  ];
+  if (wallet && (wallet.videos || wallet.questions)) {
+    lines.push("", `<b>Extras you bought:</b> ${wallet.videos} video${wallet.videos === 1 ? "" : "s"} and ${wallet.questions} question${wallet.questions === 1 ? "" : "s"}. They never expire and kick in when your free ones run out.`);
+  } else if (packStars) {
+    lines.push("", `When your free ones run out, you can get ${packName("videos")} or ${packName("questions")} for ${packStars} ⭐ each.`);
+  }
+  return lines.join("\n");
+}
+
+/**
+ * "How many questions do I have left?", "what's my limit": answered with
+ * /usage straight away, so checking doesn't use up a question. Kept narrow, so
+ * a real question ("how many videos have I saved about pasta?") still gets a
+ * real answer.
+ */
+export function asksAboutUsage(text: string): boolean {
+  const t = text.toLowerCase().replace(/[’`]/g, "'");
+  if (t.length > 100) return false;
+  const kind = String.raw`(videos?|questions?|messages?|tiktoks?)`;
+  return (
+    new RegExp(String.raw`\bhow many (more )?${kind}\b.*\b(left|remaining)\b`).test(t) ||
+    new RegExp(String.raw`\bhow many (more )?${kind} (can|do) i (still )?(ask|send|share|save|get|have)\b`).test(t) ||
+    new RegExp(String.raw`\bhow many more ${kind}\b`).test(t) ||
+    new RegExp(String.raw`\b(any )?${kind} (do i have )?(left|remaining)\b`).test(t) ||
+    /^(what'?s|what is|what are|check|show( me)?|see)?\s*(my|the)?\s*(daily )?(limits?|usage|quota)( today)?\s*\??$/.test(t.trim())
+  );
+}
+
 export async function handleUpdate(update: Update, deps: Deps): Promise<void> {
   if (update.pre_checkout_query) return onPreCheckout(update.pre_checkout_query, deps);
   if (update.callback_query) return onButton(update.callback_query, deps);
@@ -174,6 +215,7 @@ export async function handleUpdate(update: Update, deps: Deps): Promise<void> {
       await deps.tg.sendMessage(chatId, savedList(await deps.store.listSaves(userId)));
       return;
     }
+    if (text.startsWith("/usage") || text.startsWith("/limits")) return await showUsage(chatId, user, deps);
     if (text.startsWith("/delete")) {
       const count = (await deps.store.listSaves(userId)).length;
       await deps.tg.sendMessage(chatId, `This deletes your ${count} save${count === 1 ? "" : "s"}, our chats and everything I remember about you. It can't be undone.`, [
@@ -200,6 +242,8 @@ export async function handleUpdate(update: Update, deps: Deps): Promise<void> {
 
     if (!text) return;
     if (user.awaitingWordsFor) return await addWords(chatId, user, text, deps);
+    // Before the limit check: checking what's left shouldn't use a question, and works when none are left.
+    if (asksAboutUsage(text)) return await showUsage(chatId, user, deps);
     if (!(await allow(user, "questions", deps))) return await limitReached(chatId, "questions", deps);
     await answer(chatId, user, text, deps, msg.from.first_name);
   } catch (error) {
@@ -214,6 +258,13 @@ async function allow(user: BotUser, kind: PackKind, deps: Deps): Promise<boolean
   if (!wallet || wallet[kind] < 1) return false;
   await deps.store.saveWallet(user.id, { ...wallet, [kind]: wallet[kind] - 1 });
   return true;
+}
+
+/** Their wallet, or null if it can't be read (then /usage just leaves extras out). */
+const walletOf = (userId: number, deps: Deps) => deps.store.getWallet(userId).catch((error) => (console.error("Reading the wallet failed", error), null));
+
+async function showUsage(chatId: number, user: BotUser, deps: Deps): Promise<void> {
+  await deps.tg.sendMessage(chatId, usageText(user.usage, deps.limits, await walletOf(user.id, deps), deps.packStars));
 }
 
 /** Out of free and bought ones: say when it resets, and offer a pack. */
@@ -417,8 +468,9 @@ async function addWords(chatId: number, user: BotUser, text: string, deps: Deps)
 async function answer(chatId: number, user: BotUser, question: string, deps: Deps, name = "") {
   await deps.tg.typing(chatId);
   const saves = await deps.store.listSaves(user.id);
-  const [retrieved, memories] = await Promise.all([retrieve(user, question, saves, deps), recall(user, question, deps)]);
-  const reply = await deps.brain.answer({ user, question: question.slice(0, 4_000), saves, retrieved, name, memories });
+  const [retrieved, memories, wallet] = await Promise.all([retrieve(user, question, saves, deps), recall(user, question, deps), walletOf(user.id, deps)]);
+  const usage = usageText(user.usage, deps.limits, wallet, deps.packStars).replace(/<\/?b>/g, "");
+  const reply = await deps.brain.answer({ user, question: question.slice(0, 4_000), saves, retrieved, name, memories, usage });
   const find = (ids: string[]) => ids.map((id) => saves.find((s) => s.id === id)).filter((s): s is Save => Boolean(s));
   const used = find(reply.sources);
 

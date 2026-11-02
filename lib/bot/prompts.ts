@@ -160,7 +160,7 @@ export function sharedVideoTurns(save: Save, reply: string, note: string): Turn[
   ];
 }
 
-export function buildAskSystem(user: BotUser, saves: Save[], retrieved: Retrieved[], today: string, extra: { name?: string; memories?: ChatMemory[] } = {}): string {
+export function buildAskSystem(user: BotUser, saves: Save[], retrieved: Retrieved[], today: string, extra: { name?: string; memories?: ChatMemory[]; usage?: string } = {}): string {
   const hits = retrieved.map((r) => r.save);
   const passages = new Map(retrieved.map((r) => [r.save.id, r.passages]));
   const mindsets = saves.filter((s) => s.type === "mindset" && !hits.includes(s)).slice(0, 6);
@@ -175,7 +175,7 @@ WHAT THEY'VE TOLD YOU ABOUT THEMSELVES (use it so they never repeat themselves):
 ${user.facts.length ? user.facts.map((f) => `- ${f}`).join("\n") : "(nothing yet)"}
 
 WHAT THEY'RE INTO (from what they save, most first): ${interests(saves) || "(nothing saved yet)"}
-${memories.length ? `\nFROM EARLIER CHATS (things said before that may matter now, best match first):\n${memories.map((m) => `[${m.at.slice(0, 10)}] They said: ${m.said.slice(0, 500)}\nYou answered: ${m.answered.slice(0, 400)}`).join("\n\n")}\n` : ""}
+${extra.usage ? `\nTHEIR LIMITS IN KNOWING RIGHT NOW (this message already counted). If they ask what they have left, when it resets or how to get more, answer from this exactly, and say /usage shows it any time without using a question:\n${extra.usage}\n` : ""}${memories.length ? `\nFROM EARLIER CHATS (things said before that may matter now, best match first):\n${memories.map((m) => `[${m.at.slice(0, 10)}] They said: ${m.said.slice(0, 500)}\nYou answered: ${m.answered.slice(0, 400)}`).join("\n\n")}\n` : ""}
 How to answer:
 - If a save answers the question, answer from it. Lead with the steps or setup itself, exact details (names, positions, reps). No generic tips on top unless asked.
 - If they ask for something a video doesn't cover (like how to install what it shows), don't open with what's missing. Start with a quick recap of what the video does show, then get them what they need from what you know, making clear in passing which part is yours ("Your video shows what each one does. Here's how to set them up:").
@@ -190,10 +190,11 @@ How to answer:
 - If they just want to talk (about a video they shared, a car, their game, their day), talk like a friend who knows the topic: share what you know, have an honest take, and bring in what they've saved or told you when it fits. What you know from outside their videos is welcome; just never pass it off as being from their videos.
 - Remember what they've told you, here and in earlier chats, so they never have to repeat themselves. If they ask what they told you before, answer from it.
 - Don't lecture, and don't turn a chat into advice they didn't ask for.
-- If they ask for a video or its link, answer from that save and cite it. Every save in SOURCES or ABOUT is linked to its video right under your answer, so just say it's linked below, and don't type links yourself. If its Link is none, they sent that one as a file, so there's no link to share.
+- If they ask for a video or its link, answer from that save and cite it. Every save in SOURCES or RELATED is linked to its video right under your answer, so just say it's linked below, and don't type links yourself. If its Link is none, they sent that one as a file, so there's no link to share.
 - Telegram chat style: as long as needed and no longer. A numbered list for steps, at most 1 or 2 sentences around it. **bold** is fine; no headings, no tables. Put commands, code, file paths and package names in \`backticks\`, and a command to copy on its own in a \`\`\` block, so they can tap it to copy. Talk like a person, not a report: contractions, short friendly sentences. No long greetings, no hype or motivation speeches, no "great question", and no "want me to...?" offers apart from the how-to one above. Now and then, when you're actually curious about them, ask one thing back, but not every message.
 - If their message says something about them worth remembering (rank, platform, position, school year, schedule, what they're working toward, things they love or can't stand, favorites, people in their life, something coming up), add a line REMEMBER: <the fact in under 15 words>. One line per new fact.
-- Last line, always: SOURCES: the ids of the saves your answer actually came from, comma separated, or SOURCES: none. If a save is what the chat is about but the useful part came from you (like install steps its video doesn't show), put its id on an ABOUT: line instead, so they're never told it came from their save. Put REMEMBER and ABOUT lines just before SOURCES.
+- If what you're talking about has saves on it, add a line RELATED: with the ids of up to 5 of them that your answer didn't come from, best first. They're listed under your answer as "Videos related to this topic", linked, so they can rewatch them. Include the video the chat is about when the useful part came from you (like install steps its video doesn't show), so they're never told it came from their save, and other saves on the same thing. Only ones that really fit the topic; leave the line out when none do, like in small talk.
+- Last line, always: SOURCES: the ids of the saves your answer actually came from, comma separated, or SOURCES: none. Put REMEMBER and RELATED lines just before SOURCES.
 Today is ${today}.
 
 THEIR SAVES THAT MATCH THIS QUESTION:
@@ -225,9 +226,9 @@ export function parseAnswer(raw: string, knownIds: string[]): Answer {
       .map((s) => s.trim())
       .filter((id) => knownIds.includes(id));
   const sources = [...new Set(ids("SOURCES"))];
-  // A save the answer came from is cited as a source, never also as just "about".
-  const about = [...new Set(ids("ABOUT"))].filter((id) => !sources.includes(id));
+  // A save the answer came from is cited as a source, never also as just related. (ABOUT is the older name for RELATED.)
+  const about = [...new Set([...ids("ABOUT"), ...ids("RELATED")])].filter((id) => !sources.includes(id));
   const remember = [...raw.matchAll(/^REMEMBER:\s*(.+)$/gm)].map((x) => (x[1] ?? "").trim().slice(0, 160)).filter(Boolean);
-  const text = raw.replace(/\n?^(?:REMEMBER|ABOUT|SOURCES):[\s\S]*$/m, "").trim();
+  const text = raw.replace(/\n?^(?:REMEMBER|ABOUT|RELATED|SOURCES):[\s\S]*$/m, "").trim();
   return { text, sources, about, remember };
 }
