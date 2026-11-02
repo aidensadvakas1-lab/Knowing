@@ -511,7 +511,17 @@ async function onButton(q: NonNullable<Update["callback_query"]>, deps: Deps) {
     }
     if (kind === "buy") {
       await deps.tg.answerCallback(q.id);
-      if ((id === "videos" || id === "questions") && deps.packStars) await deps.tg.sendInvoice(chatId, invoiceFor(id, deps.packStars));
+      if (id !== "videos" && id !== "questions") return;
+      if (!deps.packStars) return void (await deps.tg.sendMessage(chatId, "Buying extras is turned off right now."));
+      try {
+        await deps.tg.sendInvoice(chatId, invoiceFor(id, deps.packStars));
+      } catch (error) {
+        // Without this, a refused invoice looks like a dead button.
+        const reason = esc((error instanceof Error ? error.message : String(error)).slice(0, 300));
+        console.error("Sending an invoice failed", error);
+        await deps.tg.sendMessage(chatId, "I couldn't open the payment screen, so nothing was charged. I've told the owner. Try again later.");
+        await tellOwner(deps, `Someone tapped ${esc(packName(id))}, but Telegram wouldn't make the payment screen: ${reason}`);
+      }
       return;
     }
     if (kind === "forget") {
