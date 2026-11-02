@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { asksAboutUsage, handleUpdate, inviteCode, isOutOfCredit, limitText, parseAllowed, secretMatches, spend, usageText, type Deps, type Update } from "@/lib/bot/handle";
+import { asksAboutUsage, handleInstagram, handleUpdate, readPending, inviteCode, isOutOfCredit, limitText, parseAllowed, secretMatches, spend, usageText, type Deps, type Update } from "@/lib/bot/handle";
 import { MemoryRetriever } from "@/lib/bot/rag";
 import { MemoryStore } from "@/lib/bot/store";
 import { WELCOME } from "@/lib/bot/profile";
+import { linkCode, type InstagramEvent } from "@/lib/bot/instagram";
 import { readReferral, referralCode } from "@/lib/bot/referral";
 import { NoTranscription, type Answer, type Brain, type InlineButton, type Media, type Pack, type Save, type SaveDraft, type TelegramApi, type WatchResult } from "@/lib/bot/types";
 
@@ -18,7 +19,7 @@ const FRIEND = 8;
 
 interface Sent { chatId: number; html: string; buttons?: InlineButton[][]; id: number }
 
-function setup(opts: { answer?: Partial<Answer>; draft?: Partial<SaveDraft>; watch?: (saves: Save[]) => Partial<WatchResult>; limits?: Deps["limits"]; spots?: number; packs?: Pack[]; heard?: { text: string; cut: boolean }; newcomers?: boolean } = {}) {
+function setup(opts: { answer?: Partial<Answer>; draft?: Partial<SaveDraft>; watch?: (saves: Save[]) => Partial<WatchResult>; limits?: Deps["limits"]; spots?: number; packs?: Pack[]; heard?: { text: string; cut: boolean }; newcomers?: boolean; instagram?: string } = {}) {
   const sent: Sent[] = [];
   const edits: Sent[] = [];
   let nextId = 100;
@@ -41,6 +42,7 @@ function setup(opts: { answer?: Partial<Answer>; draft?: Partial<SaveDraft>; wat
   const media: Media = {
     fromLink: vi.fn(async () => ({ frames: ["aGk="], transcript: "", caption: "dodge tips", notes: [] })),
     fromTelegramFile: vi.fn(async () => ({ frames: ["aGk="], transcript: "say this", caption: "", notes: [] })),
+    fromInstagram: vi.fn(async (_url: string, caption: string) => ({ frames: ["aGk="], transcript: "reel talk", caption, notes: [] })),
     hearVoice: vi.fn(async () => opts.heard ?? { text: "what was that drill?", cut: false }),
   };
   const store = new MemoryStore();
@@ -48,7 +50,7 @@ function setup(opts: { answer?: Partial<Answer>; draft?: Partial<SaveDraft>; wat
   if (!opts.newcomers) for (const id of [7, FRIEND]) store.digests.set(id, { on: false, offered: true, sent: "", quiet: 0 });
   const retriever = new MemoryRetriever();
   const alerts: string[] = [];
-  const deps: Deps = { tg, store, brain, media, retriever, isAllowed: (id) => id === 7 || id === FRIEND, ownerId: 7, invite: { code: "join-abc123", spots: opts.spots ?? 10, key: "test-key", link: async (start = "join-abc123") => `https://t.me/KnowingTestBot?start=${start}` }, limits: opts.limits ?? { videos: 50, questions: 50 }, packs: opts.packs ?? PACKS, alert: async (t) => void alerts.push(t) };
+  const deps: Deps = { tg, store, brain, media, retriever, isAllowed: (id) => id === 7 || id === FRIEND, ownerId: 7, invite: { code: "join-abc123", spots: opts.spots ?? 10, key: "test-key", link: async (start = "join-abc123") => `https://t.me/KnowingTestBot?start=${start}` }, limits: opts.limits ?? { videos: 50, questions: 50 }, packs: opts.packs ?? PACKS, alert: async (t) => void alerts.push(t), instagram: opts.instagram };
   return { deps, sent, edits, store, brain, media, retriever, alerts };
 }
 
@@ -131,6 +133,136 @@ describe("invite link", () => {
     expect(user.facts).toEqual([]);
     expect(user.usage.videos).toBe(1);
     expect(store.saves.filter((s) => s.userId === 99)).toHaveLength(0);
+  });
+});
+
+const fileMsg = (from = FRIEND): Update => ({ message: { message_id: 3, chat: { id: from }, from: { id: from }, video: { file_id: "F", duration: 20 } } });
+const xPost = { frames: [], transcript: "", caption: "Three drills that fixed my first step.\nDo them daily.", notes: ["X doesn't let me download videos from a link. Send me the file."], postedBy: "Coach Kay" };
+
+describe("saving a post now, its video later", () => {
+  it("saves an X post's words right away without using a video, then the next file fills in that same save", async () => {
+    const { deps, edits, store, brain } = setup({ limits: { videos: 1, questions: 50 } });
+    vi.mocked(deps.media.fromLink).mockResolvedValueOnce(xPost);
+    await handleUpdate(text("https://x.com/kay/status/123", FRIEND), deps);
+    const saved = store.saves.filter((s) => s.userId === FRIEND);
+    expect(saved).toHaveLength(1);
+    expect(saved[0]).toMatchObject({ title: "Coach Kay: Three drills that fixed my first step.", topic: "X posts", sourceUrl: "https://x.com/kay/status/123" });
+    expect(brain.watch).not.toHaveBeenCalled();
+    expect((await store.getUser(FRIEND)).usage.videos).toBe(0);
+    expect(edits.at(-1)?.html).toContain("Saved what the post says");
+    expect(edits.at(-1)?.html).toContain("didn't use up a video");
+
+    await handleUpdate(fileMsg(), deps);
+    const after = store.saves.filter((s) => s.userId === FRIEND);
+    expect(after).toHaveLength(1);
+    expect(after[0]!.id).toBe(saved[0]!.id);
+    expect(after[0]!.sourceUrl).toBe("https://x.com/kay/status/123");
+    expect(after[0]!.source).toContain("Caption: Three drills");
+    expect(after[0]!.source).toContain("Transcript: say this");
+    // The watcher gets the post's words with the file, and doesn't see the text-only save as a duplicate.
+    expect(vi.mocked(brain.watch).mock.calls[0]![0]).toMatchObject({ caption: xPost.caption });
+    expect(vi.mocked(brain.watch).mock.calls[0]![0].saves.map((s) => s.id)).not.toContain(saved[0]!.id);
+    expect(edits.at(-1)?.html).toContain("Added the video to the post you saved.");
+    expect((await store.getUser(FRIEND)).usage.videos).toBe(1);
+    expect((await store.getUser(FRIEND)).awaitingWordsFor).toBeNull();
+  });
+
+  it("keeps the link for a file sent after a post it couldn't read, and lets questions through meanwhile", async () => {
+    const { deps, store, brain } = setup();
+    vi.mocked(deps.media.fromLink).mockResolvedValueOnce({ frames: [], transcript: "", caption: "", notes: ["Facebook doesn't let me download videos from a link."] });
+    await handleUpdate(text("https://www.facebook.com/reel/42", FRIEND), deps);
+    expect(store.saves.filter((s) => s.userId === FRIEND)).toHaveLength(0);
+    await handleUpdate(text("what's a good warmup?", FRIEND), deps);
+    expect(brain.answer).toHaveBeenCalledTimes(1);
+    expect(brain.rewrite).not.toHaveBeenCalled();
+    await handleUpdate(fileMsg(), deps);
+    expect(store.saves.filter((s) => s.userId === FRIEND).map((s) => s.sourceUrl)).toEqual(["https://www.facebook.com/reel/42"]);
+  });
+
+  it("forgets the waiting link after 30 minutes", () => {
+    const now = Date.parse("2026-11-02T12:00:00Z");
+    expect(readPending("video:2026-11-02T11:45:00.000Z|abc|https://x.com/a/status/1", now)).toEqual({ saveId: "abc", url: "https://x.com/a/status/1" });
+    expect(readPending("video:2026-11-02T11:29:00.000Z|abc|https://x.com/a/status/1", now)).toBeNull();
+    expect(readPending("fix:abc", now)).toBeNull();
+    expect(readPending(null, now)).toBeNull();
+  });
+});
+
+describe("sharing Reels from Instagram", () => {
+  const dm = (over: Partial<InstagramEvent> = {}): InstagramEvent => ({ sender: "IG1", mid: "m1", text: "", media: null, ref: "", ...over });
+  const reel = { type: "ig_reel", url: "https://lookaside.fbsbx.com/ig_messaging_cdn/?asset_id=1", title: "Easy pasta in 10 minutes" };
+
+  it("says it isn't set up when there's no Instagram account", async () => {
+    const { deps, sent } = setup();
+    await handleUpdate(text("/instagram", FRIEND), deps);
+    expect(sent.at(-1)?.html).toContain("isn't set up yet");
+  });
+
+  it("gives a link code, links the Instagram account that sends it, then watches Reels it shares into Telegram", async () => {
+    const { deps, sent, edits, store } = setup({ instagram: "getknowing" });
+    await handleUpdate(text("/instagram", FRIEND), deps);
+    const code = linkCode("test-key", FRIEND);
+    expect(sent.at(-1)?.html).toContain(`<code>${code}</code>`);
+    expect(sent.at(-1)?.html).toContain("https://ig.me/m/getknowing");
+
+    await handleInstagram(dm({ text: `  ${code.toUpperCase()} ` }), deps);
+    expect(await store.getInstagram(FRIEND)).toBe("IG1");
+    expect(sent.filter((m) => m.chatId === FRIEND).at(-1)?.html).toContain("Instagram linked");
+
+    await handleInstagram(dm({ mid: "m2", media: reel }), deps);
+    expect(deps.media.fromInstagram).toHaveBeenCalledWith(reel.url, reel.title);
+    expect(store.saves.filter((s) => s.userId === FRIEND)).toHaveLength(1);
+    expect(edits.filter((m) => m.chatId === FRIEND).length).toBeGreaterThan(0);
+    expect((await store.getUser(FRIEND)).usage.videos).toBe(1);
+
+    await handleUpdate(text("/instagram", FRIEND), deps);
+    expect(sent.at(-1)?.html).toContain("Your Instagram is linked");
+    await handleUpdate(text("/instagram off", FRIEND), deps);
+    expect(await store.getInstagram(FRIEND)).toBe("");
+  });
+
+  it("drops the Instagram link with /delete", async () => {
+    const { deps, store } = setup({ instagram: "getknowing" });
+    await store.linkInstagram(FRIEND, "IG1");
+    await handleUpdate(tap("wipe:yes", 100, FRIEND), deps);
+    expect(await store.instagramUser("IG1")).toBe(0);
+  });
+
+  it("ignores Reels from Instagram accounts nobody linked, and made-up codes", async () => {
+    const { deps, store } = setup({ instagram: "getknowing" });
+    await handleInstagram(dm({ media: reel }), deps);
+    await handleInstagram(dm({ text: "know-8-deadbeef" }), deps);
+    expect(store.saves).toHaveLength(0);
+    expect(await store.instagramUser("IG1")).toBe(0);
+    expect(deps.media.fromInstagram).not.toHaveBeenCalled();
+  });
+
+  it("moves an Instagram account to whoever links it last", async () => {
+    const { deps, store } = setup({ instagram: "getknowing" });
+    await handleInstagram(dm({ text: linkCode("test-key", FRIEND) }), deps);
+    await handleInstagram(dm({ text: linkCode("test-key", 7) }), deps);
+    expect(await store.instagramUser("IG1")).toBe(7);
+    expect(await store.getInstagram(FRIEND)).toBe("");
+  });
+
+  it("stops at the video limit like any other save", async () => {
+    const { deps, sent, store } = setup({ instagram: "getknowing", limits: { videos: 0, questions: 50 }, packs: [] });
+    await store.linkInstagram(FRIEND, "IG1");
+    await handleInstagram(dm({ media: reel }), deps);
+    expect(deps.media.fromInstagram).not.toHaveBeenCalled();
+    expect(sent.filter((m) => m.chatId === FRIEND).at(-1)?.html).toContain("out of videos");
+  });
+
+  it("fills in the post saved from an Instagram link when the Reel is shared right after", async () => {
+    const { deps, store } = setup({ instagram: "getknowing" });
+    await store.linkInstagram(FRIEND, "IG1");
+    vi.mocked(deps.media.fromLink).mockResolvedValueOnce({ frames: [], transcript: "", caption: "Easy pasta in 10 minutes", notes: ["Share it to getknowing on Instagram."] });
+    await handleUpdate(text("https://www.instagram.com/reel/abc/", FRIEND), deps);
+    await handleInstagram(dm({ media: reel }), deps);
+    const saves = store.saves.filter((s) => s.userId === FRIEND);
+    expect(saves).toHaveLength(1);
+    expect(saves[0]!.sourceUrl).toBe("https://www.instagram.com/reel/abc/");
+    expect(saves[0]!.source).toContain("Transcript: reel talk");
   });
 });
 

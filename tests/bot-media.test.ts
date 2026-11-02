@@ -165,8 +165,36 @@ describe("createMedia (real ffmpeg)", () => {
     const fetch = vi.fn(async () => new Response("<html>Log in to Instagram</html>"));
     vi.stubGlobal("fetch", fetch);
     const got = await createMedia(async () => "").fromLink("https://www.instagram.com/reel/C9abc123/?igsh=xyz");
-    expect(got).toEqual({ frames: [], transcript: "", caption: "", notes: [expect.stringContaining("send me the file")] });
+    expect(got).toEqual({ frames: [], transcript: "", caption: "", notes: [expect.stringContaining("send me the file")], postedBy: "" });
     expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("points Instagram links to sharing the Reel to Knowing's Instagram, once that's set up", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    const got = await createMedia(async () => "", { instagram: "getknowing" }).fromLink("https://www.instagram.com/reel/C9abc123/");
+    expect(got.notes).toEqual([expect.stringContaining("tap Share, pick getknowing and send")]);
+  });
+
+  it("reads an Instagram caption through Meta's oEmbed when there's a Meta app", async () => {
+    const fetch = vi.fn(async (_url: string) => Response.json({ html: '<blockquote><a>View this post on Instagram</a><p><a>Easy pasta &amp; garlic</a></p><p><a>A post shared by Chef (@chef)</a></p></blockquote>' }));
+    vi.stubGlobal("fetch", fetch);
+    const got = await createMedia(async () => "", { metaToken: "1|s" }).fromLink("https://www.instagram.com/reel/C9abc123/");
+    expect(got.caption).toBe("Easy pasta & garlic");
+    expect(String(fetch.mock.calls[0]![0])).toContain("graph.facebook.com/v26.0/instagram_oembed?url=https%3A%2F%2Fwww.instagram.com%2Freel%2FC9abc123%2F&access_token=1%7Cs");
+  });
+
+  it("reads an X post's words and author through X's free embed service", async () => {
+    const fetch = vi.fn(async (_url: string) => Response.json({ author_name: "Coach Kay", html: '<blockquote class="twitter-tweet"><p lang="en" dir="ltr">Three drills that fixed my first step<br>Do them daily <a href="https://t.co/x">pic.twitter.com/abc</a></p>&mdash; Coach Kay (@kay) <a href="#">Nov 1</a></blockquote>' }));
+    vi.stubGlobal("fetch", fetch);
+    const got = await createMedia(async () => "").fromLink("https://x.com/kay/status/123");
+    expect(got).toMatchObject({ caption: "Three drills that fixed my first step\nDo them daily", postedBy: "Coach Kay", frames: [] });
+    expect(String(fetch.mock.calls[0]![0])).toBe("https://publish.twitter.com/oembed?url=https%3A%2F%2Fx.com%2Fkay%2Fstatus%2F123&omit_script=1&dnt=true");
+  });
+
+  it("still says how to send the video when X's embed service fails", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("nope", { status: 404 })));
+    const got = await createMedia(async () => "").fromLink("https://x.com/kay/status/123");
+    expect(got).toMatchObject({ caption: "", notes: [expect.stringContaining("send me the file")] });
   });
 
   it("watches a link straight to a video file", async () => {

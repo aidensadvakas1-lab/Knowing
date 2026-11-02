@@ -23,7 +23,9 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { flashback, OFF_TEXT, OFFER_BUTTONS, OFFER_TEXT, ON_TEXT } from "./digest";
 import { answerText, escapeHtml as esc, folderList, folderView, reactionButtons, reactionText, saveButtons, saveCard, savedList, stepButtons, stepText } from "./format";
+import { dmLink, linkCode, readLinkCode, type InstagramEvent } from "./instagram";
 import { isVideoFile, LOGIN_WALLED, platformName } from "./platforms";
+import { postTitle } from "./posts";
 import { GUIDE, guideButtons, WELCOME } from "./profile";
 import { buyButtons, invoiceFor, packName, PAYSUPPORT_HELP, priceList, readPack, SUPPORT_HELP, TERMS } from "./shop";
 import { relevantSaves, sharedVideoTurns } from "./prompts";
@@ -56,6 +58,11 @@ export interface Deps {
   packs: Pack[];
   /** Tells the owner something broke. */
   alert(text: string): Promise<void>;
+  /**
+   * Knowing's Instagram account (its username, without @), when sharing Reels to
+   * it is set up (docs/INSTAGRAM.md). "" or missing turns /instagram off.
+   */
+  instagram?: string;
 }
 
 /** The parts of a Telegram update we read. */
@@ -227,6 +234,7 @@ export async function handleUpdate(update: Update, deps: Deps): Promise<void> {
       const list = folderList(await deps.store.listSaves(userId, ALL_SAVES));
       return void (await deps.tg.sendMessage(chatId, list.html, list.buttons));
     }
+    if (text.startsWith("/instagram")) return await instagramCommand(chatId, userId, text.slice(10).trim().toLowerCase(), deps);
     if (text.startsWith("/digest")) return await digestCommand(chatId, userId, text.slice(7).trim().toLowerCase(), deps);
     const user = await deps.store.getUser(userId);
     if (text.startsWith("/memory")) {
@@ -257,7 +265,8 @@ export async function handleUpdate(update: Update, deps: Deps): Promise<void> {
       }
       if (!(await allow(user, "videos", deps))) return await limitReached(chatId, "videos", deps);
       const duration = "duration" in video && typeof video.duration === "number" ? video.duration : 0;
-      return await watchAndSave(chatId, user, () => deps.media.fromTelegramFile(video.file_id, duration), "", text, deps);
+      const { url: linked, replaces } = await takePending(user, deps);
+      return await watchAndSave(chatId, user, () => deps.media.fromTelegramFile(video.file_id, duration), linked, text, deps, replaces);
     }
 
     if (msg.voice) return await voiceMessage(chatId, user, msg.voice, deps, msg.from.first_name);
@@ -265,7 +274,8 @@ export async function handleUpdate(update: Update, deps: Deps): Promise<void> {
     const url = findUrl(text);
     // Links from apps that won't let the bot in only get told how to send the video, so they don't use one up.
     const walled = Boolean(url && LOGIN_WALLED.has(platformName(url)));
-    if (url && !walled && !(await allow(user, "videos", deps))) return await limitReached(chatId, "videos", deps);
+    if (url && walled) return await savePostText(chatId, user, url, text.replace(url, "").trim(), deps);
+    if (url && !(await allow(user, "videos", deps))) return await limitReached(chatId, "videos", deps);
     if (url) return await watchAndSave(chatId, user, () => deps.media.fromLink(url), url, text.replace(url, "").trim(), deps);
 
     if (!text) return;
@@ -275,13 +285,156 @@ export async function handleUpdate(update: Update, deps: Deps): Promise<void> {
   }
 }
 
+/** /instagram: how to save Reels straight from Instagram, with their link code. "/instagram off" unlinks. */
+async function instagramCommand(chatId: number, userId: number, arg: string, deps: Deps): Promise<void> {
+  const account = deps.instagram ?? "";
+  if (!account) return void (await deps.tg.sendMessage(chatId, "Saving straight from Instagram isn't set up yet. For now, save the Reel in Instagram and send me the file."));
+  let linked: string;
+  try {
+    linked = await deps.store.getInstagram(userId);
+  } catch (error) {
+    const detail = (error instanceof Error ? error.message : String(error)).slice(0, 200);
+    await deps.alert(`Instagram links couldn't be read. If you haven't, run docs/supabase.sql again in Supabase. ${detail}`).catch(() => {});
+    return void (await deps.tg.sendMessage(chatId, "Saving from Instagram isn't ready yet. I've told the owner."));
+  }
+  if (arg === "off") {
+    if (linked) await deps.store.linkInstagram(userId, "");
+    return void (await deps.tg.sendMessage(chatId, linked ? "Unlinked. Reels shared to Knowing on Instagram won't come here anymore. /instagram links it again." : "Your Instagram isn't linked."));
+  }
+  const handle = `<a href="${dmLink(account)}">@${esc(account)}</a>`;
+  const share = `On any Reel, tap <b>Share</b>, pick <b>${esc(account)}</b> and send. I'll watch it and it shows up here, like a TikTok.`;
+  if (linked) return void (await deps.tg.sendMessage(chatId, `Your Instagram is linked to ${handle}.
+
+${share}
+
+/instagram off unlinks it.`));
+  await deps.tg.sendMessage(
+    chatId,
+    `<b>Save Reels straight from Instagram</b>
+
+1. Send this code to ${handle} in an Instagram DM (tap it to copy):
+<code>${linkCode(deps.invite.key, userId)}</code>
+
+2. ${share}
+
+You only link it once.`,
+  );
+}
+
+/**
+ * A DM to Knowing's Instagram account (POST /api/instagram). A link code ties
+ * that Instagram account to someone's Telegram; after that, every Reel or post
+ * they share to it is watched and saved like a TikTok link, with the reply in
+ * Telegram. Anything from an account nobody linked is left alone (the owner can
+ * still read it in the Instagram app).
+ */
+export async function handleInstagram(event: InstagramEvent, deps: Deps): Promise<void> {
+  const codeOwner = readLinkCode(deps.invite.key, `${event.text} ${event.ref}`);
+  let userId = 0;
+  try {
+    if (codeOwner && (await hasAccess(codeOwner, deps))) {
+      await deps.store.linkInstagram(codeOwner, event.sender);
+      await deps.tg.sendMessage(codeOwner, `✅ <b>Instagram linked.</b> Now on any Reel, tap Share, pick ${esc(deps.instagram ?? "Knowing")} and send. I'll watch it and it shows up here.`);
+    }
+    if (!event.media) return;
+    userId = codeOwner || (await deps.store.instagramUser(event.sender));
+    if (!userId || !(await hasAccess(userId, deps))) return;
+    const user = await deps.store.getUser(userId);
+    if (!(await allow(user, "videos", deps))) return await limitReached(userId, "videos", deps);
+    const { url, title } = event.media;
+    const { url: linked, replaces } = await takePending(user, deps);
+    await watchAndSave(userId, user, () => deps.media.fromInstagram(url, title), linked, "", deps, replaces);
+  } catch (error) {
+    const text = await failed(error, "saving a Reel from Instagram", deps);
+    if (userId) await deps.tg.sendMessage(userId, text).catch(() => {});
+  }
+}
+
+/** How long after sending a link the next video file fills in its save. */
+const PENDING_MS = 30 * 60_000;
+
+/** "Waiting for this link's video" is kept in awaitingWordsFor as video:<when>|<save id>|<link>. */
+const pendingFor = (at: string, saveId: string, url: string) => `video:${at}|${saveId}|${url}`;
+
+/** The link (and its text-only save, if one was made) still waiting for its video, or null when there's none or it's over 30 minutes old. */
+export function readPending(value: string | null, now = Date.now()): { saveId: string; url: string } | null {
+  if (!value?.startsWith("video:")) return null;
+  const [at = "", saveId = "", ...rest] = value.slice(6).split("|");
+  const url = rest.join("|");
+  return url && now - Date.parse(at) < PENDING_MS ? { saveId, url } : null;
+}
+
+/** Use up the waiting link, if any: its link, and the text-only save the video should fill in. */
+async function takePending(user: BotUser, deps: Deps): Promise<{ url: string; replaces: Save | null }> {
+  if (!user.awaitingWordsFor?.startsWith("video:")) return { url: "", replaces: null };
+  const pending = readPending(user.awaitingWordsFor);
+  user.awaitingWordsFor = null;
+  await deps.store.saveUser(user);
+  if (!pending) return { url: "", replaces: null };
+  return { url: pending.url, replaces: pending.saveId ? await deps.store.getSave(user.id, pending.saveId) : null };
+}
+
+/**
+ * A link from an app that won't let the bot download its video (X, Instagram,
+ * Facebook...). The post's words are saved right away when its app's embed
+ * service gives them (no AI, so it doesn't use a video), and the next video file
+ * sent in the next 30 minutes fills in that same save, link and all.
+ */
+async function savePostText(chatId: number, user: BotUser, url: string, note: string, deps: Deps): Promise<void> {
+  const platform = platformName(url) || "That app";
+  const status = await deps.tg.sendMessage(chatId, "Opening…");
+  let input: WatchInput;
+  try {
+    input = await deps.media.fromLink(url);
+  } catch (error) {
+    console.error("Reading a post failed", error);
+    input = { frames: [], transcript: "", caption: "", notes: [] };
+  }
+  const how = input.notes.join("\n") || `${platform} doesn't let me download videos from a link. Save it in ${platform} (or screen-record it) and send me the file.`;
+  const at = new Date().toISOString();
+  const caption = input.caption.trim();
+  if (!caption) {
+    user.awaitingWordsFor = pendingFor(at, "", url);
+    await deps.store.saveUser(user);
+    await deps.tg.editMessage(chatId, status, `${how}\n\nIf the video comes in the next 30 minutes, I'll keep this link with it. This didn't use up a video.`);
+    return;
+  }
+  const save: Save = {
+    title: postTitle(platform, caption, input.postedBy ?? ""),
+    topic: `${platform} posts`,
+    type: "info",
+    summary: caption.slice(0, 600),
+    steps: [],
+    details: input.postedBy ? `Posted by ${input.postedBy}.` : "",
+    needsWords: false,
+    id: newSaveId(),
+    userId: user.id,
+    sourceUrl: url,
+    words: "",
+    source: `Caption: ${caption}`.slice(0, 20_000),
+    practiced: 0,
+    createdAt: at,
+  };
+  user.awaitingWordsFor = pendingFor(at, save.id, url);
+  user.turns = [...user.turns, ...sharedVideoTurns(save, `Saved what the post says: ${save.title}. I haven't seen its video.`, note)].slice(-TURNS_KEPT);
+  await deps.store.saveUser(user);
+  await deps.store.addSave(save);
+  await reindex(save, deps);
+  const quote = caption.length > 300 ? `${caption.slice(0, 300)}…` : caption;
+  await deps.tg.editMessage(
+    chatId,
+    status,
+    `📝 <b>Saved what the post says</b> (it didn't use up a video):\n<i>${esc(quote)}</i>\n\nI haven't seen its video. ${how}\nIf it comes in the next 30 minutes, I'll add what it shows to this same save.`,
+  );
+}
+
 /** Enough to list every save in /folders and the flashback. */
 const ALL_SAVES = 1_000;
 
 /** A typed message, or a voice message's words: a question, or the words Fix / Add what it says asked for. `heard` shows what a voice message said. */
 async function onText(chatId: number, user: BotUser, text: string, deps: Deps, name?: string, heard = "") {
-  // Remaking a save is a Claude call like an answer, so it uses a question.
-  if (user.awaitingWordsFor) {
+  // Remaking a save is a Claude call like an answer, so it uses a question. (A link waiting for its video isn't that.)
+  if (user.awaitingWordsFor && !readPending(user.awaitingWordsFor)) {
     if (!(await allow(user, "questions", deps))) return await limitReached(chatId, "questions", deps);
     return await addWords(chatId, user, text, deps, heard);
   }
@@ -530,7 +683,8 @@ function memoryButtons(user: BotUser) {
   return user.facts.slice(0, 20).map((f, i) => [{ text: `Forget ${i + 1}: ${f.slice(0, 30)}`, callback_data: `forget:${i}` }]);
 }
 
-async function watchAndSave(chatId: number, user: BotUser, get: () => Promise<WatchInput>, sourceUrl: string, note: string, deps: Deps) {
+/** Watch a video and save it. `replaces` is a text-only save from its link, which this fills in instead of making a new one. */
+async function watchAndSave(chatId: number, user: BotUser, get: () => Promise<WatchInput>, sourceUrl: string, note: string, deps: Deps, replaces: Save | null = null) {
   const status = await deps.tg.sendMessage(chatId, "Watching…");
   let input: WatchInput;
   try {
@@ -545,35 +699,41 @@ async function watchAndSave(chatId: number, user: BotUser, get: () => Promise<Wa
     return;
   }
   try {
-    await saveWatched(chatId, status, user, input, sourceUrl, note, deps);
+    await saveWatched(chatId, status, user, input, sourceUrl, note, deps, replaces);
   } catch (error) {
     await deps.tg.editMessage(chatId, status, await failed(error, "watching a video", deps)).catch(() => {});
   }
 }
 
-async function saveWatched(chatId: number, status: number, user: BotUser, input: WatchInput, sourceUrl: string, note: string, deps: Deps) {
-  const saves = await deps.store.listSaves(user.id);
+async function saveWatched(chatId: number, status: number, user: BotUser, input: WatchInput, sourceUrl: string, note: string, deps: Deps, replaces: Save | null = null) {
+  // The text-only save being filled in isn't a duplicate of this video, so the watcher doesn't see it.
+  const saves = (await deps.store.listSaves(user.id)).filter((s) => s.id !== replaces?.id);
+  // A file has no caption, so keep the post's words from its link.
+  const caption = input.caption || (replaces?.source.startsWith("Caption: ") ? replaces.source.slice(9) : "");
+  if (caption !== input.caption) input = { ...input, caption };
   const watched = await deps.brain.watch({ ...input, note, facts: user.facts, saves });
   const save: Save = {
     ...watched.draft,
     needsWords: watched.draft.needsWords && !input.transcript,
-    id: newSaveId(),
+    id: replaces?.id ?? newSaveId(),
     userId: user.id,
-    sourceUrl,
-    words: "",
+    sourceUrl: replaces?.sourceUrl || sourceUrl,
+    words: replaces?.words ?? "",
     source: [input.caption && `Caption: ${input.caption}`, input.screenText && `On screen: ${input.screenText}`, input.transcript && `Transcript: ${input.transcript}`].filter(Boolean).join("\n").slice(0, 20_000),
-    practiced: 0,
-    createdAt: new Date().toISOString(),
+    practiced: replaces?.practiced ?? 0,
+    createdAt: replaces?.createdAt ?? new Date().toISOString(),
   };
   // In the chat history too, so a follow-up like "how fast is it?" knows which video "it" is.
   user.turns = [...user.turns, ...sharedVideoTurns(save, watched.reply, note)].slice(-TURNS_KEPT);
   await deps.store.saveUser(user); // saves belong to a user row, so make sure it exists
-  await deps.store.addSave(save);
+  if (replaces) await deps.store.updateSave(save);
+  else await deps.store.addSave(save);
   // For the wrap-up. If this fails, only the wrap-up is lost, so the save still goes through.
   await deps.store.touchSitting(user.id, save.createdAt).catch((error) => console.error("Sitting update failed", error));
   await reindex(save, deps);
   const decide = watched.relation === "alternative" || watched.relation === "duplicate" ? saves.find((s) => s.id === watched.relatedId) : null;
-  await deps.tg.editMessage(chatId, status, reactionText(watched.reply, save, input.notes), reactionButtons(save, decide, watched.relation === "alternative" ? "alternative" : "duplicate"));
+  const filled = replaces ? `<i>Added the video to the post you saved.</i>\n\n` : "";
+  await deps.tg.editMessage(chatId, status, filled + reactionText(watched.reply, save, input.notes), reactionButtons(save, decide, watched.relation === "alternative" ? "alternative" : "duplicate"));
   // People who started before the flashback existed are asked once, here.
   await offerFlashback(chatId, user.id, deps);
   await rewardInviter(user, "videos", deps);

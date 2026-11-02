@@ -13,6 +13,7 @@ export const COMMANDS = [
   { command: "usage", description: "What you have left" },
   { command: "buy", description: "Get more videos or questions" },
   { command: "invite", description: "Invite friends, earn free videos" },
+  { command: "instagram", description: "Save Reels straight from Instagram" },
   { command: "delete", description: "Delete all your data" },
   { command: "support", description: "Ask the owner for help" },
 ] as const;
@@ -43,7 +44,7 @@ export const GUIDE: GuidePage[] = [
     text: () => `<b>Saving videos</b>
 In TikTok (or YouTube and most apps), tap Share, then Telegram, then me. You can also send a video file in any format, a GIF or a round video, or paste a link.
 
-Instagram, X and Facebook don't let me download from a link, so save the video there and send me the file.
+Instagram, X and Facebook don't let me download from a link. Paste one anyway: I save what the post says, and the video file you send next fills in that same save. For Instagram, /instagram shows how to share Reels to me there instead.
 
 I watch it, listen to it and read what's on screen, then tell you what I kept.`,
   },

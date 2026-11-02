@@ -29,6 +29,8 @@ save captions or repeat themselves, and you can talk to it about anything.
 | `/digest` | The weekly flashback: off until you turn it on (it's offered once, at `/start` or after the next save). Every Sunday around 17:00 UTC: what you saved that week by folder plus one from about a month ago, or, in a week with no saves, a few older ones (about a week, a month and three months old). No AI, so it's free. It pauses after 3 in a row with no reply, and `/digest off` stops it |
 | `/usage` (or ask "how many questions do I have left?") | Shows the free videos and questions left, any extras you bought, and buttons to buy more. Checking never uses up a question |
 | `/buy` | Every pack on sale, any time, even before the free ones run out |
+| `/instagram` | Save Reels straight from Instagram: link it once with a code, then share any Reel to Knowing's Instagram account and it's watched into Telegram. Off until it's set up ([INSTAGRAM.md](INSTAGRAM.md)) |
+| Paste an X, Instagram or Facebook link | Those apps won't let the bot download the video. The post's words are saved right away when the app's embed service gives them (X always, Instagram with a Meta app), without using a video. The video file sent (or Reel shared) in the next 30 minutes fills in that same save, link and all |
 | `/invite` | Your own invite link. When a friend joins with it, saves a video and asks something, you get 3 free videos, for up to 5 friends. (For the owner, `/invite` gives the main link and the spots used) |
 
 If a video is mostly talking and audio isn't available, the card offers **Add what it says**: paste the caption and the save is rewritten to be exact.
@@ -127,7 +129,7 @@ https://<your-app>.vercel.app/api/telegram/setup?key=<TELEGRAM_WEBHOOK_SECRET>
 ```
 
 It should say `"ok": true` and your bot's name. This points Telegram at your app and fills in the
-bot's commands menu (`/help`, `/folders`, `/saved`, `/digest`, `/memory`, `/usage`, `/buy`, `/invite`, `/delete`, `/support`) and the text people see
+bot's commands menu (`/help`, `/folders`, `/saved`, `/digest`, `/memory`, `/usage`, `/buy`, `/invite`, `/instagram` once it's set up, `/delete`, `/support`) and the text people see
 before they tap Start. Running it again is harmless, and it's needed once after updates that change
 what Telegram sends the bot (like payments).
 
@@ -284,7 +286,9 @@ change the column in `supabase.sql`).
 - **Videos sent as files:** any format ffmpeg reads (mp4, mov, webm, mkv and more), as a video, a GIF, a round
   video or a file. Up to 20 MB (Telegram's limit for bots). A link straight to a video file works too.
 - **Instagram, X, Facebook, Threads and Snapchat links:** these apps show the bot a login page instead of the
-  video, so the bot doesn't try. It tells the person to save the video and send the file. YouTube and other
+  video, so the bot doesn't download from them. X posts (and Instagram posts, with a Meta app) get their words
+  saved through the app's official embed service, and the video sent next fills that save in. Instagram
+  Reels can be shared to Knowing's Instagram account instead ([INSTAGRAM.md](INSTAGRAM.md)). YouTube and other
   links still get their transcript or page text.
 - **Search quality depends on what was captured.** If a video's details were only spoken and the audio
   couldn't be transcribed, they aren't in the save. "Add what it says" fixes that.
