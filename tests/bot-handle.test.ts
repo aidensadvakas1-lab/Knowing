@@ -134,6 +134,19 @@ describe("invite link", () => {
   });
 });
 
+describe("links the bot can't open", () => {
+  it("doesn't use up a video on an Instagram link, even with none left", async () => {
+    const { deps, sent, store } = setup({ limits: { videos: 1, questions: 50 } });
+    vi.mocked(deps.media.fromLink).mockResolvedValue({ frames: [], transcript: "", caption: "", notes: ["Instagram doesn't let me download videos from a link."] });
+    await handleUpdate(text("https://www.instagram.com/reel/abc/", FRIEND), deps);
+    expect((await store.getUser(FRIEND)).usage.videos).toBe(0);
+    await handleUpdate(text("https://vm.tiktok.com/one/", FRIEND), deps);
+    await handleUpdate(text("https://www.instagram.com/reel/def/", FRIEND), deps);
+    expect(sent.at(-1)?.html).not.toContain("out of videos");
+    expect(store.saves.filter((s) => s.userId === FRIEND)).toHaveLength(0);
+  });
+});
+
 describe("inviting friends", () => {
   const link = (inviter: number) => `/start ${referralCode("test-key", inviter)}`;
 

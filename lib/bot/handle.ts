@@ -23,7 +23,7 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { flashback, OFF_TEXT, OFFER_BUTTONS, OFFER_TEXT, ON_TEXT } from "./digest";
 import { answerText, escapeHtml as esc, folderList, folderView, reactionButtons, reactionText, saveButtons, saveCard, savedList, stepButtons, stepText } from "./format";
-import { isVideoFile } from "./platforms";
+import { isVideoFile, LOGIN_WALLED, platformName } from "./platforms";
 import { GUIDE, guideButtons, WELCOME } from "./profile";
 import { buyButtons, invoiceFor, packName, PAYSUPPORT_HELP, priceList, readPack, SUPPORT_HELP, TERMS } from "./shop";
 import { relevantSaves, sharedVideoTurns } from "./prompts";
@@ -263,7 +263,9 @@ export async function handleUpdate(update: Update, deps: Deps): Promise<void> {
     if (msg.voice) return await voiceMessage(chatId, user, msg.voice, deps, msg.from.first_name);
 
     const url = findUrl(text);
-    if (url && !(await allow(user, "videos", deps))) return await limitReached(chatId, "videos", deps);
+    // Links from apps that won't let the bot in only get told how to send the video, so they don't use one up.
+    const walled = Boolean(url && LOGIN_WALLED.has(platformName(url)));
+    if (url && !walled && !(await allow(user, "videos", deps))) return await limitReached(chatId, "videos", deps);
     if (url) return await watchAndSave(chatId, user, () => deps.media.fromLink(url), url, text.replace(url, "").trim(), deps);
 
     if (!text) return;
