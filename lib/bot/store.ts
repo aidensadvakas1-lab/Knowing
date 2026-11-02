@@ -5,7 +5,7 @@
  *   (server only). Tables are in docs/supabase.sql.
  * - `MemoryStore` keeps everything in memory, for tests.
  */
-import type { BotUser, Payment, Save, Sitting, Store, Wallet } from "./types";
+import type { BotUser, DigestState, Payment, Save, Sitting, Store, Wallet } from "./types";
 
 /** Recent turns kept per user, so follow-ups make sense. Older chats are kept as searchable memories. */
 export const TURNS_KEPT = 16;
@@ -23,6 +23,11 @@ function readUsage(raw: unknown): BotUser["usage"] {
 function readSitting(raw: unknown): Sitting | null {
   const r = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : null;
   return r && typeof r.last === "string" ? { last: r.last } : null;
+}
+
+export function readDigest(raw: unknown): DigestState {
+  const r = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  return { on: r.on === true, offered: r.offered === true, sent: typeof r.sent === "string" ? r.sent : "", quiet: Math.max(0, Math.floor(Number(r.quiet) || 0)) };
 }
 
 /** Payments kept per user, for refunds and duplicate checks. */
@@ -46,6 +51,9 @@ export function newSaveId(): string {
 export class MemoryStore implements Store {
   users = new Map<number, BotUser>();
   wallets = new Map<number, Wallet>();
+  digests = new Map<number, DigestState>();
+  /** When each user's row was last saved, like updated_at. */
+  active = new Map<number, string>();
   saves: Save[] = [];
 
   async getUser(id: number) {
@@ -54,6 +62,7 @@ export class MemoryStore implements Store {
   async saveUser(user: BotUser) {
     const sitting = this.users.get(user.id)?.sitting ?? null; // like the database, saving the row leaves the sitting alone
     this.users.set(user.id, structuredClone({ ...user, sitting, turns: user.turns.slice(-TURNS_KEPT), facts: user.facts.slice(-FACTS_KEPT) }));
+    this.active.set(user.id, new Date().toISOString());
   }
   async addSave(save: Save) {
     this.saves.unshift(structuredClone(save));
@@ -67,6 +76,7 @@ export class MemoryStore implements Store {
   async deleteUser(userId: number) {
     this.users.delete(userId);
     this.wallets.delete(userId);
+    this.digests.delete(userId);
     this.saves = this.saves.filter((s) => s.userId !== userId);
   }
   async hasUser(id: number) {
@@ -100,6 +110,16 @@ export class MemoryStore implements Store {
     if (user?.sitting?.last !== last) return false;
     user.sitting = null;
     return true;
+  }
+  async getDigest(userId: number) {
+    return readDigest(structuredClone(this.digests.get(userId)));
+  }
+  async saveDigest(userId: number, digest: DigestState) {
+    if (!this.users.has(userId)) this.users.set(userId, newUser(userId));
+    this.digests.set(userId, readDigest(structuredClone(digest)));
+  }
+  async listDigestUsers() {
+    return [...this.digests].filter(([, d]) => d.on).map(([id, d]) => ({ id, digest: structuredClone(d), active: this.active.get(id) ?? "" }));
   }
 }
 
@@ -270,6 +290,25 @@ export class SupabaseStore implements Store {
       headers: { prefer: "resolution=merge-duplicates,return=minimal" },
       body: JSON.stringify({ id: userId, wallet: readWallet(wallet) }),
     });
+  }
+
+  async getDigest(userId: number): Promise<DigestState> {
+    const rows = await this.rest<Array<{ digest: unknown }>>(`bot_users?id=eq.${userId}&select=digest`);
+    return readDigest(rows[0]?.digest);
+  }
+
+  /** Writes only the digest column, creating the row if needed. */
+  async saveDigest(userId: number, digest: DigestState): Promise<void> {
+    await this.rest("bot_users", {
+      method: "POST",
+      headers: { prefer: "resolution=merge-duplicates,return=minimal" },
+      body: JSON.stringify({ id: userId, digest: readDigest(digest) }),
+    });
+  }
+
+  async listDigestUsers(): Promise<Array<{ id: number; digest: DigestState; active: string }>> {
+    const rows = await this.rest<Array<{ id: number; digest: unknown; updated_at: string }>>("bot_users?digest->>on=eq.true&select=id,digest,updated_at");
+    return rows.map((r) => ({ id: Number(r.id), digest: readDigest(r.digest), active: r.updated_at ?? "" }));
   }
 
   async getSave(userId: number, id: string): Promise<Save | null> {

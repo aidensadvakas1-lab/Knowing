@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   ASK_SYSTEM_CHARS,
+  HISTORY_CHARS,
   PAYOUT_PER_STAR,
   pricedPacks,
   REWRITE_TEXT_CHARS,
@@ -50,6 +51,17 @@ describe("worst-case costs", () => {
     for (const p of packs) expect(p.stars % 50).toBe(0);
   });
 
+  it("keeps the prices Aiden set: voice questions, timestamps, folders and flashbacks didn't change them", () => {
+    expect(pricedPacks().map((p) => `${p.count} ${p.kind}: ${p.stars}`)).toEqual([
+      "10 videos: 150",
+      "20 videos: 300",
+      "50 videos: 750",
+      "20 questions: 150",
+      "40 questions: 300",
+      "100 questions: 750",
+    ]);
+  });
+
   it("keeps one video and one question cheap enough to matter", () => {
     expect(worstVideoCost()).toBeLessThan(0.2);
     expect(worstQuestionCost()).toBeLessThan(0.1);
@@ -63,6 +75,12 @@ describe("the limits the worst case relies on", () => {
 
   it("caps the text sent with a video's frames", () => {
     const prompt = buildWatchPrompt({ caption: long(9_000), transcript: long(60_000), screenText: long(9_000), note: long(4_096), frameCount: 20, facts: user.facts, saves });
+    expect(prompt.length).toBeLessThanOrEqual(WATCH_TEXT_CHARS);
+  });
+
+  it("still caps it when they have a folder for everything", () => {
+    const many = saves.map((s, i) => ({ ...s, topic: `${long(38)}${i}, part` }));
+    const prompt = buildWatchPrompt({ caption: long(9_000), transcript: long(60_000), screenText: long(9_000), note: long(4_096), frameCount: 20, facts: user.facts, saves: many });
     expect(prompt.length).toBeLessThanOrEqual(WATCH_TEXT_CHARS);
   });
 
@@ -80,7 +98,7 @@ describe("the limits the worst case relies on", () => {
 
   it("sends only the newest chat that fits, starting with something they said", () => {
     const history = recentHistory(user.turns);
-    expect(history.reduce((n, t) => n + t.content.length, 0)).toBeLessThanOrEqual(10_000);
+    expect(history.reduce((n, t) => n + t.content.length, 0)).toBeLessThanOrEqual(HISTORY_CHARS);
     expect(history[0]?.role).toBe("user");
     expect(history.at(-1)).toEqual({ role: "assistant", content: long(2_000) });
     expect(recentHistory([{ role: "assistant", content: "hi" }, { role: "user", content: "yo" }])).toEqual([{ role: "user", content: "yo" }]);

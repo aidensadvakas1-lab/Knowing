@@ -16,11 +16,17 @@ save captions or repeat themselves, and you can talk to it about anything.
 | Tap **Keep both** / **Replace the old one** | Asked only when a new video duplicates an older save. Another way to do something is kept next to the old one, with **Replace the old one** if you want it |
 | Tap **Fix something** | Tell it what it got wrong and the save is rewritten |
 | Tap **Show steps** / **Start now** | The full steps, or a step-by-step run with **Next** / **Back** that counts each time you finish |
+| `/start` or `/help` | A short welcome with topic buttons (saving, asking, folders, flashback, limits, your data) that open a few lines each |
 | Ask a question | Answers from the matching saves and names them, each linked to its video (ask "send me the link to that video" and it's right there). If nothing matches exactly, it adapts the closest saves to your situation and says which parts are straight from your videos. Up to 5 other saves on the same topic are listed under **Videos related to this topic**, linked, so you can rewatch them |
+| Ask "when does he add the sauce?" | Gives the moment: "At 0:42, right after searing the chicken." Each step is saved with its time from the frames and the on-screen text. Moments that are only said get an estimate marked with ~, since speech-to-text gives no times |
+| Hold the mic and ask | A voice message works like a typed one and uses a question. Only the first minute is heard. The answer starts with what it heard |
+| Ask about "the one I saved last week" | Each save's date is given to the model, so dates work |
 | Just talk (about a video, a car, your game, your day) | Chats like a friend who knows a lot. It can tell you about what's in a video even when the video doesn't say ("that's Clubhouse"), marked as its own read |
 | Mention something about you ("I'm Gold on PC", "I love Ferraris") | Remembers it, so you never repeat it. Every chat is also kept and searchable, so "what did I tell you about my tryout?" works weeks later |
 | `/memory` | Shows what it remembers about you, with a button to forget each one |
-| `/saved` | Lists everything, grouped by topic, each linked to its video |
+| `/folders` (or `/tags`) | Every video is filed into a folder (the first part of its topic, like Cooking or Gym) as it's saved, reusing folders you already have. Tap a folder for its videos, with dates, links and a button per video for its notes |
+| `/saved` | Lists everything, grouped by folder, each linked to its video |
+| `/digest` | The weekly flashback: off until you turn it on (it's offered once, at `/start` or after the next save). Every Sunday around 17:00 UTC: what you saved that week by folder plus one from about a month ago, or, in a week with no saves, a few older ones (about a week, a month and three months old). No AI, so it's free. It pauses after 3 in a row with no reply, and `/digest off` stops it |
 | `/usage` (or ask "how many questions do I have left?") | Shows the free videos and questions left, any extras you bought, and buttons to buy more. Checking never uses up a question |
 | `/buy` | Every pack on sale, any time, even before the free ones run out |
 
@@ -34,14 +40,15 @@ screen from frames about a second apart, so a command or link that flashes by is
 **half a cent more**. Claude Sonnet (`KNOWING_BOT_MODEL`) also answers and chats, thinking at medium
 effort so it can troubleshoot a tutorial step by step: about **2–3 cents a message**, and up to about
 5 cents when it has to work through an error. Speech goes through OpenAI's `gpt-4o-mini-transcribe`,
-and Vercel, Supabase and Telegram stay on free plans. Setting `KNOWING_BOT_EFFORT=low` brings
+and Vercel, Supabase and Telegram stay on free plans. Voice questions add at most 0.3 cents (one
+minute of speech), and folders and the weekly flashback use no AI at all. Setting `KNOWING_BOT_EFFORT=low` brings
 answers back to about 2 cents.
 
 Every call has a hard ceiling, so the most a video or a question can ever cost is known
 ([`lib/bot/costs.ts`](../lib/bot/costs.ts)): about **16 cents a video** (only the first 5 minutes
 are watched, frames are capped in size, and each reply has a token limit) and about **8 cents a
-question** (instructions, recent chat and the reply are all capped; Fix something and Add what it
-says count as a question). Each person's free videos and questions are given **once** and don't
+question** (instructions, recent chat and the reply are all capped, a voice question is heard for
+at most a minute, and Fix something and Add what it says count as a question). Each person's free videos and questions are given **once** and don't
 refill, so a free user costs at most about $1.60 (typically about 60 cents), however long they stay.
 Packs are priced from those worst cases, and a test fails if any pack could ever lose money.
 
@@ -119,7 +126,7 @@ https://<your-app>.vercel.app/api/telegram/setup?key=<TELEGRAM_WEBHOOK_SECRET>
 ```
 
 It should say `"ok": true` and your bot's name. This points Telegram at your app and fills in the
-bot's commands menu (`/saved`, `/memory`, `/usage`, `/buy`, `/help`, `/delete`, `/support`) and the text people see
+bot's commands menu (`/help`, `/folders`, `/saved`, `/digest`, `/memory`, `/usage`, `/buy`, `/delete`, `/support`) and the text people see
 before they tap Start. Running it again is harmless, and it's needed once after updates that change
 what Telegram sends the bot (like payments).
 
@@ -195,6 +202,15 @@ select cron.schedule('knowing-wrapups', '*/5 * * * *',
 
 To turn them off again: `select cron.unschedule('knowing-wrapups');`
 
+### The weekly flashback
+
+Nothing to set up besides running [`supabase.sql`](supabase.sql) again (it adds the `digest`
+column). Vercel calls `/api/telegram/digest` on Sundays at 17:00 UTC (set in
+[`vercel.json`](../vercel.json); on the free plan it can arrive any time in that hour). It only
+sends on Sundays and at most once a week per person, so calling it again does nothing. If
+`CRON_SECRET` is set in Vercel, only Vercel's cron can call it. Someone who blocked the bot is
+switched off automatically.
+
 ## Keeping it safe and cheap
 
 - **Free amount, given once.** Each person gets `KNOWING_FREE_VIDEOS` videos and
@@ -212,7 +228,7 @@ To turn them off again: `select cron.unschedule('knowing-wrapups');`
 TikTok Share → Telegram → POST /api/telegram (Vercel)
   → answers Telegram right away, then keeps working:
   → TikTok link → video file (lib/bot/tiktok.ts, via a resolver service)
-  → ffmpeg: 20 frames + audio (lib/bot/media.ts)
+  → ffmpeg: 20 frames with their times + audio (lib/bot/media.ts)
   → speech to text (OpenAI)
   → Claude (Sonnet by default) turns it into a save (lib/bot/brain.ts, lib/bot/prompts.ts)
   → Supabase (lib/bot/store.ts), plus search chunks with embeddings (lib/bot/rag*.ts)

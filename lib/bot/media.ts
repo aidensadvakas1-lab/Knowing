@@ -13,11 +13,11 @@ import ffmpegPath from "ffmpeg-static";
 import { fetchSource } from "../fetch-source";
 import { isAiConfigured } from "../server";
 import { isTranscriptionConfigured, transcribeAudio } from "../transcribe";
-import { FRAME_COUNT, FRAME_PIXELS, MAX_SECONDS, SCAN_MAX } from "./costs";
+import { FRAME_COUNT, FRAME_PIXELS, MAX_SECONDS, SCAN_MAX, VOICE_MAX_SECONDS } from "./costs";
 import { isVideoFileLink, LOGIN_WALLED, platformName, sendTheFileNote } from "./platforms";
 import { readScreenText } from "./screen";
 import { isTikTok, resolveTikTok } from "./tiktok";
-import type { Media, WatchInput } from "./types";
+import { NoTranscription, type Media, type WatchInput } from "./types";
 
 export { FRAME_COUNT, MAX_SECONDS, SCAN_MAX };
 /** Never read more often than this per second; a caption stays up longer than half a second. */
@@ -92,6 +92,11 @@ export function scanFilter(durationSec: number): string {
   return `fps=${rate.toFixed(3)},mpdecimate,${SCALE}`;
 }
 
+/** When each frame left the filter, from ffmpeg's showinfo lines ("pts_time:12.5"), in seconds. */
+export function shownTimes(ffmpegOutput: string): number[] {
+  return [...ffmpegOutput.matchAll(/\bpts_time:\s*(-?\d+(?:\.\d+)?)/g)].map((m) => Math.max(0, Number(m[1])));
+}
+
 async function probeDuration(file: string): Promise<number> {
   try {
     await ffmpeg(["-i", file]);
@@ -157,11 +162,31 @@ async function hear(input: string, dir: string, notes: string[]): Promise<string
 async function readScreen(input: string, dir: string, duration: number, jpegs: (prefix: string) => Promise<string[]>): Promise<string> {
   if (!isAiConfigured()) return "";
   try {
-    await ffmpeg(["-loglevel", "error", "-t", String(MAX_SECONDS), "-i", input, "-vf", scanFilter(duration), "-fps_mode", "vfr", "-frames:v", String(SCAN_MAX), "-q:v", "5", join(dir, "s%02d.jpg")]);
-    return await readScreenText(await jpegs("s"));
+    // showinfo logs when each kept frame was taken (mpdecimate drops still ones, so they aren't evenly spaced).
+    const log = await ffmpeg(["-nostats", "-loglevel", "info", "-t", String(MAX_SECONDS), "-i", input, "-vf", `${scanFilter(duration)},showinfo`, "-fps_mode", "vfr", "-frames:v", String(SCAN_MAX), "-q:v", "5", join(dir, "s%02d.jpg")]);
+    const frames = await jpegs("s");
+    const times = shownTimes(log).slice(0, frames.length);
+    return await readScreenText(frames, times.length === frames.length ? times : []);
   } catch (error) {
     console.error("Reading the screen failed", error);
     return "";
+  }
+}
+
+/** The words in a voice message, from its first VOICE_MAX_SECONDS only, so a long one costs no more than a short one. */
+async function hearVoiceBytes(voice: Buffer, durationHint: number): Promise<{ text: string; cut: boolean }> {
+  if (!isTranscriptionConfigured()) throw new NoTranscription();
+  const dir = await mkdtemp(join(tmpdir(), "knowing-voice-"));
+  try {
+    const input = join(dir, "voice.ogg");
+    await writeFile(input, voice);
+    const duration = durationHint || (await probeDuration(input));
+    const audio = join(dir, "voice.m4a");
+    await ffmpeg(["-loglevel", "error", "-t", String(VOICE_MAX_SECONDS), "-i", input, "-vn", "-ac", "1", "-ar", "16000", "-b:a", "32k", audio]);
+    const text = await transcribeAudio(new Blob([new Uint8Array(await readFile(audio))], { type: "audio/mp4" }), undefined, "voice.m4a");
+    return { text: text.trim(), cut: duration > VOICE_MAX_SECONDS };
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
   }
 }
 
@@ -227,6 +252,11 @@ export function createMedia(fileUrl: (fileId: string) => Promise<string>): Media
       const bytes = await downloadBytes(await fileUrl(fileId), 20 * 1024 * 1024);
       const watched = await watchVideoBytes(bytes, durationSec);
       return { ...watched, caption: "" };
+    },
+
+    async hearVoice(fileId: string, durationSec: number): Promise<{ text: string; cut: boolean }> {
+      if (!isTranscriptionConfigured()) throw new NoTranscription();
+      return hearVoiceBytes(await downloadBytes(await fileUrl(fileId), 20 * 1024 * 1024), durationSec);
     },
   };
 }

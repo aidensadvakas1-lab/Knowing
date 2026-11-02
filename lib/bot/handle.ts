@@ -4,9 +4,12 @@
  *
  * - A link (shared from TikTok) or a video: watch it, save it, and react in
  *   a sentence or two (how it connects to their other saves). No coaching.
- * - Any other text: answer from their saves and what they've told us.
+ * - Any other text, or a voice message: answer from their saves and what they've told us.
  * - Buttons: Show steps, Start now, Add what it says, Fix something, Keep both / Replace.
- * - /start, /help, /saved, /memory, /usage, /buy, /delete, and /invite for the owner.
+ * - /start and /help: a short welcome with a tap-through guide. /folders, /saved, /digest,
+ *   /memory, /usage, /buy, /delete, and /invite for the owner.
+ * - The weekly flashback (digest.ts) is off until they turn it on. It's offered once,
+ *   at /start or after their next save.
  * - Asking "how many questions do I have left?" gets the same answer as /usage, for free.
  * - An invite link lets people in without editing settings, up to a set number of spots.
  * - Free videos and questions are given once. Packs of extras can be bought with
@@ -16,15 +19,16 @@
  * - Shares close together make a sitting, wrapped up later in wrapup.ts.
  */
 import { createHash, timingSafeEqual } from "node:crypto";
-import { answerText, escapeHtml as esc, reactionButtons, reactionText, saveButtons, saveCard, savedList, stepButtons, stepText } from "./format";
+import { flashback, OFF_TEXT, OFFER_BUTTONS, OFFER_TEXT, ON_TEXT } from "./digest";
+import { answerText, escapeHtml as esc, folderList, folderView, reactionButtons, reactionText, saveButtons, saveCard, savedList, stepButtons, stepText } from "./format";
 import { isVideoFile } from "./platforms";
-import { WELCOME } from "./profile";
+import { GUIDE, guideButtons, WELCOME } from "./profile";
 import { buyButtons, invoiceFor, packName, PAYSUPPORT_HELP, priceList, readPack, SUPPORT_HELP, TERMS } from "./shop";
 import { relevantSaves, sharedVideoTurns } from "./prompts";
 import { groupHits, searchQuery, type Retriever } from "./rag";
 import { FACTS_KEPT, newSaveId, newUser, TURNS_KEPT } from "./store";
 import { findUrl } from "./tiktok";
-import type { Brain, BotUser, ChatMemory, InlineButton, Media, Pack, PackKind, Save, Store, TelegramApi, Usage, Wallet, WatchInput } from "./types";
+import { NoTranscription, type Brain, type BotUser, type ChatMemory, type InlineButton, type Media, type Pack, type PackKind, type Save, type Store, type TelegramApi, type Usage, type Wallet, type WatchInput } from "./types";
 
 export interface Deps {
   tg: TelegramApi;
@@ -61,6 +65,8 @@ export interface Update {
     /** Round video messages. */
     video_note?: { file_id: string; duration?: number; file_size?: number };
     document?: { file_id: string; mime_type?: string; file_name?: string; file_size?: number };
+    /** A voice message: a question asked out loud. */
+    voice?: { file_id: string; duration?: number; file_size?: number };
     successful_payment?: { currency: string; total_amount: number; invoice_payload: string; telegram_payment_charge_id: string };
   };
   /** Telegram checks with us right before charging Stars. */
@@ -204,9 +210,15 @@ export async function handleUpdate(update: Update, deps: Deps): Promise<void> {
     const support = /^\/(pay)?support\b/.exec(text);
     if (support) return await askOwner(chatId, userId, msg.from.first_name, text.slice(support[0].length).trim(), Boolean(support[1]), deps);
     if (text === "/start" || text.startsWith("/start ") || text.startsWith("/help")) {
-      await deps.tg.sendMessage(chatId, WELCOME);
+      await deps.tg.sendMessage(chatId, WELCOME, guideButtons());
+      if (text.startsWith("/start")) await offerFlashback(chatId, userId, deps);
       return;
     }
+    if (text.startsWith("/folders") || text.startsWith("/tags")) {
+      const list = folderList(await deps.store.listSaves(userId, ALL_SAVES));
+      return void (await deps.tg.sendMessage(chatId, list.html, list.buttons));
+    }
+    if (text.startsWith("/digest")) return await digestCommand(chatId, userId, text.slice(7).trim().toLowerCase(), deps);
     const user = await deps.store.getUser(userId);
     if (text.startsWith("/memory")) {
       await deps.tg.sendMessage(chatId, memoryText(user), memoryButtons(user));
@@ -239,23 +251,97 @@ export async function handleUpdate(update: Update, deps: Deps): Promise<void> {
       return await watchAndSave(chatId, user, () => deps.media.fromTelegramFile(video.file_id, duration), "", text, deps);
     }
 
+    if (msg.voice) return await voiceMessage(chatId, user, msg.voice, deps, msg.from.first_name);
+
     const url = findUrl(text);
     if (url && !(await allow(user, "videos", deps))) return await limitReached(chatId, "videos", deps);
     if (url) return await watchAndSave(chatId, user, () => deps.media.fromLink(url), url, text.replace(url, "").trim(), deps);
 
     if (!text) return;
-    // Remaking a save is a Claude call like an answer, so it uses a question.
-    if (user.awaitingWordsFor) {
-      if (!(await allow(user, "questions", deps))) return await limitReached(chatId, "questions", deps);
-      return await addWords(chatId, user, text, deps);
-    }
-    // Before the limit check: checking what's left shouldn't use a question, and works when none are left.
-    if (asksAboutUsage(text)) return await showUsage(chatId, user, deps);
-    if (!(await allow(user, "questions", deps))) return await limitReached(chatId, "questions", deps);
-    await answer(chatId, user, text, deps, msg.from.first_name);
+    await onText(chatId, user, text, deps, msg.from.first_name);
   } catch (error) {
     await deps.tg.sendMessage(chatId, await failed(error, "handling a message", deps)).catch(() => {});
   }
+}
+
+/** Enough to list every save in /folders and the flashback. */
+const ALL_SAVES = 1_000;
+
+/** A typed message, or a voice message's words: a question, or the words Fix / Add what it says asked for. `heard` shows what a voice message said. */
+async function onText(chatId: number, user: BotUser, text: string, deps: Deps, name?: string, heard = "") {
+  // Remaking a save is a Claude call like an answer, so it uses a question.
+  if (user.awaitingWordsFor) {
+    if (!(await allow(user, "questions", deps))) return await limitReached(chatId, "questions", deps);
+    return await addWords(chatId, user, text, deps, heard);
+  }
+  // Before the limit check: checking what's left shouldn't use a question, and works when none are left.
+  if (asksAboutUsage(text)) return await showUsage(chatId, user, deps);
+  if (!(await allow(user, "questions", deps))) return await limitReached(chatId, "questions", deps);
+  await answer(chatId, user, text, deps, name, heard);
+}
+
+/**
+ * A voice message: hear it (the first minute only, costs.ts VOICE_MAX_SECONDS),
+ * then treat the words like a typed message. It uses a question like one. The
+ * reply starts with what was heard, so a mishearing is easy to spot.
+ */
+async function voiceMessage(chatId: number, user: BotUser, voice: NonNullable<NonNullable<Update["message"]>["voice"]>, deps: Deps, name?: string) {
+  // Checked first, so nobody out of questions costs a transcription.
+  if (!(await hasLeft(user, "questions", deps))) return await limitReached(chatId, "questions", deps);
+  await deps.tg.typing(chatId);
+  let heard: { text: string; cut: boolean };
+  try {
+    heard = await deps.media.hearVoice(voice.file_id, voice.duration ?? 0);
+  } catch (error) {
+    if (error instanceof NoTranscription) return void (await deps.tg.sendMessage(chatId, "I can't hear voice messages yet, so type it for now."));
+    throw error;
+  }
+  if (!heard.text) return void (await deps.tg.sendMessage(chatId, "I couldn't make out any words in that one. Try again, or type it."));
+  const quote = heard.text.length > 300 ? `${heard.text.slice(0, 300)}…` : heard.text;
+  const echo = `🎙 <i>“${esc(quote)}”</i>${heard.cut ? "\n<i>(I only listened to the first minute.)</i>" : ""}`;
+  await onText(chatId, user, heard.text, deps, name, echo);
+}
+
+/** Whether they have one of these left, without using it. */
+async function hasLeft(user: BotUser, kind: PackKind, deps: Deps): Promise<boolean> {
+  if (user.id === deps.ownerId || user.usage[kind] < deps.limits[kind]) return true;
+  const wallet = await walletOf(user.id, deps);
+  return Boolean(wallet && wallet[kind] > 0);
+}
+
+/** Ask once, at /start or after their next save, whether they want the weekly flashback. Never gets in the way. */
+async function offerFlashback(chatId: number, userId: number, deps: Deps): Promise<void> {
+  try {
+    const digest = await deps.store.getDigest(userId);
+    if (digest.offered || digest.on) return;
+    // Marked first, so if this can't be saved they aren't asked again and again.
+    await deps.store.saveDigest(userId, { ...digest, offered: true });
+    await deps.tg.sendMessage(chatId, OFFER_TEXT, OFFER_BUTTONS);
+  } catch (error) {
+    console.error("Offering the weekly flashback failed", error);
+  }
+}
+
+/** /digest shows the setting and a preview; /digest on and /digest off change it. */
+async function digestCommand(chatId: number, userId: number, arg: string, deps: Deps): Promise<void> {
+  let digest;
+  try {
+    digest = await deps.store.getDigest(userId);
+  } catch (error) {
+    const detail = (error instanceof Error ? error.message : String(error)).slice(0, 200);
+    await deps.alert(`Weekly flashback settings couldn't be read. If you haven't, run docs/supabase.sql again in Supabase. ${detail}`).catch(() => {});
+    return void (await deps.tg.sendMessage(chatId, "Weekly flashbacks aren't set up yet. I've told the owner."));
+  }
+  if (arg === "on" || arg === "off") {
+    await deps.store.saveDigest(userId, { ...digest, on: arg === "on", offered: true, quiet: 0 });
+    return void (await deps.tg.sendMessage(chatId, arg === "on" ? ON_TEXT : OFF_TEXT));
+  }
+  const status = digest.on
+    ? "Your weekly flashback is <b>on</b>. It comes Sunday evenings (around 17:00 UTC)."
+    : "Your weekly flashback is <b>off</b>. Turn it on and every Sunday I'll send what you saved that week, or a few older videos worth another look.";
+  await deps.tg.sendMessage(chatId, status, [[digest.on ? { text: "Turn it off", callback_data: "digest:off" } : { text: "Turn it on", callback_data: "digest:on" }]]);
+  const preview = flashback(await deps.store.listSaves(userId, ALL_SAVES));
+  if (preview) await deps.tg.sendMessage(chatId, `<i>Here's what it would look like this week:</i>\n\n${preview.html}`, preview.buttons);
 }
 
 /** Count one use: their free ones first, then what they bought. False when both are used up. The owner has no limit. */
@@ -464,16 +550,18 @@ async function saveWatched(chatId: number, status: number, user: BotUser, input:
   await reindex(save, deps);
   const decide = watched.relation === "alternative" || watched.relation === "duplicate" ? saves.find((s) => s.id === watched.relatedId) : null;
   await deps.tg.editMessage(chatId, status, reactionText(watched.reply, save, input.notes), reactionButtons(save, decide, watched.relation === "alternative" ? "alternative" : "duplicate"));
+  // People who started before the flashback existed are asked once, here.
+  await offerFlashback(chatId, user.id, deps);
 }
 
 /** The message after Add what it says or Fix something: remake that save with it. */
-async function addWords(chatId: number, user: BotUser, text: string, deps: Deps) {
+async function addWords(chatId: number, user: BotUser, text: string, deps: Deps, heard = "") {
   const pending = user.awaitingWordsFor ?? "";
   const fixing = pending.startsWith("fix:");
   user.awaitingWordsFor = null;
   await deps.store.saveUser(user);
   const save = await deps.store.getSave(user.id, fixing ? pending.slice(4) : pending);
-  if (!save) return answer(chatId, user, text, deps);
+  if (!save) return answer(chatId, user, text, deps, "", heard);
   await deps.tg.typing(chatId);
   const draft = await deps.brain.rewrite(save, text, fixing ? "fix" : "words");
   const updated: Save = fixing
@@ -481,10 +569,10 @@ async function addWords(chatId: number, user: BotUser, text: string, deps: Deps)
     : { ...save, ...draft, words: text.slice(0, 8_000), needsWords: false };
   await deps.store.updateSave(updated);
   await reindex(updated, deps);
-  await deps.tg.sendMessage(chatId, `${fixing ? "Fixed." : "Updated with what it says."}\n\n${saveCard(updated)}`, saveButtons(updated));
+  await deps.tg.sendMessage(chatId, `${heard ? `${heard}\n\n` : ""}${fixing ? "Fixed." : "Updated with what it says."}\n\n${saveCard(updated)}`, saveButtons(updated));
 }
 
-async function answer(chatId: number, user: BotUser, question: string, deps: Deps, name = "") {
+async function answer(chatId: number, user: BotUser, question: string, deps: Deps, name = "", heard = "") {
   await deps.tg.typing(chatId);
   const saves = await deps.store.listSaves(user.id);
   const [retrieved, memories, wallet] = await Promise.all([retrieve(user, question, saves, deps), recall(user, question, deps), walletOf(user.id, deps)]);
@@ -501,7 +589,7 @@ async function answer(chatId: number, user: BotUser, question: string, deps: Dep
   const buttons: InlineButton[][] = [];
   const runnable = used.find((s) => (s.type === "drill" || s.type === "plan") && s.steps.length);
   if (runnable) buttons.push([{ text: `Start: ${runnable.title.slice(0, 40)}`, callback_data: `open:${runnable.id}` }]);
-  await deps.tg.sendMessage(chatId, answerText(reply.text, used, find(reply.about)), buttons);
+  await deps.tg.sendMessage(chatId, `${heard ? `${heard}\n\n` : ""}${answerText(reply.text, used, find(reply.about))}`, buttons);
   // Every chat is kept and searchable, so something said weeks ago can still come back.
   const memory: ChatMemory = { said: question.slice(0, 4_000), answered: reply.text.slice(0, 4_000), at: new Date().toISOString() };
   await deps.retriever.remember(user.id, memory).catch((error) => console.error("Remembering the chat failed", error));
@@ -515,6 +603,33 @@ async function onButton(q: NonNullable<Update["callback_query"]>, deps: Deps) {
   try {
     if (!(await hasAccess(q.from.id, deps))) return await deps.tg.answerCallback(q.id, "Knowing is invite-only for now.");
     const [kind, id = "", n = "0"] = data.split(":");
+    if (kind === "guide") {
+      await deps.tg.answerCallback(q.id);
+      const page = GUIDE.find((g) => g.id === id);
+      await deps.tg.editMessage(chatId, messageId, page ? page.text(deps.limits) : WELCOME, page ? [[{ text: "« Back", callback_data: "guide:" }]] : guideButtons());
+      return;
+    }
+    if (kind === "folders" || kind === "folder") {
+      await deps.tg.answerCallback(q.id);
+      const saves = await deps.store.listSaves(q.from.id, ALL_SAVES);
+      const view = kind === "folder" ? folderView(saves, id) : null;
+      // A folder that's gone (its videos were moved or deleted) shows the list instead.
+      const page = view ?? folderList(saves);
+      // From a flashback, open the folders as a new message so the flashback stays.
+      if (kind === "folders" && id === "new") await deps.tg.sendMessage(chatId, page.html, page.buttons);
+      else await deps.tg.editMessage(chatId, messageId, page.html, page.buttons);
+      return;
+    }
+    if (kind === "digest") {
+      const digest = await deps.store.getDigest(q.from.id);
+      const on = id === "on";
+      await deps.store.saveDigest(q.from.id, { ...digest, on, offered: true, quiet: on ? 0 : digest.quiet });
+      await deps.tg.answerCallback(q.id, on ? "Turned on" : id === "no" ? undefined : "Turned off");
+      // From a flashback: keep it, and confirm in a new message.
+      if (id === "stop") return void (await deps.tg.sendMessage(chatId, OFF_TEXT));
+      await deps.tg.editMessage(chatId, messageId, on ? ON_TEXT : id === "no" ? "No problem. /digest turns it on any time." : OFF_TEXT);
+      return;
+    }
     if (kind === "wipe") {
       if (id === "yes") {
         const { usage } = await deps.store.getUser(q.from.id);

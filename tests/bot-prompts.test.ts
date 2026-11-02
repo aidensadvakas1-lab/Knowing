@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildAskSystem, buildFixPrompt, buildWatchPrompt, buildWrapUpPrompt, cleanDraft, cleanWatch, frameLabel, interests, parseAnswer, relevantSaves, sharedVideoTurns } from "@/lib/bot/prompts";
+import { buildAskSystem, buildFixPrompt, buildRewritePrompt, buildWatchPrompt, buildWrapUpPrompt, cleanDraft, cleanWatch, frameLabel, interests, parseAnswer, relevantSaves, sharedVideoTurns } from "@/lib/bot/prompts";
 import { newUser } from "@/lib/bot/store";
 import type { Save } from "@/lib/bot/types";
 
@@ -102,6 +102,15 @@ describe("buildAskSystem", () => {
     expect(p).toContain("REMEMBER:");
     expect(p).not.toMatch(/goal|SWITCH/i);
   });
+
+  it("gives each save's date and moment times, so \"last week\" and \"when does he...\" work", () => {
+    const p = buildAskSystem(newUser(1), [save({ steps: ["0:42 Add the sauce"] })], [{ save: save({ steps: ["0:42 Add the sauce"] }), passages: [] }], "2026-11-02");
+    expect(p).toContain("Setup, saved 2026-10-29)");
+    expect(p).toContain("1. 0:42 Add the sauce");
+    expect(p).toContain('give the time ("At 0:42, right after searing the chicken."');
+    expect(p).toContain("Never make up a time a save doesn't have");
+    expect(p).toContain('"the one I saved last week"');
+  });
   it("talks as a companion: their name, what they're into, and older chats that match", () => {
     const memories = [{ said: "My tryout is Friday", answered: "Good luck!", at: "2026-10-20T10:00:00Z" }];
     const saves = [save({}), save({ id: "c1", title: "Ferrari F80", topic: "Cars, Ferrari" }), save({ id: "b2" })];
@@ -144,7 +153,7 @@ describe("buildAskSystem", () => {
     const p = buildAskSystem(newUser(1), [linked, save({ id: "f1", title: "Sent as a file" })], [{ save: linked, passages: [] }], "2026-10-31");
     expect(p).toContain("Link: https://www.tiktok.com/@pro/video/123");
     expect(p).toContain("linked below");
-    expect(p).toContain('"Sent as a file" (Siege, Bank) Basement defense on Bank. (sent as a file, no link)');
+    expect(p).toContain('"Sent as a file" (Siege, Bank, saved 2026-10-29) Basement defense on Bank. (sent as a file, no link)');
   });
 });
 
@@ -153,6 +162,20 @@ describe("watch prompt and cleanWatch", () => {
     const p = buildWatchPrompt({ caption: "", transcript: "", note: "", frameCount: 2, facts: ["Gold rank"], saves: [save({})] });
     expect(p).toContain("Gold rank");
     expect(p).toContain('[id a1] "Bank basement: lockers + CCTV setup"');
+  });
+
+  it("files new videos into the folders they already have", () => {
+    const p = buildWatchPrompt({ caption: "", transcript: "", note: "", frameCount: 2, saves: [save({}), save({ id: "g1", topic: "Gym, Chest" })] });
+    expect(p).toContain("THEIR FOLDERS: Gym (1), Siege (1)");
+    expect(p).toContain("use that exact name instead of a new one");
+  });
+
+  it("puts the time each step happens at its start, and marks estimates", () => {
+    const p = buildWatchPrompt({ caption: "", transcript: "", note: "", frameCount: 20 });
+    expect(p).toContain('start each step with when it happens in the video, like "0:42 Add the sauce, right after searing the chicken"');
+    expect(p).toContain('with ~ in front ("~1:10")');
+    expect(buildFixPrompt(save({}), "it's on the wall")).toContain("including the times at the start of steps");
+    expect(buildRewritePrompt(save({}), "words")).toContain("keep the times at the start of steps");
   });
   it("drops a relation that points at an unknown save", () => {
     expect(cleanWatch({ reply: "x", relation: "alternative", relatedId: "nope" }, [save({})])).toMatchObject({ relation: "none", relatedId: "" });

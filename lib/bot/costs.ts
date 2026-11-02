@@ -40,6 +40,8 @@ export const WATCH_TEXT_CHARS = 40_000;
 export const WATCH_MAX_TOKENS = 6_000;
 /** Most tokens the screen reader may write. */
 export const READ_MAX_TOKENS = 4_000;
+/** The screen reader's instructions (screen.ts SCREEN_TEXT_PROMPT), in tokens, with room to spare. */
+export const READ_PROMPT_TOKENS = 500;
 
 // Fix something / Add what it says (brain.rewrite), counted as a question
 export const REWRITE_TEXT_CHARS = 30_000;
@@ -48,12 +50,14 @@ export const REWRITE_MAX_TOKENS = 4_000;
 // Answering (prompts.ts buildAskSystem, brain.ts answer)
 /** Most characters in the answer's instructions, including their saves, facts and earlier chats. */
 export const ASK_SYSTEM_CHARS = 32_000;
-/** Most characters of recent chat sent along, newest kept. */
-export const HISTORY_CHARS = 10_000;
+/** Most characters of recent chat sent along, newest kept. Older chats come back through search. */
+export const HISTORY_CHARS = 7_500;
 /** Most characters of their message that's read. */
 export const QUESTION_CHARS = 4_000;
 /** Most tokens an answer may use, thinking included. Most answers use under 1,500. */
 export const ANSWER_MAX_TOKENS = 4_000;
+/** Only the first this many seconds of a voice question are heard. Most are under 15. */
+export const VOICE_MAX_SECONDS = 60;
 
 // The wrap-up after a scroll session (only once a sweep runs), covering at least 3 videos (wrapup.ts WRAP_MIN)
 export const WRAPUP_TEXT_CHARS = 30_000;
@@ -77,18 +81,19 @@ const FRAME_TOKENS = Math.ceil(FRAME_PIXELS / 750) + 10;
 
 /** The most one video can cost, in dollars. */
 export function worstVideoCost(): number {
-  const read = callCost("haiku", SCAN_MAX * FRAME_TOKENS + 300, READ_MAX_TOKENS);
+  const read = callCost("haiku", SCAN_MAX * FRAME_TOKENS + READ_PROMPT_TOKENS, READ_MAX_TOKENS);
   const watch = withFallback(FRAME_COUNT * FRAME_TOKENS + textTokens(WATCH_TEXT_CHARS), WATCH_MAX_TOKENS);
   const hear = (MAX_SECONDS / 60) * TRANSCRIBE_PER_MINUTE;
   const wrapUpShare = withFallback(textTokens(WRAPUP_TEXT_CHARS), WRAPUP_MAX_TOKENS) / WRAPUP_MIN_VIDEOS;
   return read + watch + hear + wrapUpShare + SMALL_CALLS;
 }
 
-/** The most one question can cost, in dollars: an answer, or a Fix / Add what it says. */
+/** The most one question can cost, in dollars: an answer, or a Fix / Add what it says, either one asked by voice. */
 export function worstQuestionCost(): number {
   const answer = withFallback(textTokens(ASK_SYSTEM_CHARS + HISTORY_CHARS + QUESTION_CHARS), ANSWER_MAX_TOKENS);
   const rewrite = withFallback(textTokens(REWRITE_TEXT_CHARS), REWRITE_MAX_TOKENS);
-  return Math.max(answer, rewrite) + SMALL_CALLS;
+  const voice = (VOICE_MAX_SECONDS / 60) * TRANSCRIBE_PER_MINUTE;
+  return Math.max(answer, rewrite) + voice + SMALL_CALLS;
 }
 
 /** The most a pack of `count` can cost, in dollars. */

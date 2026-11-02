@@ -105,6 +105,17 @@ export interface BotUser {
   sitting: Sitting | null;
 }
 
+/** Their weekly flashback setting. Off until they turn it on. */
+export interface DigestState {
+  on: boolean;
+  /** True once they've been asked whether they want it, so it's asked once. */
+  offered: boolean;
+  /** When the last one went out (ISO), or "". */
+  sent: string;
+  /** Flashbacks sent in a row with no message from them since. At 3 they pause until they're back. */
+  quiet: number;
+}
+
 /** One scroll session: videos shared close together. Which videos is worked out from the saves' times. */
 export interface Sitting {
   /** When the latest video in it was saved (ISO). */
@@ -141,6 +152,12 @@ export interface Store {
   touchSitting(userId: number, at: string): Promise<void>;
   /** End their sitting, unless they've shared again since `last`. True if this call ended it. */
   closeSitting(userId: number, last: string): Promise<boolean>;
+  /** Their flashback setting. Throws if the digest column is missing (docs/supabase.sql not run again). */
+  getDigest(userId: number): Promise<DigestState>;
+  /** Writes only the flashback setting, creating the row if needed. */
+  saveDigest(userId: number, digest: DigestState): Promise<void>;
+  /** Everyone with the flashback on, and when they last messaged the bot (ISO). */
+  listDigestUsers(): Promise<Array<{ id: number; digest: DigestState; active: string }>>;
 }
 
 /** What we could get out of a video: frames to look at, speech, and the caption. */
@@ -161,6 +178,19 @@ export interface Media {
   fromLink(url: string): Promise<WatchInput>;
   /** A video sent straight to the bot. */
   fromTelegramFile(fileId: string, durationSec: number): Promise<WatchInput>;
+  /**
+   * A voice message's words. Only the first VOICE_MAX_SECONDS are heard (`cut`
+   * says so). Throws NoTranscription when speech-to-text isn't set up.
+   */
+  hearVoice(fileId: string, durationSec: number): Promise<{ text: string; cut: boolean }>;
+}
+
+/** Speech-to-text isn't set up (no OPENAI_API_KEY). */
+export class NoTranscription extends Error {
+  constructor() {
+    super("No speech-to-text key");
+    this.name = "NoTranscription";
+  }
 }
 
 /** The parsed reply to a question. */

@@ -1,14 +1,15 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import ffmpegPath from "ffmpeg-static";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
-const readScreenText = vi.hoisted(() => vi.fn(async (frames: string[]) => (frames.length ? "npx -y firecrawl-mcp" : "")));
+const readScreenText = vi.hoisted(() => vi.fn(async (frames: string[], _times?: number[]) => (frames.length ? "npx -y firecrawl-mcp" : "")));
 vi.mock("@/lib/bot/screen", () => ({ readScreenText }));
-const { createMedia, frameFilter, frameFilterTimes, parseDuration, scanFilter, FRAME_COUNT, MAX_SECONDS, SCAN_MAX } = await import("@/lib/bot/media");
+const { createMedia, frameFilter, frameFilterTimes, parseDuration, scanFilter, shownTimes, FRAME_COUNT, MAX_SECONDS, SCAN_MAX } = await import("@/lib/bot/media");
+const { NoTranscription } = await import("@/lib/bot/types");
 const { FRAME_PIXELS } = await import("@/lib/bot/costs");
 
 /** Width and height of a JPEG, from its start-of-frame marker. */
@@ -112,6 +113,12 @@ describe("createMedia (real ffmpeg)", () => {
     expect(frames.length).toBeGreaterThan(FRAME_COUNT / 2);
     expect(frames.length).toBeLessThanOrEqual(SCAN_MAX);
     expect(Buffer.from(frames[0]!, "base64").subarray(0, 2).toString("hex")).toBe("ffd8");
+    // Each frame comes with when it was taken, so the text can say when it showed up.
+    const times = readScreenText.mock.calls[0]?.[1] ?? [];
+    expect(times).toHaveLength(frames.length);
+    expect(times[0]).toBe(0);
+    expect(times.every((t, i) => i === 0 || t > times[i - 1]!)).toBe(true);
+    expect(times.at(-1)).toBeLessThan(6);
   }, 30_000);
 
   it("reads a still screen once instead of every second", async () => {
@@ -178,5 +185,59 @@ describe("createMedia (real ffmpeg)", () => {
     expect(got.frames).toEqual([]);
     expect(got.caption).toContain("Bank setup caption");
     expect(got.notes[0]).toContain("caption");
+  });
+});
+
+describe("shownTimes", () => {
+  it("reads when each frame was taken from ffmpeg's showinfo lines", () => {
+    const log = "[Parsed_showinfo_2 @ 0x1] config in time_base: 1/2\n[Parsed_showinfo_2 @ 0x1] n:   0 pts:      0 pts_time:0       duration:1\n[Parsed_showinfo_2 @ 0x1] n:   1 pts:      5 pts_time:2.5     duration:1";
+    expect(shownTimes(log)).toEqual([0, 2.5]);
+    expect(shownTimes("nothing here")).toEqual([]);
+  });
+});
+
+describe("hearVoice", () => {
+  /** A voice message made by ffmpeg, served as the Telegram file. */
+  function serveVoice(seconds: number) {
+    const file = join(mkdtempSync(join(tmpdir(), "knowing-test-")), "voice.ogg");
+    execFileSync(ffmpegPath!, ["-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", `sine=frequency=300:duration=${seconds}`, "-c:a", "libopus", "-b:a", "16k", file]);
+    return readFileSync(file);
+  }
+
+  it("hears only the first minute of a long voice message, and says it was cut", async () => {
+    vi.stubEnv("OPENAI_API_KEY", "sk-test");
+    const voice = serveVoice(75);
+    let heardSeconds = 0;
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      if (!String(url).includes("openai")) return new Response(voice);
+      const audio = (init?.body as FormData).get("file") as Blob;
+      const out = join(mkdtempSync(join(tmpdir(), "knowing-test-")), "sent.m4a");
+      writeFileSync(out, Buffer.from(await audio.arrayBuffer()));
+      try {
+        execFileSync(ffmpegPath!, ["-hide_banner", "-i", out], { stdio: "pipe" });
+      } catch (error) {
+        heardSeconds = parseDuration(String((error as { stderr?: Buffer }).stderr ?? ""));
+      }
+      return Response.json({ text: " how many sets of chest press? " });
+    }));
+    const got = await createMedia(async () => "https://files/voice.ogg").hearVoice("V", 75);
+    expect(got).toEqual({ text: "how many sets of chest press?", cut: true });
+    expect(heardSeconds).toBeGreaterThan(55);
+    expect(heardSeconds).toBeLessThanOrEqual(60.5);
+  }, 30_000);
+
+  it("hears a short one whole", async () => {
+    vi.stubEnv("OPENAI_API_KEY", "sk-test");
+    const voice = serveVoice(3);
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => (String(url).includes("openai") ? Response.json({ text: "hi" }) : new Response(voice))));
+    expect(await createMedia(async () => "https://files/voice.ogg").hearVoice("V", 0)).toEqual({ text: "hi", cut: false });
+  }, 30_000);
+
+  it("says plainly when speech-to-text isn't set up", async () => {
+    vi.stubEnv("OPENAI_API_KEY", "");
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(createMedia(async () => "https://files/voice.ogg").hearVoice("V", 3)).rejects.toBeInstanceOf(NoTranscription);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

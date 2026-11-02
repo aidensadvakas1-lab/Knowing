@@ -9,6 +9,7 @@
  */
 import { formatTimestamp } from "../video-math";
 import { ASK_SYSTEM_CHARS, HISTORY_CHARS } from "./costs";
+import { folderNames } from "./folders";
 import { SAVE_TYPE_LABEL, SAVE_TYPES, type Answer, type BotUser, type ChatMemory, type Relation, type Save, type SaveDraft, type SaveType, type Turn, type WatchResult } from "./types";
 
 const RELATIONS: readonly Relation[] = ["none", "related", "duplicate", "alternative"];
@@ -34,11 +35,11 @@ export const WATCH_SCHEMA = {
 const WATCH_RULES = `Record what it shows or teaches, with every specific detail, so a later question like "what was that setup / drill / car?" gets THIS one back, not a generic answer. Don't add advice that isn't in it.
 
 - title: what it teaches, max 8 words, specific ("Bank basement: lockers + CCTV setup", "Split dodge to weak hand", "15-minute garlic butter pasta"). Never trail off with "more" or "etc.": if the items don't all fit, name the group instead ("5 Claude Code add-ons for web research").
-- topic: the subject, then the specific part ("Siege, Bank", "Lacrosse, Dodging", "Cooking, Pasta", "Cars, Porsche", "SAT, Reading", "Business, Mindset").
+- topic: the subject, then the specific part ("Siege, Bank", "Lacrosse, Dodging", "Cooking, Pasta", "Cars, Porsche", "SAT, Reading", "Business, Mindset"). The subject is the folder it's filed in, so keep it broad (Cooking, not Pasta; Gym, not Chest day) and, when one of THEIR FOLDERS below fits, use that exact name instead of a new one.
 - type: drill (something to practice), setup (a configuration to copy), plan (a schedule or routine), tip (one trick), mindset (a way of seeing things: a belief, an argument or big-picture strategy about career, money, life or a skill), info (facts).
 - summary: one sentence, what it is and when to use it.
-- steps: the exact steps or key claims in order, each short and specific: names, positions, numbers, reps, timings. 2 to 10.
-- details: everything else worth remembering, exact specifics, up to 300 words.
+- steps: the exact steps or key claims in order, each short and specific: names, positions, numbers, reps, timings. 2 to 10. When the frames or on-screen text have times, start each step with when it happens in the video, like "0:42 Add the sauce, right after searing the chicken": the time of the frame or text that shows it, or your best estimate with ~ in front ("~1:10") when it falls between frames or is only said. If nothing gives times (photos, a page's text), leave them out.
+- details: everything else worth remembering, exact specifics, up to 300 words. Give other moments worth finding again their time the same way.
 - needsWords: true only if someone is clearly talking, important details are only spoken, and there is no transcript below.
 Whatever the topic, keep what someone would need to find it again and use it. A game setup: the game, map, site, operators or characters and where each goes, including the exact surface (wall, floor, ceiling, hatch, window) and which one. A wall stands upright, often with doors, windows or pictures on it and the floor meeting it at the bottom; a ceiling is flat overhead, often with lights, vents or beams, and only shows when the view tilts up. A drill or workout: sets, reps, distances, rest and cues. A recipe: every ingredient with amounts, temperatures and times. A car: make, model, generation or year and trim when you can tell, and any numbers it gives. A product or place: its exact name, and where to get it or where it is. Software or any how-to: every command, link, package or app name and setting it shows or says, copied exactly, including anything in the on-screen text.
 If the video doesn't name something that matters (the game or map, the car, the dish, the place, the product), work it out from what you see when you're fairly sure, and mark it as your read ("Car: Porsche 911 GT3 RS, from the swan-neck wing; the video doesn't say"). Name things at the right level, and keep a whole and its parts apart: the map and the site on it, the car and its trim, the program and one exercise in it.
@@ -51,6 +52,8 @@ Then react in "reply" the way a friend who knows the topic and just watched it w
 /** Most characters of facts, and of the saves list, in contextBlock. Keeps the cost of watching a video capped (costs.ts). */
 const CONTEXT_FACTS_CHARS = 3_000;
 const CONTEXT_SAVES_CHARS = 12_000;
+/** Most characters of folder names, taken out of CONTEXT_SAVES_CHARS. */
+const CONTEXT_FOLDERS_CHARS = 1_000;
 
 /** The pieces, in order, that fit in `max` characters (with a separator after each). One that doesn't fit is skipped. */
 export function fitPieces(pieces: string[], max: number, separator = 1): string[] {
@@ -64,13 +67,16 @@ export function fitPieces(pieces: string[], max: number, separator = 1): string[
   return out;
 }
 
-/** What they've told us (newest kept) and what they've saved, for spotting connections. */
+/** What they've told us (newest kept), their folders, and what they've saved, for spotting connections and filing. */
 function contextBlock(facts: string[], saves: Save[]): string {
   const told = fitPieces([...facts].reverse(), CONTEXT_FACTS_CHARS, 2).reverse();
   const lines = saves.slice(0, 100).map((s) => `[id ${s.id}] "${s.title}" (${s.topic || "?"}): ${s.summary} ${s.steps.slice(0, 4).join(" / ")}`.slice(0, 300));
+  // The folders come out of the saves' share, so the whole block stays the same size.
+  const shelf = fitPieces(folderNames(saves).split(", ").filter(Boolean), CONTEXT_FOLDERS_CHARS, 2).join(", ");
   return `WHAT THEY'VE TOLD YOU: ${told.length ? told.join("; ") : "(nothing yet)"}
+THEIR FOLDERS: ${shelf || "(none yet)"}
 THEIR EXISTING SAVES:
-${fitPieces(lines, CONTEXT_SAVES_CHARS).join("\n") || "(none yet)"}`;
+${fitPieces(lines, CONTEXT_SAVES_CHARS - shelf.length).join("\n") || "(none yet)"}`;
 }
 
 /**
@@ -109,12 +115,12 @@ export function buildWatchPrompt(input: { caption: string; transcript: string; s
 }
 
 export function buildRewritePrompt(save: Save, words: string): string {
-  return `You saved this from a video's frames. Here is what the video actually says. Rewrite the save so it's exact, using what they say. For "reply", say in one sentence what changed.\n\nSAVE:\n${saveText(save)}\n\nWHAT THE VIDEO SAYS:\n${words.slice(0, 8_000)}\n\n${WATCH_RULES}\n\n${contextBlock([], [])}`;
+  return `You saved this from a video's frames. Here is what the video actually says. Rewrite the save so it's exact, using what they say, and keep the times at the start of steps. For "reply", say in one sentence what changed.\n\nSAVE:\n${saveText(save)}\n\nWHAT THE VIDEO SAYS:\n${words.slice(0, 8_000)}\n\n${WATCH_RULES}\n\n${contextBlock([], [])}`;
 }
 
 /** The person who saved it says part of it is wrong. Their word beats what the frames seemed to show. */
 export function buildFixPrompt(save: Save, correction: string): string {
-  return `You saved this from a video, and the person who saved it says something in it is wrong. They watched it, so their correction wins over what you saw in the frames. Rewrite the save with the correction applied everywhere it matters (title, steps, details) and keep everything else as it was. For "reply", say in one sentence what changed.\n\nSAVE:\n${saveText(save)}\n\nTHEIR CORRECTION:\n${correction.slice(0, 4_000)}\n\n${WATCH_RULES}\n\n${contextBlock([], [])}`;
+  return `You saved this from a video, and the person who saved it says something in it is wrong. They watched it, so their correction wins over what you saw in the frames. Rewrite the save with the correction applied everywhere it matters (title, topic, steps, details) and keep everything else as it was, including the times at the start of steps. If they want it in another folder, change the first part of the topic to that folder's name. For "reply", say in one sentence what changed.\n\nSAVE:\n${saveText(save)}\n\nTHEIR CORRECTION:\n${correction.slice(0, 4_000)}\n\n${WATCH_RULES}\n\n${contextBlock([], [])}`;
 }
 
 const str = (v: unknown, max: number) => (typeof v === "string" ? v.trim().slice(0, max) : "");
@@ -144,7 +150,7 @@ export function cleanWatch(raw: unknown, saves: Save[], fallbackTitle = "Saved v
 
 /** A save as Claude sees it when answering. */
 export function saveText(s: Save): string {
-  return `[id ${s.id}] "${s.title}" (${s.topic || "no topic"}, ${SAVE_TYPE_LABEL[s.type]})
+  return `[id ${s.id}] "${s.title}" (${s.topic || "no topic"}, ${SAVE_TYPE_LABEL[s.type]}${s.createdAt ? `, saved ${s.createdAt.slice(0, 10)}` : ""})
 Steps:
 ${s.steps.map((x, i) => `${i + 1}. ${x}`).join("\n")}
 Details: ${s.details}${s.words ? `\nWhat the video says: ${s.words}` : ""}`;
@@ -226,6 +232,8 @@ How to answer:
 - If they just want to talk (about a video they shared, a car, their game, their day), talk like a friend who knows the topic: share what you know, have an honest take, and bring in what they've saved or told you when it fits. What you know from outside their videos is welcome; just never pass it off as being from their videos.
 - Remember what they've told you, here and in earlier chats, so they never have to repeat themselves. If they ask what they told you before, answer from it.
 - Don't lecture, and don't turn a chat into advice they didn't ask for.
+- Steps and details in a save can start with when it happens in the video (0:42, or ~1:10 for an estimate). When they ask when or where in a video something happens, or a moment would be a pain to find by scrubbing, give the time ("At 0:42, right after searing the chicken."; "around 1:10" for one with ~). Never make up a time a save doesn't have: then say what it comes right before or after instead.
+- Each save shows the day it was saved, so "the one I saved last week", "yesterday's" or "my newest" can be found by date (count from today, below).
 - If they ask for a video or its link, answer from that save and cite it. Every save in SOURCES or RELATED is linked to its video right under your answer, so just say it's linked below, and don't type links yourself. If its Link is none, they sent that one as a file, so there's no link to share.
 - Telegram chat style: as long as needed and no longer. A numbered list for steps, at most 1 or 2 sentences around it. **bold** is fine; no headings, no tables. Put commands, code, file paths and package names in \`backticks\`, and a command to copy on its own in a \`\`\` block, so they can tap it to copy. Talk like a person, not a report: contractions, short friendly sentences. No long greetings, no hype or motivation speeches, no "great question", and no "want me to...?" offers apart from the how-to one above. Now and then, when you're actually curious about them, ask one thing back, but not every message.
 - If their message says something about them worth remembering (rank, platform, position, school year, schedule, what they're working toward, things they love or can't stand, favorites, people in their life, something coming up), add a line REMEMBER: <the fact in under 15 words>. One line per new fact.
@@ -240,7 +248,7 @@ Today is ${today}.
   let room = ASK_SYSTEM_CHARS - head.length - labels - hitBlocks.reduce((n, b) => n + b.length + 2, 0);
   const mindsetBlocks = fitPieces(mindsets.map((s) => withLink(s, 1_500)), room, 2);
   room -= mindsetBlocks.reduce((n, b) => n + b.length + 2, 0);
-  const restLines = fitPieces(rest.map((s) => `[id ${s.id}] "${s.title}" (${s.topic || "?"}) ${s.summary}${s.sourceUrl ? "" : " (sent as a file, no link)"}`.slice(0, 250)), room);
+  const restLines = fitPieces(rest.map((s) => `[id ${s.id}] "${s.title}" (${s.topic || "?"}, saved ${s.createdAt.slice(0, 10)}) ${s.summary}${s.sourceUrl ? "" : " (sent as a file, no link)"}`.slice(0, 250)), room);
   return `${head}
 THEIR SAVES THAT MATCH THIS QUESTION:
 ${hitBlocks.join("\n\n") || "(none match)"}

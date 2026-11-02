@@ -2,7 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import { asksAboutUsage, handleUpdate, inviteCode, isOutOfCredit, limitText, parseAllowed, secretMatches, spend, usageText, type Deps, type Update } from "@/lib/bot/handle";
 import { MemoryRetriever } from "@/lib/bot/rag";
 import { MemoryStore } from "@/lib/bot/store";
-import type { Answer, Brain, InlineButton, Media, Pack, Save, SaveDraft, TelegramApi, WatchResult } from "@/lib/bot/types";
+import { WELCOME } from "@/lib/bot/profile";
+import { NoTranscription, type Answer, type Brain, type InlineButton, type Media, type Pack, type Save, type SaveDraft, type TelegramApi, type WatchResult } from "@/lib/bot/types";
 
 /** Packs on sale in these tests. */
 const PACKS: Pack[] = [
@@ -16,7 +17,7 @@ const FRIEND = 8;
 
 interface Sent { chatId: number; html: string; buttons?: InlineButton[][]; id: number }
 
-function setup(opts: { answer?: Partial<Answer>; draft?: Partial<SaveDraft>; watch?: (saves: Save[]) => Partial<WatchResult>; limits?: Deps["limits"]; spots?: number; packs?: Pack[] } = {}) {
+function setup(opts: { answer?: Partial<Answer>; draft?: Partial<SaveDraft>; watch?: (saves: Save[]) => Partial<WatchResult>; limits?: Deps["limits"]; spots?: number; packs?: Pack[]; heard?: { text: string; cut: boolean }; newcomers?: boolean } = {}) {
   const sent: Sent[] = [];
   const edits: Sent[] = [];
   let nextId = 100;
@@ -39,8 +40,11 @@ function setup(opts: { answer?: Partial<Answer>; draft?: Partial<SaveDraft>; wat
   const media: Media = {
     fromLink: vi.fn(async () => ({ frames: ["aGk="], transcript: "", caption: "dodge tips", notes: [] })),
     fromTelegramFile: vi.fn(async () => ({ frames: ["aGk="], transcript: "say this", caption: "", notes: [] })),
+    hearVoice: vi.fn(async () => opts.heard ?? { text: "what was that drill?", cut: false }),
   };
   const store = new MemoryStore();
+  // The owner and the friend were already asked about the weekly flashback, so it doesn't show up in every test.
+  if (!opts.newcomers) for (const id of [7, FRIEND]) store.digests.set(id, { on: false, offered: true, sent: "", quiet: 0 });
   const retriever = new MemoryRetriever();
   const alerts: string[] = [];
   const deps: Deps = { tg, store, brain, media, retriever, isAllowed: (id) => id === 7 || id === FRIEND, ownerId: 7, invite: { code: "join-abc123", spots: opts.spots ?? 10, link: async () => "https://t.me/KnowingTestBot?start=join-abc123" }, limits: opts.limits ?? { videos: 50, questions: 50 }, packs: opts.packs ?? PACKS, alert: async (t) => void alerts.push(t) };
@@ -50,6 +54,7 @@ function setup(opts: { answer?: Partial<Answer>; draft?: Partial<SaveDraft>; wat
 const text = (t: string, from = 7, name?: string): Update => ({ message: { message_id: 1, chat: { id: from }, from: { id: from, first_name: name }, text: t } });
 const tap = (data: string, messageId = 100, from = 7): Update => ({ callback_query: { id: "cb", from: { id: from }, data, message: { message_id: messageId, chat: { id: from } } } });
 const datas = (b?: InlineButton[][]) => (b ?? []).flat().map((x) => x.callback_data);
+const voice = (from = 7, duration = 4): Update => ({ message: { message_id: 1, chat: { id: from }, from: { id: from }, voice: { file_id: "V", duration } } });
 
 describe("parseAllowed", () => {
   it("reads comma or space separated ids", () => {
@@ -86,7 +91,7 @@ describe("invite link", () => {
     await handleUpdate(text("/start join-abc123", 99, "Sam <3"), deps);
     expect(await store.hasUser(99)).toBe(true);
     expect(sent.find((m) => m.chatId === 7)?.html).toBe("Sam &lt;3 joined Knowing with your invite link. 1 of 10 spots used.");
-    expect(sent.find((m) => m.chatId === 99)?.html).toContain("Send me videos");
+    expect(sent.find((m) => m.chatId === 99)?.html).toContain("Send me any video");
     await handleUpdate(text("what was that drill?", 99), deps);
     expect(brain.answer).toHaveBeenCalledTimes(1);
   });
@@ -601,5 +606,150 @@ describe("handleUpdate", () => {
     expect(store.saves).toHaveLength(0);
     expect((await store.getUser(7)).turns).toEqual([]);
     expect(edits.at(-1)?.html).toContain("Deleted");
+  });
+});
+
+describe("the start message and guide", () => {
+  it("keeps the start short, with the guide one tap away, and /help brings it back", async () => {
+    const { deps, sent, edits } = setup();
+    expect(WELCOME.length).toBeLessThan(250);
+    await handleUpdate(text("/start"), deps);
+    expect(sent[0]?.html).toBe(WELCOME);
+    expect(datas(sent[0]?.buttons)).toEqual(["guide:save", "guide:ask", "guide:folders", "guide:flashback", "guide:limits", "guide:data"]);
+    await handleUpdate(tap("guide:ask", sent[0]!.id), deps);
+    expect(edits.at(-1)?.html).toContain("hold the mic");
+    expect(datas(edits.at(-1)?.buttons)).toEqual(["guide:"]);
+    await handleUpdate(tap("guide:limits", sent[0]!.id), deps);
+    expect(edits.at(-1)?.html).toContain("50 free videos and 50 free questions");
+    await handleUpdate(tap("guide:", sent[0]!.id), deps);
+    expect(edits.at(-1)?.html).toBe(WELCOME);
+    await handleUpdate(text("/help"), deps);
+    expect(sent.at(-1)?.html).toBe(WELCOME);
+    expect(datas(sent.at(-1)?.buttons)).toContain("guide:save");
+  });
+});
+
+describe("weekly flashback", () => {
+  it("is off until they turn it on, and is offered once at the start", async () => {
+    const { deps, sent, edits, store } = setup({ newcomers: true });
+    await handleUpdate(text("/start join-abc123", 99), deps);
+    const offer = sent.filter((m) => m.chatId === 99).at(-1);
+    expect(offer?.html).toContain("weekly flashback");
+    expect(datas(offer?.buttons)).toEqual(["digest:on", "digest:no"]);
+    expect((await store.getDigest(99)).on).toBe(false);
+    await handleUpdate(tap("digest:on", offer!.id, 99), deps);
+    expect((await store.getDigest(99)).on).toBe(true);
+    expect(edits.at(-1)?.html).toContain("Weekly flashback is on");
+    const before = sent.length;
+    await handleUpdate(text("/start", 99), deps);
+    expect(sent.length).toBe(before + 1); // just the welcome
+  });
+
+  it("asks people who started before it existed once, after their next save", async () => {
+    const { deps, sent, edits, store } = setup({ newcomers: true });
+    await handleUpdate(text("https://vm.tiktok.com/one/"), deps);
+    expect(edits.at(-1)?.html).toContain("Saved: Split dodge drill");
+    expect(sent.at(-1)?.html).toContain("weekly flashback");
+    await handleUpdate(tap("digest:no", sent.at(-1)!.id), deps);
+    expect(await store.getDigest(7)).toMatchObject({ on: false, offered: true });
+    const before = sent.filter((m) => m.html.includes("weekly flashback")).length;
+    await handleUpdate(text("https://vm.tiktok.com/two/"), deps);
+    expect(sent.filter((m) => m.html.includes("weekly flashback")).length).toBe(before);
+  });
+
+  it("turns on and off with /digest, and shows what this week's would look like", async () => {
+    const { deps, sent, store } = setup();
+    await handleUpdate(text("https://vm.tiktok.com/one/"), deps);
+    await handleUpdate(text("/digest"), deps);
+    expect(sent.at(-2)?.html).toContain("is <b>off</b>");
+    expect(datas(sent.at(-2)?.buttons)).toEqual(["digest:on"]);
+    expect(sent.at(-1)?.html).toContain("Weekly flashback");
+    expect(sent.at(-1)?.html).toContain("Split dodge drill");
+    await handleUpdate(text("/digest on"), deps);
+    expect((await store.getDigest(7)).on).toBe(true);
+    await handleUpdate(text("/digest off"), deps);
+    expect((await store.getDigest(7)).on).toBe(false);
+    expect(sent.at(-1)?.html).toContain("off");
+  });
+
+  it("turns off from a flashback's own button without wiping the flashback", async () => {
+    const { deps, sent, edits, store } = setup();
+    await store.saveDigest(7, { on: true, offered: true, sent: "", quiet: 0 });
+    await handleUpdate(tap("digest:stop"), deps);
+    expect((await store.getDigest(7)).on).toBe(false);
+    expect(edits).toHaveLength(0);
+    expect(sent.at(-1)?.html).toContain("Weekly flashback is off");
+  });
+});
+
+describe("voice questions", () => {
+  it("hears a voice message and answers it like a typed one, showing what it heard", async () => {
+    const { deps, sent, brain, media } = setup({ limits: { videos: 50, questions: 2 } });
+    await handleUpdate(text("https://vm.tiktok.com/one/", FRIEND), deps);
+    await handleUpdate(voice(FRIEND, 6), deps);
+    expect(media.hearVoice).toHaveBeenCalledWith("V", 6);
+    expect(vi.mocked(brain.answer).mock.calls[0]?.[0].question).toBe("what was that drill?");
+    expect(sent.at(-1)?.html).toMatch(/^🎙 <i>“what was that drill\?”<\/i>\n\nDo the split dodge\./);
+    await handleUpdate(voice(FRIEND), deps);
+    vi.mocked(media.hearVoice).mockClear();
+    await handleUpdate(voice(FRIEND), deps);
+    expect(media.hearVoice).not.toHaveBeenCalled(); // out of questions, so it isn't even heard
+    expect(sent.at(-1)?.html).toContain("You're out of questions");
+  });
+
+  it("says when it only heard the first minute", async () => {
+    const { deps, sent } = setup({ heard: { text: "a long one", cut: true } });
+    await handleUpdate(voice(7, 90), deps);
+    expect(sent.at(-1)?.html).toContain("only listened to the first minute");
+  });
+
+  it("asks for text when it can't hear, and doesn't use a question on silence", async () => {
+    const { deps, sent, media, brain, store } = setup({ heard: { text: "", cut: false } });
+    await handleUpdate(voice(FRIEND), deps);
+    expect(sent.at(-1)?.html).toContain("couldn't make out any words");
+    expect((await store.getUser(FRIEND)).usage.questions).toBe(0);
+    vi.mocked(media.hearVoice).mockRejectedValueOnce(new NoTranscription());
+    await handleUpdate(voice(FRIEND), deps);
+    expect(sent.at(-1)?.html).toContain("can't hear voice messages yet");
+    expect(brain.answer).not.toHaveBeenCalled();
+  });
+
+  it("takes a voice message as the correction after Fix something", async () => {
+    const { deps, sent, brain, store } = setup({ heard: { text: "the barrier goes on the wall", cut: false } });
+    await handleUpdate(text("https://vm.tiktok.com/one/"), deps);
+    await handleUpdate(tap(`fix:${store.saves[0]!.id}`), deps);
+    await handleUpdate(voice(), deps);
+    expect(vi.mocked(brain.rewrite).mock.calls[0]?.[1]).toBe("the barrier goes on the wall");
+    expect(sent.at(-1)?.html).toMatch(/^🎙 .*\n\nFixed\./);
+  });
+});
+
+describe("folders", () => {
+  it("files saves by topic, and opens a folder's videos with their notes a tap away", async () => {
+    let n = 0;
+    const topics = ["Cooking, Pasta", "Gym, Chest", "cooking, Steak"];
+    const { deps, sent, edits, store } = setup({ watch: () => ({ draft: { title: `Video ${++n}`, topic: topics[n - 1]!, type: "tip", summary: "", steps: ["0:42 Add the sauce"], details: "", needsWords: false } }) });
+    for (const t of topics) await handleUpdate(text(`https://vm.tiktok.com/${encodeURIComponent(t)}/`), deps);
+    await handleUpdate(text("/folders"), deps);
+    const list = sent.at(-1)!;
+    expect(list.html).toContain("3 videos in 2 folders");
+    expect(list.buttons?.flat().map((b) => b.text)).toEqual(["Cooking (2)", "Gym (1)"]);
+    await handleUpdate(tap(list.buttons![0]![0]!.callback_data, list.id), deps);
+    expect(edits.at(-1)?.html).toContain("📂 <b>Cooking</b> · 2 videos");
+    expect(edits.at(-1)?.html).toContain("Video 3");
+    const cooking = store.saves.filter((s) => s.topic.toLowerCase().startsWith("cooking"));
+    expect(datas(edits.at(-1)?.buttons)).toEqual([...cooking.map((s) => `show:${s.id}`), "folders:"]);
+    await handleUpdate(tap("folders:", list.id), deps);
+    expect(edits.at(-1)?.html).toContain("Your folders");
+    await handleUpdate(text("/tags"), deps);
+    expect(sent.at(-1)?.html).toContain("Your folders");
+  });
+
+  it("opens the folders as a new message from a flashback", async () => {
+    const { deps, sent, edits } = setup();
+    await handleUpdate(text("https://vm.tiktok.com/one/"), deps);
+    await handleUpdate(tap("folders:new"), deps);
+    expect(sent.at(-1)?.html).toContain("Your folders");
+    expect(edits.filter((e) => e.html.includes("Your folders"))).toHaveLength(0);
   });
 });
