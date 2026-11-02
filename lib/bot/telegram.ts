@@ -3,7 +3,7 @@
  * https://core.telegram.org/bots/api
  */
 import "server-only";
-import type { InlineButton, TelegramApi } from "./types";
+import type { InlineButton, Invoice, TelegramApi } from "./types";
 
 /** Telegram rejects messages over 4096 characters. */
 const MAX_TEXT = 4000;
@@ -30,6 +30,14 @@ export class Telegram implements TelegramApi {
     const json = (await res.json().catch(() => ({}))) as { ok?: boolean; result?: T; description?: string };
     if (!json.ok) throw new TelegramError(`${method}: ${json.description ?? res.status}`, res.status);
     return json.result as T;
+  }
+
+  private name = "";
+
+  /** The bot's @username, for invite links. Asked once per server instance. */
+  async username(): Promise<string> {
+    if (!this.name) this.name = (await this.call<{ username: string }>("getMe", {})).username;
+    return this.name;
   }
 
   async sendMessage(chatId: number, html: string, buttons?: InlineButton[][]): Promise<number> {
@@ -67,12 +75,32 @@ export class Telegram implements TelegramApi {
     await this.call("sendChatAction", { chat_id: chatId, action: "typing" }).catch(() => {});
   }
 
+  /** Telegram Stars (currency XTR) need no payment provider. */
+  async sendInvoice(chatId: number, invoice: Invoice): Promise<void> {
+    await this.call("sendInvoice", {
+      chat_id: chatId,
+      title: invoice.title.slice(0, 32),
+      description: invoice.description.slice(0, 255),
+      payload: invoice.payload,
+      currency: "XTR",
+      prices: [{ label: invoice.title.slice(0, 32), amount: invoice.stars }],
+    });
+  }
+
+  async answerPreCheckout(queryId: string, ok: boolean, error?: string): Promise<void> {
+    await this.call("answerPreCheckoutQuery", { pre_checkout_query_id: queryId, ok, ...(ok ? {} : { error_message: error ?? "Something went wrong. You weren't charged." }) });
+  }
+
+  async refundStars(userId: number, charge: string): Promise<void> {
+    await this.call("refundStarPayment", { user_id: userId, telegram_payment_charge_id: charge });
+  }
+
   /**
    * One-time setup: point Telegram at our webhook and fill in the bot's
    * commands menu and profile text. Safe to run again.
    */
   async setup(webhookUrl: string, secret: string, profile: { commands: ReadonlyArray<{ command: string; description: string }>; description: string; shortDescription: string }) {
-    await this.call("setWebhook", { url: webhookUrl, secret_token: secret, allowed_updates: ["message", "callback_query"] });
+    await this.call("setWebhook", { url: webhookUrl, secret_token: secret, allowed_updates: ["message", "callback_query", "pre_checkout_query"] });
     await this.call("setMyCommands", { commands: profile.commands });
     await this.call("setMyDescription", { description: profile.description });
     await this.call("setMyShortDescription", { short_description: profile.shortDescription });

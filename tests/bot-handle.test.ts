@@ -1,12 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
-import { handleUpdate, isOutOfCredit, parseAllowed, secretMatches, spend, type Deps, type Update } from "@/lib/bot/handle";
+import { handleUpdate, inviteCode, isOutOfCredit, limitText, parseAllowed, resetsIn, secretMatches, spend, type Deps, type Update } from "@/lib/bot/handle";
 import { MemoryRetriever } from "@/lib/bot/rag";
 import { MemoryStore } from "@/lib/bot/store";
 import type { Answer, Brain, InlineButton, Media, Save, SaveDraft, TelegramApi, WatchResult } from "@/lib/bot/types";
 
 interface Sent { chatId: number; html: string; buttons?: InlineButton[][]; id: number }
 
-function setup(opts: { answer?: Partial<Answer>; draft?: Partial<SaveDraft>; watch?: (saves: Save[]) => Partial<WatchResult>; limits?: Deps["limits"] } = {}) {
+function setup(opts: { answer?: Partial<Answer>; draft?: Partial<SaveDraft>; watch?: (saves: Save[]) => Partial<WatchResult>; limits?: Deps["limits"]; spots?: number; packStars?: number } = {}) {
   const sent: Sent[] = [];
   const edits: Sent[] = [];
   let nextId = 100;
@@ -15,6 +15,9 @@ function setup(opts: { answer?: Partial<Answer>; draft?: Partial<SaveDraft>; wat
     editMessage: vi.fn(async (chatId, id, html, buttons) => { edits.push({ chatId, html, buttons, id }); }),
     answerCallback: vi.fn(async () => {}),
     typing: vi.fn(async () => {}),
+    sendInvoice: vi.fn(async () => {}),
+    answerPreCheckout: vi.fn(async () => {}),
+    refundStars: vi.fn(async () => {}),
   };
   const draft: SaveDraft = { title: "Split dodge drill", topic: "Lacrosse, Dodging", type: "drill", summary: "Beat a defender.", steps: ["Jog", "Plant", "Split"], details: "", needsWords: false, ...opts.draft };
   const brain: Brain = {
@@ -30,18 +33,186 @@ function setup(opts: { answer?: Partial<Answer>; draft?: Partial<SaveDraft>; wat
   const store = new MemoryStore();
   const retriever = new MemoryRetriever();
   const alerts: string[] = [];
-  const deps: Deps = { tg, store, brain, media, retriever, isAllowed: (id) => id === 7, limits: opts.limits ?? { videos: 50, questions: 50 }, alert: async (t) => void alerts.push(t) };
+  const deps: Deps = { tg, store, brain, media, retriever, isAllowed: (id) => id === 7, ownerId: 7, invite: { code: "join-abc123", spots: opts.spots ?? 10, link: async () => "https://t.me/KnowingTestBot?start=join-abc123" }, limits: opts.limits ?? { videos: 50, questions: 50 }, packStars: opts.packStars ?? 100, alert: async (t) => void alerts.push(t) };
   return { deps, sent, edits, store, brain, media, retriever, alerts };
 }
 
-const text = (t: string, from = 7): Update => ({ message: { message_id: 1, chat: { id: 7 }, from: { id: from }, text: t } });
-const tap = (data: string, messageId = 100): Update => ({ callback_query: { id: "cb", from: { id: 7 }, data, message: { message_id: messageId, chat: { id: 7 } } } });
+const text = (t: string, from = 7, name?: string): Update => ({ message: { message_id: 1, chat: { id: from }, from: { id: from, first_name: name }, text: t } });
+const tap = (data: string, messageId = 100, from = 7): Update => ({ callback_query: { id: "cb", from: { id: from }, data, message: { message_id: messageId, chat: { id: from } } } });
 const datas = (b?: InlineButton[][]) => (b ?? []).flat().map((x) => x.callback_data);
 
 describe("parseAllowed", () => {
   it("reads comma or space separated ids", () => {
     expect([...parseAllowed("1, 22 333,x")]).toEqual([1, 22, 333]);
     expect(parseAllowed(undefined).size).toBe(0);
+  });
+});
+
+describe("inviteCode", () => {
+  it("makes a short code Telegram accepts, the same every time, from the webhook secret", () => {
+    const code = inviteCode("s3cret");
+    expect(code).toMatch(/^[A-Za-z0-9_-]{12}$/);
+    expect(inviteCode("s3cret")).toBe(code);
+    expect(inviteCode("other")).not.toBe(code);
+  });
+  it("uses KNOWING_INVITE_CODE when it's a valid code", () => {
+    expect(inviteCode("s3cret", " summer-beta ")).toBe("summer-beta");
+    expect(inviteCode("s3cret", "no spaces allowed")).toBe(inviteCode("s3cret"));
+    expect(inviteCode("s3cret", "")).toBe(inviteCode("s3cret"));
+  });
+});
+
+describe("invite link", () => {
+  it("turns away people without the link", async () => {
+    const { deps, sent, store } = setup();
+    await handleUpdate(text("hi", 99), deps);
+    await handleUpdate(text("/start wrong-code", 99), deps);
+    expect(sent.map((m) => m.html)).toEqual([expect.stringContaining("invite-only"), expect.stringContaining("invite-only")]);
+    expect(await store.hasUser(99)).toBe(false);
+  });
+
+  it("lets someone in with the link, welcomes them and tells the owner", async () => {
+    const { deps, sent, store, brain } = setup();
+    await handleUpdate(text("/start join-abc123", 99, "Sam <3"), deps);
+    expect(await store.hasUser(99)).toBe(true);
+    expect(sent.find((m) => m.chatId === 7)?.html).toBe("Sam &lt;3 joined Knowing with your invite link. 1 of 10 spots used.");
+    expect(sent.find((m) => m.chatId === 99)?.html).toContain("Send me videos");
+    await handleUpdate(text("what was that drill?", 99), deps);
+    expect(brain.answer).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops at the spot limit, without counting people let in through settings", async () => {
+    const { deps, sent, store } = setup({ spots: 1 });
+    await handleUpdate(text("hello", 7), deps); // the owner, let in through settings
+    await handleUpdate(text("/start join-abc123", 98), deps);
+    await handleUpdate(text("/start join-abc123", 99, "Alex"), deps);
+    expect(await store.hasUser(98)).toBe(true);
+    expect(await store.hasUser(99)).toBe(false);
+    expect(sent.filter((m) => m.chatId === 99).at(-1)?.html).toContain("full right now");
+    expect(sent.filter((m) => m.chatId === 7).at(-1)?.html).toContain("Alex tried to join with your invite link, but all 1 spots are taken");
+  });
+
+  it("gives the owner the link and the spots used with /invite, and nobody else", async () => {
+    const { deps, sent, brain } = setup();
+    await handleUpdate(text("/start join-abc123", 99), deps);
+    await handleUpdate(text("/invite"), deps);
+    expect(sent.at(-1)?.html).toContain("https://t.me/KnowingTestBot?start=join-abc123");
+    expect(sent.at(-1)?.html).toContain("1 of 10 spots used");
+    await handleUpdate(text("/invite", 99), deps);
+    expect(sent.at(-1)?.html).not.toContain("t.me");
+    expect(brain.answer).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps someone's spot and today's limits after /delete", async () => {
+    const { deps, store } = setup({ limits: { videos: 1, questions: 50 } });
+    await handleUpdate(text("/start join-abc123", 99), deps);
+    await handleUpdate(text("https://vm.tiktok.com/one/", 99), deps);
+    await handleUpdate(tap("wipe:yes", 100, 99), deps);
+    expect(await store.hasUser(99)).toBe(true);
+    const user = await store.getUser(99);
+    expect(user.facts).toEqual([]);
+    expect(user.usage.videos).toBe(1);
+    expect(store.saves.filter((s) => s.userId === 99)).toHaveLength(0);
+  });
+});
+
+const paid = (charge: string, from = 99, payload = "pack:videos:100", stars = 100): Update => ({
+  message: { message_id: 2, chat: { id: from }, from: { id: from, first_name: "Sam" }, successful_payment: { currency: "XTR", total_amount: stars, invoice_payload: payload, telegram_payment_charge_id: charge } },
+});
+const checkout = (payload = "pack:videos:100", amount = 100, from = 99): Update => ({ pre_checkout_query: { id: "pc", from: { id: from }, currency: "XTR", total_amount: amount, invoice_payload: payload } });
+
+describe("buying extras with Stars", () => {
+  it("offers a pack when the free ones run out, and sends a Stars invoice when tapped", async () => {
+    const { deps, sent } = setup({ limits: { videos: 1, questions: 1 } });
+    await handleUpdate(text("https://vm.tiktok.com/one/"), deps);
+    await handleUpdate(text("https://vm.tiktok.com/two/"), deps);
+    expect(sent.at(-1)?.html).toContain("Or get 10 more videos now. They never expire.");
+    expect(datas(sent.at(-1)?.buttons)).toEqual(["buy:videos"]);
+    await handleUpdate(tap("buy:videos"), deps);
+    expect(deps.tg.sendInvoice).toHaveBeenCalledWith(7, expect.objectContaining({ title: "10 more videos", payload: "pack:videos:100", stars: 100 }));
+    await handleUpdate(text("q1"), deps);
+    await handleUpdate(text("q2"), deps);
+    expect(datas(sent.at(-1)?.buttons)).toEqual(["buy:questions"]);
+  });
+
+  it("shows no buy button when buying is turned off", async () => {
+    const { deps, sent } = setup({ limits: { videos: 1, questions: 1 }, packStars: 0 });
+    await handleUpdate(text("https://vm.tiktok.com/one/"), deps);
+    await handleUpdate(text("https://vm.tiktok.com/two/"), deps);
+    expect(sent.at(-1)?.html).toContain("daily limit");
+    expect(sent.at(-1)?.buttons).toBeUndefined();
+  });
+
+  it("approves a checkout only at the current price, and only for people with access", async () => {
+    const { deps } = setup();
+    await handleUpdate(text("/start join-abc123", 99), deps);
+    await handleUpdate(checkout(), deps);
+    expect(deps.tg.answerPreCheckout).toHaveBeenLastCalledWith("pc", true, undefined);
+    await handleUpdate(checkout("pack:videos:50", 50), deps);
+    expect(deps.tg.answerPreCheckout).toHaveBeenLastCalledWith("pc", false, expect.stringContaining("price has changed"));
+    await handleUpdate(checkout("pack:videos:100", 100, 55), deps);
+    expect(deps.tg.answerPreCheckout).toHaveBeenLastCalledWith("pc", false, expect.stringContaining("invite-only"));
+  });
+
+  it("stops a checkout when it couldn't record the purchase, so nobody pays for nothing", async () => {
+    const { deps, alerts, store } = setup();
+    await handleUpdate(text("/start join-abc123", 99), deps);
+    store.getWallet = vi.fn(async () => { throw new Error("column bot_users.wallet does not exist"); });
+    await handleUpdate(checkout(), deps);
+    expect(deps.tg.answerPreCheckout).toHaveBeenLastCalledWith("pc", false, expect.stringContaining("weren't charged"));
+    expect(alerts[0]).toContain("supabase.sql");
+  });
+
+  it("adds a pack once per payment, then uses it after the free ones", async () => {
+    const { deps, sent, store, media } = setup({ limits: { videos: 1, questions: 50 } });
+    await handleUpdate(text("/start join-abc123", 99), deps);
+    await handleUpdate(paid("ch1"), deps);
+    await handleUpdate(paid("ch1"), deps); // Telegram sent it twice
+    expect((await store.getWallet(99)).videos).toBe(10);
+    expect((await store.getWallet(99)).paid).toHaveLength(1);
+    expect(sent.filter((m) => m.chatId === 99).at(-1)?.html).toContain("10 more videos added, so you have 10 extra videos");
+    expect(sent.filter((m) => m.chatId === 7).at(-1)?.html).toBe("Sam paid 100 ⭐ for 10 more videos. To refund it: <code>/refund 99 ch1</code>");
+    await handleUpdate(text("https://vm.tiktok.com/free/", 99), deps);
+    await handleUpdate(text("https://vm.tiktok.com/extra/", 99), deps);
+    expect(media.fromLink).toHaveBeenCalledTimes(2);
+    expect((await store.getWallet(99)).videos).toBe(9);
+  });
+
+  it("refunds with the owner's /refund and takes the pack back off", async () => {
+    const { deps, sent, store } = setup();
+    await handleUpdate(text("/start join-abc123", 99), deps);
+    await handleUpdate(paid("ch1"), deps);
+    await handleUpdate(text("/refund 99 ch1"), deps);
+    expect(deps.tg.refundStars).toHaveBeenCalledWith(99, "ch1");
+    expect(await store.getWallet(99)).toEqual({ videos: 0, questions: 0, paid: [] });
+    expect(sent.filter((m) => m.chatId === 99).at(-1)?.html).toBe("Your payment of 100 ⭐ was refunded.");
+    await handleUpdate(text("/refund 99 ch1", 99), deps); // only the owner can refund
+    expect(deps.tg.refundStars).toHaveBeenCalledTimes(1);
+  });
+
+  it("answers /terms and passes /support and /paysupport to the owner, who can /reply", async () => {
+    const { deps, sent } = setup();
+    await handleUpdate(text("/start join-abc123", 99), deps);
+    await handleUpdate(paid("ch1"), deps);
+    await handleUpdate(text("/terms", 99), deps);
+    expect(sent.at(-1)?.html).toContain("Knowing terms");
+    await handleUpdate(text("/paysupport", 99), deps);
+    expect(sent.at(-1)?.html).toContain("Telegram's own support can't help");
+    await handleUpdate(text("/paysupport I paid but got nothing", 99), deps);
+    const notice = sent.filter((m) => m.chatId === 7).at(-1)?.html ?? "";
+    expect(notice).toContain("Payment problem");
+    expect(notice).toContain("<code>/refund 99 ch1</code>");
+    expect(notice).toContain("<code>/reply 99 your message</code>");
+    await handleUpdate(text("/reply 99 Sorted, check again"), deps);
+    expect(sent.filter((m) => m.chatId === 99).at(-1)?.html).toBe("<b>From the owner:</b> Sorted, check again");
+  });
+
+  it("keeps what someone bought after /delete", async () => {
+    const { deps, store } = setup();
+    await handleUpdate(text("/start join-abc123", 99), deps);
+    await handleUpdate(paid("ch1"), deps);
+    await handleUpdate(tap("wipe:yes", 100, 99), deps);
+    expect((await store.getWallet(99)).videos).toBe(10);
   });
 });
 
@@ -59,11 +230,15 @@ describe("isOutOfCredit and secretMatches", () => {
 });
 
 describe("handleUpdate", () => {
-  it("keeps strangers out and tells them their id", async () => {
-    const { deps, sent, brain } = setup();
+  it("keeps strangers out, including their button taps", async () => {
+    const { deps, sent, brain, store } = setup();
     await handleUpdate(text("hello", 9), deps);
+    expect(sent[0]?.html).toContain("invite-only");
     expect(sent[0]?.html).toContain("<code>9</code>");
+    await handleUpdate(tap("wipe:yes", 100, 9), deps);
+    expect(deps.tg.answerCallback).toHaveBeenLastCalledWith("cb", "Knowing is invite-only for now.");
     expect(brain.answer).not.toHaveBeenCalled();
+    expect(await store.hasUser(9)).toBe(false);
   });
 
   it("watches a shared TikTok link and reacts briefly, with the steps one tap away", async () => {
@@ -277,6 +452,15 @@ describe("handleUpdate", () => {
     expect(sent.at(-1)?.html).toContain("daily limit");
   });
 
+  it("says when the limits reset, at midnight UTC", () => {
+    const at = (iso: string) => Date.parse(iso);
+    expect(resetsIn(at("2026-11-02T18:00:00Z"))).toBe("in about 6 hours");
+    expect(resetsIn(at("2026-11-02T22:40:00Z"))).toBe("in about 1 hour");
+    expect(resetsIn(at("2026-11-02T23:30:00Z"))).toBe("in under an hour");
+    expect(limitText("videos", 5, at("2026-11-02T18:00:00Z"))).toBe("That's 5 videos today, the daily limit, so I didn't save this one. Send it again in about 6 hours.");
+    expect(limitText("questions", 10, at("2026-11-02T18:00:00Z"))).toBe("That's 10 questions today, the daily limit. You can ask more in about 6 hours.");
+  });
+
   it("resets the limits on a new day", () => {
     const user = { id: 7, facts: [], turns: [], awaitingWordsFor: null, usage: { day: "2000-01-01", videos: 9, questions: 9 }, sitting: null };
     expect(spend(user, "videos", 1)).toBe(true);
@@ -294,7 +478,7 @@ describe("handleUpdate", () => {
     expect(store.saves).toHaveLength(1);
     await handleUpdate(tap("wipe:yes"), deps);
     expect(store.saves).toHaveLength(0);
-    expect(store.users.has(7)).toBe(false);
+    expect((await store.getUser(7)).turns).toEqual([]);
     expect(edits.at(-1)?.html).toContain("Deleted");
   });
 });

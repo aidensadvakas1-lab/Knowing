@@ -5,7 +5,7 @@
  *   (server only). Tables are in docs/supabase.sql.
  * - `MemoryStore` keeps everything in memory, for tests.
  */
-import type { BotUser, Save, Sitting, Store } from "./types";
+import type { BotUser, Payment, Save, Sitting, Store, Wallet } from "./types";
 
 /** Recent turns kept per user, so follow-ups make sense. Older chats are kept as searchable memories. */
 export const TURNS_KEPT = 16;
@@ -25,6 +25,18 @@ function readSitting(raw: unknown): Sitting | null {
   return r && typeof r.last === "string" ? { last: r.last } : null;
 }
 
+/** Payments kept per user, for refunds and duplicate checks. */
+const PAYMENTS_KEPT = 50;
+
+export function readWallet(raw: unknown): Wallet {
+  const r = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  const count = (v: unknown) => Math.max(0, Math.floor(Number(v) || 0));
+  const paid = (Array.isArray(r.paid) ? r.paid : [])
+    .filter((p): p is Payment => !!p && typeof p.charge === "string" && (p.kind === "videos" || p.kind === "questions"))
+    .map((p) => ({ charge: p.charge, kind: p.kind, stars: count(p.stars), at: String(p.at ?? "") }));
+  return { videos: count(r.videos), questions: count(r.questions), paid: paid.slice(-PAYMENTS_KEPT) };
+}
+
 /** A short id that fits inside Telegram's 64-byte button data. */
 export function newSaveId(): string {
   return Date.now().toString(36).slice(-5) + Math.random().toString(36).slice(2, 6);
@@ -32,6 +44,7 @@ export function newSaveId(): string {
 
 export class MemoryStore implements Store {
   users = new Map<number, BotUser>();
+  wallets = new Map<number, Wallet>();
   saves: Save[] = [];
 
   async getUser(id: number) {
@@ -52,7 +65,20 @@ export class MemoryStore implements Store {
   }
   async deleteUser(userId: number) {
     this.users.delete(userId);
+    this.wallets.delete(userId);
     this.saves = this.saves.filter((s) => s.userId !== userId);
+  }
+  async hasUser(id: number) {
+    return this.users.has(id);
+  }
+  async listUserIds() {
+    return [...this.users.keys()];
+  }
+  async getWallet(userId: number) {
+    return readWallet(structuredClone(this.wallets.get(userId)));
+  }
+  async saveWallet(userId: number, wallet: Wallet) {
+    this.wallets.set(userId, readWallet(structuredClone(wallet)));
   }
   async getSave(userId: number, id: string) {
     const s = this.saves.find((x) => x.id === id && x.userId === userId);
@@ -218,6 +244,31 @@ export class SupabaseStore implements Store {
   /** Saves, their search chunks and chat memories go with the user row (on delete cascade). */
   async deleteUser(userId: number): Promise<void> {
     await this.rest(`bot_users?id=eq.${userId}`, { method: "DELETE" });
+  }
+
+  async hasUser(id: number): Promise<boolean> {
+    const rows = await this.rest<Array<{ id: number }>>(`bot_users?id=eq.${id}&select=id`);
+    return rows.length > 0;
+  }
+
+  async listUserIds(): Promise<number[]> {
+    const rows = await this.rest<Array<{ id: number }>>("bot_users?select=id");
+    return rows.map((r) => Number(r.id));
+  }
+
+  /** Throws if the wallet column is missing (docs/supabase.sql not run again), so nobody is charged for nothing. */
+  async getWallet(userId: number): Promise<Wallet> {
+    const rows = await this.rest<Array<{ wallet: unknown }>>(`bot_users?id=eq.${userId}&select=wallet`);
+    return readWallet(rows[0]?.wallet);
+  }
+
+  /** Writes only the wallet column, creating the row if needed. */
+  async saveWallet(userId: number, wallet: Wallet): Promise<void> {
+    await this.rest("bot_users", {
+      method: "POST",
+      headers: { prefer: "resolution=merge-duplicates,return=minimal" },
+      body: JSON.stringify({ id: userId, wallet: readWallet(wallet) }),
+    });
   }
 
   async getSave(userId: number, id: string): Promise<Save | null> {

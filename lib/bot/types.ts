@@ -60,6 +60,26 @@ export interface Usage {
   questions: number;
 }
 
+/** What can be bought with Telegram Stars when the free daily amount runs out. */
+export type PackKind = "videos" | "questions";
+
+/** One Star payment, kept for refunds and so a payment is never counted twice. */
+export interface Payment {
+  /** Telegram's id for the payment, needed to refund it. */
+  charge: string;
+  kind: PackKind;
+  stars: number;
+  at: string;
+}
+
+/** Extras bought with Stars. Used after the free daily amount, and they never expire. */
+export interface Wallet {
+  videos: number;
+  questions: number;
+  /** Most recent payments, newest last. */
+  paid: Payment[];
+}
+
 /** Everything kept per Telegram user besides their saves. */
 export interface BotUser {
   id: number;
@@ -91,6 +111,16 @@ export interface Store {
   deleteSave(userId: number, id: string): Promise<void>;
   /** Everything about a user: their row, saves and search index. */
   deleteUser(userId: number): Promise<void>;
+  /** True if they have a row: they've used the bot, or joined with the invite link. */
+  hasUser(id: number): Promise<boolean>;
+  /** Everyone with a row, for counting invite spots. */
+  listUserIds(): Promise<number[]>;
+  /**
+   * What they've bought with Stars. Kept apart from the user row, so a slow
+   * save of the row (a video still being watched) can't undo a payment.
+   */
+  getWallet(userId: number): Promise<Wallet>;
+  saveWallet(userId: number, wallet: Wallet): Promise<void>;
   /** Newest first. */
   listSaves(userId: number, limit?: number): Promise<Save[]>;
   /** Users with a scroll session that hasn't had its wrap-up yet. */
@@ -182,9 +212,24 @@ export interface InlineButton {
   callback_data: string;
 }
 
+/** A bill for something paid in Telegram Stars. */
+export interface Invoice {
+  /** 1 to 32 characters. */
+  title: string;
+  /** 1 to 255 characters. */
+  description: string;
+  /** Comes back with the payment, so we know what was bought. Up to 128 bytes. */
+  payload: string;
+  stars: number;
+}
+
 export interface TelegramApi {
   sendMessage(chatId: number, html: string, buttons?: InlineButton[][]): Promise<number>;
   editMessage(chatId: number, messageId: number, html: string, buttons?: InlineButton[][]): Promise<void>;
   answerCallback(callbackId: string, text?: string): Promise<void>;
   typing(chatId: number): Promise<void>;
+  sendInvoice(chatId: number, invoice: Invoice): Promise<void>;
+  /** Telegram asks right before charging; it has to be answered within 10 seconds. */
+  answerPreCheckout(queryId: string, ok: boolean, error?: string): Promise<void>;
+  refundStars(userId: number, charge: string): Promise<void>;
 }
