@@ -94,7 +94,7 @@ Add these in Vercel under **Project Settings → Environment Variables**, then r
 | `KNOWING_OWNER_ID` | Optional. Who gets error alerts, join notices and `/invite` (default: the first id in `TELEGRAM_ALLOWED_USERS`) |
 | `KNOWING_INVITE_SPOTS` | Optional. How many people can join with the invite link (default 10) |
 | `KNOWING_INVITE_CODE` | Optional. Your own code for the invite link, 6 to 64 letters, numbers, `_` or `-`. Change it to stop an old link working |
-| `KNOWING_PACK_STARS` | Optional. Price in Telegram Stars of 10 extra videos or 25 extra questions (default 100, about $2 to the buyer). `0` turns buying off |
+| `KNOWING_PACK_STARS` | Optional. Price in Telegram Stars of 10 extra videos or 20 extra questions (default 100, about $2 to the buyer). `0` turns buying off |
 | `KNOWING_CRON_SECRET` | For wrap-ups (step 7). Another random string you make up, different from the webhook secret |
 
 ### 5. Connect Telegram to your app
@@ -132,7 +132,7 @@ people who already joined stay in.
 ### Sell extra videos and questions (Telegram Stars)
 
 When someone uses up their free videos or questions for the day, the limit message offers a pack:
-**10 more videos** or **25 more questions** for `KNOWING_PACK_STARS` Stars (default 100, which costs
+**10 more videos** or **20 more questions** for `KNOWING_PACK_STARS` Stars (default 100, which costs
 the buyer about $2). They pay inside Telegram. Extras never expire and are used only after the free
 daily amount runs out. Telegram requires Stars for digital goods sold in bots
 ([rules](https://core.telegram.org/bots/payments-stars)).

@@ -76,7 +76,7 @@ Any Node host that runs Next.js works too (Netlify, Railway, Render, Fly.io).
 | `KNOWING_BOT_EFFORT` | No | `medium` | How hard the bot thinks before answering: `low`, `medium` or `high`. Medium is enough to troubleshoot a tutorial; low is cheaper and quicker. |
 | `KNOWING_FALLBACK_MODEL` | No | `claude-haiku-5-5` | Takes a second look when a safety filter blocks a harmless video or message by mistake. |
 | `KNOWING_READ_MODEL` | No | `claude-haiku-5-5` | Copies the text on screen from frames about a second apart, so commands and links that flash by are saved. About half a cent a video. |
-| `KNOWING_PACK_STARS` | No | `100` | Telegram Stars for 10 extra videos or 25 extra questions once the free daily ones run out. `0` turns buying off. See [docs/TELEGRAM.md](docs/TELEGRAM.md). |
+| `KNOWING_PACK_STARS` | No | `100` | Telegram Stars for 10 extra videos or 20 extra questions once the free daily ones run out. `0` turns buying off. See [docs/TELEGRAM.md](docs/TELEGRAM.md). |
 | `KNOWING_WATCH_MODEL` | No | `claude-sonnet-5-5` | Model that watches each video sent to the bot. |
 | `KNOWING_CRON_SECRET` | For wrap-ups | none | Key for `/api/telegram/wrapup`, which Supabase cron calls every 5 minutes. |
 | `KNOWING_TIKTOK_RESOLVER` | No | tikwm.com's API | Service that turns a TikTok link into a video file. |

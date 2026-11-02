@@ -6,8 +6,11 @@
  */
 import type { InlineButton, Invoice, PackKind } from "./types";
 
-/** What one pack adds. */
-export const PACKS: Record<PackKind, number> = { videos: 10, questions: 25 };
+/**
+ * What one pack adds. At 100 Stars (about $1.30 paid out) even the worst case
+ * stays above cost: 10 videos at up to ~8.5¢, 20 questions at up to ~5¢.
+ */
+export const PACKS: Record<PackKind, number> = { videos: 10, questions: 20 };
 
 /** "10 more videos" */
 export const packName = (kind: PackKind) => `${PACKS[kind]} more ${kind}`;

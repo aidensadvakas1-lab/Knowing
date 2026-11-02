@@ -5,7 +5,7 @@ import { readWallet } from "@/lib/bot/store";
 describe("shop", () => {
   it("makes invoices Telegram accepts and reads their payload back", () => {
     const invoice = invoiceFor("questions", 100);
-    expect(invoice.title).toBe("25 more questions");
+    expect(invoice.title).toBe("20 more questions");
     expect(invoice.title.length).toBeLessThanOrEqual(32);
     expect(invoice.description.length).toBeLessThanOrEqual(255);
     expect(invoice.description).toContain("/terms");

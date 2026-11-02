@@ -29,7 +29,7 @@ const DAILY_QUESTIONS = 10;
 /** How many people can join with the invite link; override with KNOWING_INVITE_SPOTS. */
 const INVITE_SPOTS = 10;
 
-/** Telegram Stars for one pack of extras (10 videos or 25 questions); KNOWING_PACK_STARS overrides, 0 turns buying off. */
+/** Telegram Stars for one pack of extras (10 videos or 20 questions); KNOWING_PACK_STARS overrides, 0 turns buying off. */
 const PACK_STARS = 100;
 
 /** At most one alert per few minutes per server instance, so a broken key doesn't flood the owner. */
