@@ -9,6 +9,7 @@ export const COMMANDS = [
   { command: "memory", description: "What I remember about you" },
   { command: "help", description: "How to send me videos" },
   { command: "delete", description: "Delete all your data" },
+  { command: "support", description: "Ask the owner for help" },
 ] as const;
 
 /** Shown on the empty chat before someone taps Start (max 512 characters). */

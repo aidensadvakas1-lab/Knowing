@@ -8,17 +8,20 @@
  * - Buttons: Show steps, Start now, Add what it says, Fix something, Keep both / Replace.
  * - /start, /help, /saved, /memory, /delete, and /invite for the owner.
  * - An invite link lets people in without editing settings, up to a set number of spots.
+ * - When the free daily amount runs out, extras can be bought with Telegram Stars (shop.ts).
+ *   /terms, /support and /paysupport, plus /refund and /reply for the owner.
  * - Daily limits per user, and an alert to the owner when something breaks.
  * - Shares close together make a sitting, wrapped up later in wrapup.ts.
  */
 import { createHash, timingSafeEqual } from "node:crypto";
 import { answerText, escapeHtml as esc, reactionButtons, reactionText, saveButtons, saveCard, savedList, stepButtons, stepText } from "./format";
 import { WELCOME } from "./profile";
+import { buyButton, invoiceFor, PACKS, packName, PAYSUPPORT_HELP, readPack, SUPPORT_HELP, TERMS } from "./shop";
 import { relevantSaves, sharedVideoTurns } from "./prompts";
 import { groupHits, searchQuery, type Retriever } from "./rag";
 import { FACTS_KEPT, newSaveId, newUser, TURNS_KEPT } from "./store";
 import { findUrl } from "./tiktok";
-import type { Brain, BotUser, ChatMemory, InlineButton, Media, Save, Store, TelegramApi, WatchInput } from "./types";
+import type { Brain, BotUser, ChatMemory, InlineButton, Media, PackKind, Save, Store, TelegramApi, WatchInput } from "./types";
 
 export interface Deps {
   tg: TelegramApi;
@@ -35,6 +38,8 @@ export interface Deps {
   invite: { code: string; spots: number; link(): Promise<string> };
   /** Most videos and questions per user per day, so one person can't run up the API bill. */
   limits: { videos: number; questions: number };
+  /** Price in Telegram Stars of one pack of extras (shop.ts). 0 turns buying off. */
+  packStars: number;
   /** Tells the owner something broke. */
   alert(text: string): Promise<void>;
 }
@@ -49,7 +54,10 @@ export interface Update {
     caption?: string;
     video?: { file_id: string; duration?: number; file_size?: number };
     document?: { file_id: string; mime_type?: string; file_size?: number };
+    successful_payment?: { currency: string; total_amount: number; invoice_payload: string; telegram_payment_charge_id: string };
   };
+  /** Telegram checks with us right before charging Stars. */
+  pre_checkout_query?: { id: string; from: { id: number }; currency: string; total_amount: number; invoice_payload: string };
   callback_query?: {
     id: string;
     from: { id: number };
@@ -128,6 +136,7 @@ export const limitText = (kind: "videos" | "questions", n: number, now = Date.no
     : `That's ${n} questions today, the daily limit. You can ask more ${resetsIn(now)}.`;
 
 export async function handleUpdate(update: Update, deps: Deps): Promise<void> {
+  if (update.pre_checkout_query) return onPreCheckout(update.pre_checkout_query, deps);
   if (update.callback_query) return onButton(update.callback_query, deps);
   const msg = update.message;
   if (!msg || !msg.from) return;
@@ -136,6 +145,7 @@ export async function handleUpdate(update: Update, deps: Deps): Promise<void> {
   const text = (msg.text ?? msg.caption ?? "").trim();
 
   try {
+    if (msg.successful_payment) return await onPaid(chatId, userId, msg.from.first_name, msg.successful_payment, deps);
     if (!(await hasAccess(userId, deps))) {
       const code = text.startsWith("/start ") ? text.slice(7).trim() : "";
       const invited = code !== "" && deps.invite.code !== "" && secretMatches(code, deps.invite.code);
@@ -147,6 +157,10 @@ export async function handleUpdate(update: Update, deps: Deps): Promise<void> {
       await deps.tg.sendMessage(chatId, `Your invite link:\n${await deps.invite.link()}\n\n${used} of ${deps.invite.spots} spots used. Anyone who opens the link can join until the spots run out. I'll message you each time someone joins.`);
       return;
     }
+    if (userId === deps.ownerId && /^\/(refund|reply)\b/.test(text)) return await ownerCommand(chatId, text, deps);
+    if (text.startsWith("/terms")) return void (await deps.tg.sendMessage(chatId, TERMS));
+    const support = /^\/(pay)?support\b/.exec(text);
+    if (support) return await askOwner(chatId, userId, msg.from.first_name, text.slice(support[0].length).trim(), Boolean(support[1]), deps);
     if (text === "/start" || text.startsWith("/start ") || text.startsWith("/help")) {
       await deps.tg.sendMessage(chatId, WELCOME);
       return;
@@ -175,22 +189,122 @@ export async function handleUpdate(update: Update, deps: Deps): Promise<void> {
         await deps.tg.sendMessage(chatId, "That video is over 20 MB, which is Telegram's limit for bots. Share the TikTok link instead.");
         return;
       }
-      if (!spend(user, "videos", deps.limits.videos)) return void (await deps.tg.sendMessage(chatId, limitText("videos", deps.limits.videos)));
+      if (!(await allow(user, "videos", deps))) return await limitReached(chatId, "videos", deps);
       const duration = "duration" in video && typeof video.duration === "number" ? video.duration : 0;
       return await watchAndSave(chatId, user, () => deps.media.fromTelegramFile(video.file_id, duration), "", text, deps);
     }
 
     const url = findUrl(text);
-    if (url && !spend(user, "videos", deps.limits.videos)) return void (await deps.tg.sendMessage(chatId, limitText("videos", deps.limits.videos)));
+    if (url && !(await allow(user, "videos", deps))) return await limitReached(chatId, "videos", deps);
     if (url) return await watchAndSave(chatId, user, () => deps.media.fromLink(url), url, text.replace(url, "").trim(), deps);
 
     if (!text) return;
     if (user.awaitingWordsFor) return await addWords(chatId, user, text, deps);
-    if (!spend(user, "questions", deps.limits.questions)) return void (await deps.tg.sendMessage(chatId, limitText("questions", deps.limits.questions)));
+    if (!(await allow(user, "questions", deps))) return await limitReached(chatId, "questions", deps);
     await answer(chatId, user, text, deps, msg.from.first_name);
   } catch (error) {
     await deps.tg.sendMessage(chatId, await failed(error, "handling a message", deps)).catch(() => {});
   }
+}
+
+/** Count one use: today's free amount first, then what they bought. False when both are used up. */
+async function allow(user: BotUser, kind: PackKind, deps: Deps): Promise<boolean> {
+  if (spend(user, kind, deps.limits[kind])) return true;
+  const wallet = await deps.store.getWallet(user.id).catch((error) => void console.error("Reading the wallet failed", error));
+  if (!wallet || wallet[kind] < 1) return false;
+  await deps.store.saveWallet(user.id, { ...wallet, [kind]: wallet[kind] - 1 });
+  return true;
+}
+
+/** Out of free and bought ones: say when it resets, and offer a pack. */
+async function limitReached(chatId: number, kind: PackKind, deps: Deps): Promise<void> {
+  const text = limitText(kind, deps.limits[kind]);
+  if (!deps.packStars) return void (await deps.tg.sendMessage(chatId, text));
+  await deps.tg.sendMessage(chatId, `${text}\n\nOr get ${packName(kind)} now. They never expire.`, buyButton(kind, deps.packStars));
+}
+
+/** Telegram asks right before charging. Say no (and they aren't charged) unless we can record what they bought. */
+async function onPreCheckout(p: NonNullable<Update["pre_checkout_query"]>, deps: Deps): Promise<void> {
+  let error = "";
+  try {
+    const pack = readPack(p.invoice_payload);
+    if (!pack || p.currency !== "XTR" || !deps.packStars || p.total_amount !== deps.packStars || pack.stars !== deps.packStars) {
+      error = "That price has changed. Tap the button again for the current one. You weren't charged.";
+    } else if (!(await hasAccess(p.from.id, deps))) {
+      error = "Knowing is invite-only for now. You weren't charged.";
+    } else {
+      await deps.store.getWallet(p.from.id); // fails if the wallet column is missing
+    }
+  } catch (e) {
+    error = "Payments aren't working right now, so you weren't charged. Try again later.";
+    const detail = (e instanceof Error ? e.message : String(e)).slice(0, 200);
+    await deps.alert(`A payment was stopped because I couldn't read the wallet. If you haven't, run docs/supabase.sql again in Supabase. ${detail}`).catch(() => {});
+  }
+  await deps.tg.answerPreCheckout(p.id, !error, error || undefined);
+}
+
+/** Stars received: add the pack. Telegram can send the same payment twice, so each one counts once. */
+async function onPaid(chatId: number, userId: number, name: string | undefined, pay: NonNullable<NonNullable<Update["message"]>["successful_payment"]>, deps: Deps): Promise<void> {
+  const who = name ? esc(name) : "Someone";
+  const refund = `<code>/refund ${userId} ${esc(pay.telegram_payment_charge_id)}</code>`;
+  try {
+    const pack = readPack(pay.invoice_payload);
+    if (!pack) throw new Error(`unknown payload "${pay.invoice_payload}"`);
+    const wallet = await deps.store.getWallet(userId);
+    if (wallet.paid.some((p) => p.charge === pay.telegram_payment_charge_id)) return;
+    wallet[pack.kind] += PACKS[pack.kind];
+    wallet.paid = [...wallet.paid, { charge: pay.telegram_payment_charge_id, kind: pack.kind, stars: pay.total_amount, at: new Date().toISOString() }];
+    await deps.store.saveWallet(userId, wallet);
+    await deps.tg.sendMessage(chatId, `Thanks! ${packName(pack.kind)} added, so you have ${wallet[pack.kind]} extra ${pack.kind}. They never expire and kick in when your free ones run out. Any problem with a payment, send /paysupport.`);
+    await tellOwner(deps, `${who} paid ${pay.total_amount} ⭐ for ${packName(pack.kind)}. To refund it: ${refund}`);
+  } catch (error) {
+    console.error("Recording a payment failed", error);
+    await deps.tg.sendMessage(chatId, "Your payment went through, but I couldn't add it to your account. I've told the owner, who will fix it or refund you.");
+    await tellOwner(deps, `${who} paid ${pay.total_amount} ⭐, but I couldn't add it to their account (${esc(String(error).slice(0, 200))}). Refund it with ${refund}`);
+  }
+}
+
+/** The owner's /refund <user id> <payment id> and /reply <user id> <message>. */
+async function ownerCommand(chatId: number, text: string, deps: Deps): Promise<void> {
+  const refund = /^\/refund\s+(\d+)\s+(\S+)/.exec(text);
+  if (refund) return refundPayment(chatId, Number(refund[1]), refund[2], deps);
+  const reply = /^\/reply\s+(\d+)\s+([\s\S]+)/.exec(text);
+  if (reply) {
+    await deps.tg.sendMessage(Number(reply[1]), `<b>From the owner:</b> ${esc(reply[2].trim())}`);
+    return void (await deps.tg.sendMessage(chatId, "Sent."));
+  }
+  await deps.tg.sendMessage(chatId, "Use <code>/refund user_id payment_id</code> (it's in each payment message) or <code>/reply user_id your message</code>.");
+}
+
+async function refundPayment(chatId: number, userId: number, charge: string, deps: Deps): Promise<void> {
+  try {
+    await deps.tg.refundStars(userId, charge);
+  } catch (error) {
+    return void (await deps.tg.sendMessage(chatId, `Telegram didn't refund it: ${esc(error instanceof Error ? error.message : String(error))}`));
+  }
+  const wallet = await deps.store.getWallet(userId);
+  const payment = wallet.paid.find((p) => p.charge === charge);
+  if (payment) {
+    wallet[payment.kind] = Math.max(0, wallet[payment.kind] - PACKS[payment.kind]);
+    wallet.paid = wallet.paid.filter((p) => p !== payment);
+    await deps.store.saveWallet(userId, wallet);
+  }
+  await deps.tg.sendMessage(userId, `Your payment${payment ? ` of ${payment.stars} ⭐` : ""} was refunded.`).catch(() => {});
+  await deps.tg.sendMessage(chatId, payment ? `Refunded, and I took the ${packName(payment.kind)} back off their account (never below 0).` : "Refunded.");
+}
+
+/** /support and /paysupport: pass the message to the owner, with refund commands for payment problems. */
+async function askOwner(chatId: number, userId: number, name: string | undefined, body: string, payments: boolean, deps: Deps): Promise<void> {
+  if (!body) return void (await deps.tg.sendMessage(chatId, payments ? PAYSUPPORT_HELP : SUPPORT_HELP));
+  let recent = "";
+  if (payments) {
+    const paid = (await deps.store.getWallet(userId).catch(() => null))?.paid.slice(-3) ?? [];
+    recent = paid.length
+      ? `\n\nTheir latest payments:\n${paid.map((p) => `${p.stars} ⭐ for ${packName(p.kind)}: <code>/refund ${userId} ${esc(p.charge)}</code>`).join("\n")}`
+      : "\n\nNo payments on record.";
+  }
+  await tellOwner(deps, `<b>${payments ? "Payment problem" : "Support"}</b> from ${name ? esc(name) : "someone"}:\n${esc(body)}${recent}\n\nReply with <code>/reply ${userId} your message</code>`);
+  await deps.tg.sendMessage(chatId, "Sent to the owner. You'll get an answer here.");
 }
 
 /** For strangers. The id is how the owner lets themselves in on a fresh setup (docs/TELEGRAM.md, step 6). */
@@ -333,12 +447,19 @@ async function onButton(q: NonNullable<Update["callback_query"]>, deps: Deps) {
     if (kind === "wipe") {
       if (id === "yes") {
         const { usage } = await deps.store.getUser(q.from.id);
+        const wallet = await deps.store.getWallet(q.from.id).catch(() => null);
         await deps.store.deleteUser(q.from.id);
-        // An empty row keeps their spot and today's limits, so deleting doesn't lock them out or reset the limits.
+        // An empty row keeps their spot, today's limits and what they bought, so deleting doesn't lock them out or reset the limits.
         await deps.store.saveUser({ ...newUser(q.from.id), usage });
+        if (wallet && (wallet.videos || wallet.questions || wallet.paid.length)) await deps.store.saveWallet(q.from.id, wallet);
       }
       await deps.tg.answerCallback(q.id, id === "yes" ? "Deleted" : undefined);
       await deps.tg.editMessage(chatId, messageId, id === "yes" ? "Deleted. Everything you saved, our chats and everything I remembered about you are gone." : "Cancelled. Nothing was deleted.");
+      return;
+    }
+    if (kind === "buy") {
+      await deps.tg.answerCallback(q.id);
+      if ((id === "videos" || id === "questions") && deps.packStars) await deps.tg.sendInvoice(chatId, invoiceFor(id, deps.packStars));
       return;
     }
     if (kind === "forget") {

@@ -29,6 +29,9 @@ const DAILY_QUESTIONS = 10;
 /** How many people can join with the invite link; override with KNOWING_INVITE_SPOTS. */
 const INVITE_SPOTS = 10;
 
+/** Telegram Stars for one pack of extras (10 videos or 25 questions); KNOWING_PACK_STARS overrides, 0 turns buying off. */
+const PACK_STARS = 100;
+
 /** At most one alert per few minutes per server instance, so a broken key doesn't flood the owner. */
 const ALERT_GAP_MS = 5 * 60_000;
 let lastAlert = 0;
@@ -36,6 +39,11 @@ let lastAlert = 0;
 const positive = (raw: string | undefined, fallback: number) => {
   const n = Number(raw);
   return Number.isInteger(n) && n > 0 ? n : fallback;
+};
+
+const starsSetting = (raw: string | undefined) => {
+  const n = Number(raw);
+  return raw?.trim() && Number.isInteger(n) && n >= 0 && n <= 10_000 ? n : PACK_STARS;
 };
 
 const REQUIRED = ["TELEGRAM_BOT_TOKEN", "TELEGRAM_WEBHOOK_SECRET", "SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "ANTHROPIC_API_KEY"] as const;
@@ -68,6 +76,7 @@ export async function POST(request: Request): Promise<Response> {
     isAllowed: (id) => allowed.has(id),
     ownerId: owner,
     invite: { code, spots: positive(process.env.KNOWING_INVITE_SPOTS, INVITE_SPOTS), link: async () => `https://t.me/${await tg.username()}?start=${code}` },
+    packStars: starsSetting(process.env.KNOWING_PACK_STARS),
     limits: { videos: positive(process.env.KNOWING_DAILY_VIDEOS, DAILY_VIDEOS), questions: positive(process.env.KNOWING_DAILY_QUESTIONS, DAILY_QUESTIONS) },
     async alert(text) {
       if (!owner || Date.now() - lastAlert < ALERT_GAP_MS) return;

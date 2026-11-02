@@ -94,6 +94,7 @@ Add these in Vercel under **Project Settings → Environment Variables**, then r
 | `KNOWING_OWNER_ID` | Optional. Who gets error alerts, join notices and `/invite` (default: the first id in `TELEGRAM_ALLOWED_USERS`) |
 | `KNOWING_INVITE_SPOTS` | Optional. How many people can join with the invite link (default 10) |
 | `KNOWING_INVITE_CODE` | Optional. Your own code for the invite link, 6 to 64 letters, numbers, `_` or `-`. Change it to stop an old link working |
+| `KNOWING_PACK_STARS` | Optional. Price in Telegram Stars of 10 extra videos or 25 extra questions (default 100, about $2 to the buyer). `0` turns buying off |
 | `KNOWING_CRON_SECRET` | For wrap-ups (step 7). Another random string you make up, different from the webhook secret |
 
 ### 5. Connect Telegram to your app
@@ -105,8 +106,9 @@ https://<your-app>.vercel.app/api/telegram/setup?key=<TELEGRAM_WEBHOOK_SECRET>
 ```
 
 It should say `"ok": true` and your bot's name. This points Telegram at your app and fills in the
-bot's commands menu (`/saved`, `/memory`, `/help`, `/delete`) and the text people see before they
-tap Start. Running it again is harmless.
+bot's commands menu (`/saved`, `/memory`, `/help`, `/delete`, `/support`) and the text people see
+before they tap Start. Running it again is harmless, and it's needed once after updates that change
+what Telegram sends the bot (like payments).
 
 ### 6. Let yourself in
 
@@ -126,6 +128,31 @@ is turned away because it's full. People added in `TELEGRAM_ALLOWED_USERS` don't
 The link's code comes from your webhook secret, so it can't be guessed. If it spreads further than
 you wanted, set `KNOWING_INVITE_CODE` to a new code and redeploy: the old link stops working, and
 people who already joined stay in.
+
+### Sell extra videos and questions (Telegram Stars)
+
+When someone uses up their free videos or questions for the day, the limit message offers a pack:
+**10 more videos** or **25 more questions** for `KNOWING_PACK_STARS` Stars (default 100, which costs
+the buyer about $2). They pay inside Telegram. Extras never expire and are used only after the free
+daily amount runs out. Telegram requires Stars for digital goods sold in bots
+([rules](https://core.telegram.org/bots/payments-stars)).
+
+To turn it on after updating:
+
+1. Run [`supabase.sql`](supabase.sql) again. It adds the `wallet` column that holds what people
+   bought. Until it's there, checkouts are refused, so nobody is charged for nothing.
+2. Open the setup link from step 5 again, so Telegram starts sending payment checks to the bot.
+3. Turn on two-step verification for your own Telegram account (Telegram requires it to sell).
+
+What you get: the bot messages you about each payment, with a ready-to-send refund command. `/refund user_id
+payment_id` gives the Stars back and removes the pack. People can send `/support` or `/paysupport`
+with a message, which reaches you with their id; answer with `/reply user_id your message`. `/terms`
+shows the terms Telegram asks for.
+
+Getting the money out: Stars collect in the bot's balance. Third-party write-ups put the payout at
+about 1.3 cents a Star after the app stores and Telegram take their share, withdrawable from 1,000
+Stars, 21 days after they were earned, as TON (a cryptocurrency) through Fragment. Check the current
+terms in Telegram before counting on it.
 
 ### 7. Turn on wrap-ups (optional)
 

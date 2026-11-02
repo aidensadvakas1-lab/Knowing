@@ -44,6 +44,11 @@ alter table bot_users add column if not exists usage jsonb not null default '{}'
 -- nothing to wrap up.
 alter table bot_users add column if not exists sitting jsonb;
 
+-- Extra videos and questions bought with Telegram Stars ({videos, questions, paid}),
+-- and the payments behind them, for refunds. Kept apart from usage so a slow
+-- save of the user row can't undo a payment.
+alter table bot_users add column if not exists wallet jsonb not null default '{}';
+
 -- Retrieval (RAG): each save is split into chunks with an embedding (meaning)
 -- and a full-text index (exact words). match_chunks merges both rankings.
 create extension if not exists vector;
