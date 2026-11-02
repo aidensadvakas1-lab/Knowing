@@ -52,27 +52,36 @@ export interface Turn {
   content: string;
 }
 
-/** What a user has used today, for the daily limits. Resets each UTC day. */
+/** Free videos and questions used. They're given once, so the counts never reset. */
 export interface Usage {
-  /** YYYY-MM-DD (UTC) the counts are for. */
+  /** YYYY-MM-DD (UTC) of their first use. */
   day: string;
   videos: number;
   questions: number;
 }
 
-/** What can be bought with Telegram Stars when the free daily amount runs out. */
+/** What can be bought with Telegram Stars. */
 export type PackKind = "videos" | "questions";
+
+/** A pack on sale: how many of what, for how many Stars. */
+export interface Pack {
+  kind: PackKind;
+  count: number;
+  stars: number;
+}
 
 /** One Star payment, kept for refunds and so a payment is never counted twice. */
 export interface Payment {
   /** Telegram's id for the payment, needed to refund it. */
   charge: string;
   kind: PackKind;
+  /** How many it added. */
+  count: number;
   stars: number;
   at: string;
 }
 
-/** Extras bought with Stars. Used after the free daily amount, and they never expire. */
+/** Extras bought with Stars. Used after the free ones, and they never expire. */
 export interface Wallet {
   videos: number;
   questions: number;

@@ -33,7 +33,8 @@ export function readWallet(raw: unknown): Wallet {
   const count = (v: unknown) => Math.max(0, Math.floor(Number(v) || 0));
   const paid = (Array.isArray(r.paid) ? r.paid : [])
     .filter((p): p is Payment => !!p && typeof p.charge === "string" && (p.kind === "videos" || p.kind === "questions"))
-    .map((p) => ({ charge: p.charge, kind: p.kind, stars: count(p.stars), at: String(p.at ?? "") }));
+    // Payments from before pack sizes have no count: those packs were 10 videos or 20 questions.
+    .map((p) => ({ charge: p.charge, kind: p.kind, count: count(p.count) || (p.kind === "videos" ? 10 : 20), stars: count(p.stars), at: String(p.at ?? "") }));
   return { videos: count(r.videos), questions: count(r.questions), paid: paid.slice(-PAYMENTS_KEPT) };
 }
 

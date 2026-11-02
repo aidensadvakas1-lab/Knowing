@@ -8,7 +8,28 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 const readScreenText = vi.hoisted(() => vi.fn(async (frames: string[]) => (frames.length ? "npx -y firecrawl-mcp" : "")));
 vi.mock("@/lib/bot/screen", () => ({ readScreenText }));
-const { createMedia, frameFilter, frameFilterTimes, parseDuration, scanFilter, FRAME_COUNT, SCAN_MAX } = await import("@/lib/bot/media");
+const { createMedia, frameFilter, frameFilterTimes, parseDuration, scanFilter, FRAME_COUNT, MAX_SECONDS, SCAN_MAX } = await import("@/lib/bot/media");
+const { FRAME_PIXELS } = await import("@/lib/bot/costs");
+
+/** Width and height of a JPEG, from its start-of-frame marker. */
+function jpegSize(base64: string): { width: number; height: number } {
+  const b = Buffer.from(base64, "base64");
+  for (let i = 2; i < b.length - 9; ) {
+    const marker = b[i + 1]!;
+    if (marker >= 0xc0 && marker <= 0xc3) return { height: b.readUInt16BE(i + 5), width: b.readUInt16BE(i + 7) };
+    i += 2 + b.readUInt16BE(i + 2);
+  }
+  throw new Error("not a JPEG");
+}
+
+/** A test video made by ffmpeg, served as the Telegram file. */
+function serveClip(size: string, seconds: number, rate = 10) {
+  const file = join(mkdtempSync(join(tmpdir(), "knowing-test-")), "clip.mp4");
+  execFileSync(ffmpegPath!, ["-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", `testsrc=size=${size}:rate=${rate}:duration=${seconds}`, "-pix_fmt", "yuv420p", file]);
+  const bytes = readFileSync(file);
+  vi.stubGlobal("fetch", vi.fn(async () => new Response(bytes)));
+  return createMedia(async () => "https://files/clip.mp4");
+}
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -36,6 +57,28 @@ describe("parseDuration / frameFilter", () => {
 });
 
 describe("createMedia (real ffmpeg)", () => {
+  it("shrinks frames to at most FRAME_PIXELS, keeping upright videos at 540 by 960", async () => {
+    vi.stubEnv("OPENAI_API_KEY", "");
+    vi.stubEnv("ANTHROPIC_API_KEY", "");
+    const upright = await serveClip("1080x1920", 1).fromTelegramFile("F", 1);
+    expect(jpegSize(upright.frames[0]!)).toEqual({ width: 540, height: 960 });
+    const square = await serveClip("1080x1080", 1).fromTelegramFile("F", 1);
+    const { width, height } = jpegSize(square.frames[0]!);
+    expect(width).toBe(height);
+    expect(width * height).toBeLessThanOrEqual(FRAME_PIXELS);
+    const small = await serveClip("320x568", 1).fromTelegramFile("F", 1);
+    expect(jpegSize(small.frames[0]!)).toEqual({ width: 320, height: 568 });
+  }, 30_000);
+
+  it("only watches the first MAX_SECONDS of a long video, and says so", async () => {
+    vi.stubEnv("OPENAI_API_KEY", "");
+    vi.stubEnv("ANTHROPIC_API_KEY", "");
+    const got = await serveClip("64x64", MAX_SECONDS + 60, 1).fromTelegramFile("F", MAX_SECONDS + 60);
+    expect(got.notes.join(" ")).toContain("so I watched the first 5");
+    expect(Math.max(...(got.frameTimes ?? []))).toBeLessThan(MAX_SECONDS);
+    expect(got.frames.length).toBeGreaterThanOrEqual(FRAME_COUNT - 1);
+  }, 30_000);
+
   it("pulls frames out of a video file sent to the bot", async () => {
     vi.stubEnv("OPENAI_API_KEY", "");
     vi.stubEnv("ANTHROPIC_API_KEY", "");

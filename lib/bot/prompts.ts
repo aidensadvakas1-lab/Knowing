@@ -8,6 +8,7 @@
  * themselves.
  */
 import { formatTimestamp } from "../video-math";
+import { ASK_SYSTEM_CHARS, HISTORY_CHARS } from "./costs";
 import { SAVE_TYPE_LABEL, SAVE_TYPES, type Answer, type BotUser, type ChatMemory, type Relation, type Save, type SaveDraft, type SaveType, type Turn, type WatchResult } from "./types";
 
 const RELATIONS: readonly Relation[] = ["none", "related", "duplicate", "alternative"];
@@ -47,11 +48,46 @@ Then react in "reply" the way a friend who knows the topic and just watched it w
 - relation: none, related, duplicate, or alternative (another way to do the same thing as an existing save), compared with their existing saves.
 - relatedId: the id of the existing save it duplicates or offers another way to (or relates to most), else "".`;
 
-/** What they've told us and what they've saved, for spotting connections. */
+/** Most characters of facts, and of the saves list, in contextBlock. Keeps the cost of watching a video capped (costs.ts). */
+const CONTEXT_FACTS_CHARS = 3_000;
+const CONTEXT_SAVES_CHARS = 12_000;
+
+/** The pieces, in order, that fit in `max` characters (with a separator after each). One that doesn't fit is skipped. */
+export function fitPieces(pieces: string[], max: number, separator = 1): string[] {
+  const out: string[] = [];
+  let room = max;
+  for (const piece of pieces) {
+    if (piece.length + separator > room) continue;
+    out.push(piece);
+    room -= piece.length + separator;
+  }
+  return out;
+}
+
+/** What they've told us (newest kept) and what they've saved, for spotting connections. */
 function contextBlock(facts: string[], saves: Save[]): string {
-  return `WHAT THEY'VE TOLD YOU: ${facts.length ? facts.join("; ") : "(nothing yet)"}
+  const told = fitPieces([...facts].reverse(), CONTEXT_FACTS_CHARS, 2).reverse();
+  const lines = saves.slice(0, 100).map((s) => `[id ${s.id}] "${s.title}" (${s.topic || "?"}): ${s.summary} ${s.steps.slice(0, 4).join(" / ")}`.slice(0, 300));
+  return `WHAT THEY'VE TOLD YOU: ${told.length ? told.join("; ") : "(nothing yet)"}
 THEIR EXISTING SAVES:
-${saves.slice(0, 100).map((s) => `[id ${s.id}] "${s.title}" (${s.topic || "?"}): ${s.summary} ${s.steps.slice(0, 4).join(" / ")}`).join("\n") || "(none yet)"}`;
+${fitPieces(lines, CONTEXT_SAVES_CHARS).join("\n") || "(none yet)"}`;
+}
+
+/**
+ * The newest chat turns that fit in `maxChars` (each cut to 2,000 characters),
+ * starting with one of theirs, since the API wants the first message to be the user's.
+ */
+export function recentHistory(turns: Turn[], maxChars = HISTORY_CHARS): Turn[] {
+  const kept: Turn[] = [];
+  let room = maxChars;
+  for (const t of [...turns].reverse()) {
+    const content = t.content.slice(0, 2_000);
+    if (content.length > room) break;
+    room -= content.length;
+    kept.unshift({ role: t.role, content });
+  }
+  while (kept.length && kept[0]?.role !== "user") kept.shift();
+  return kept;
 }
 
 /** The label before each frame, so Claude can tell them apart and follow the camera between them. */
@@ -63,10 +99,10 @@ export function frameLabel(index: number, seconds?: number): string {
 export function buildWatchPrompt(input: { caption: string; transcript: string; screenText?: string; note: string; frameCount: number; facts?: string[]; saves?: Save[] }): string {
   const parts = [`Someone shared a short video so you'll remember it for them.`];
   if (input.frameCount) parts.push(`The ${input.frameCount} images are frames from across it, in order. Read any text on screen word for word (titles, labels, captions burned into the video), and notice arrows or circles drawn on it, since they usually mark the exact spot.`);
-  if (input.note) parts.push(`They said: "${input.note}"`);
+  if (input.note) parts.push(`They said: "${input.note.slice(0, 1_000)}"`);
   if (input.caption) parts.push(`CAPTION:\n${input.caption.slice(0, 2_000)}`);
   if (input.screenText) parts.push(`ON-SCREEN TEXT (copied from frames taken about every second, so it includes text that flashes by between the frames below):\n${input.screenText.slice(0, 6_000)}`);
-  parts.push(input.transcript ? `WHAT IS SAID (transcript):\n${input.transcript.slice(0, 15_000)}` : "There is no transcript, so go by what's on screen.");
+  parts.push(input.transcript ? `WHAT IS SAID (transcript):\n${input.transcript.slice(0, 10_000)}` : "There is no transcript, so go by what's on screen.");
   parts.push(WATCH_RULES);
   parts.push(contextBlock(input.facts ?? [], input.saves ?? []));
   return parts.join("\n\n");
@@ -165,17 +201,17 @@ export function buildAskSystem(user: BotUser, saves: Save[], retrieved: Retrieve
   const passages = new Map(retrieved.map((r) => [r.save.id, r.passages]));
   const mindsets = saves.filter((s) => s.type === "mindset" && !hits.includes(s)).slice(0, 6);
   const rest = saves.filter((s) => !hits.includes(s) && !mindsets.includes(s)).slice(0, 120);
-  const withLink = (s: Save) => `${saveText(s)}\nLink: ${s.sourceUrl || "none (they sent the video file itself)"}`;
+  const withLink = (s: Save, max: number) => `${saveText(s).slice(0, max)}\nLink: ${s.sourceUrl || "none (they sent the video file itself)"}`;
   // A Telegram name is the user's own text: one short line, so it can't start a section of its own.
   const name = (extra.name ?? "").replace(/\s+/g, " ").trim().slice(0, 40);
   const memories = extra.memories ?? [];
-  return `You are Knowing, in Telegram: part memory, part companion. The person shares videos (drills, game setups, study methods, plans, ways of thinking, cars, anything they're into) so they never have to save captions or re-explain things, and when they ask, you hand back exactly what they saved. In between, you're good company: they can talk with you about anything, like a friend who knows a lot and remembers everything they've shared and told you. You're not a coach. Be warm, relaxed and curious, and quick and exact when it matters.
+  const head = `You are Knowing, in Telegram: part memory, part companion. The person shares videos (drills, game setups, study methods, plans, ways of thinking, cars, anything they're into) so they never have to save captions or re-explain things, and when they ask, you hand back exactly what they saved. In between, you're good company: they can talk with you about anything, like a friend who knows a lot and remembers everything they've shared and told you. You're not a coach. Be warm, relaxed and curious, and quick and exact when it matters.
 ${name ? `\nTheir first name is ${name}. Use it now and then, not in every message.\n` : ""}
 WHAT THEY'VE TOLD YOU ABOUT THEMSELVES (use it so they never repeat themselves):
 ${user.facts.length ? user.facts.map((f) => `- ${f}`).join("\n") : "(nothing yet)"}
 
 WHAT THEY'RE INTO (from what they save, most first): ${interests(saves) || "(nothing saved yet)"}
-${extra.usage ? `\nTHEIR LIMITS IN KNOWING RIGHT NOW (this message already counted). If they ask what they have left, when it resets or how to get more, answer from this exactly, and say /usage shows it any time without using a question:\n${extra.usage}\n` : ""}${memories.length ? `\nFROM EARLIER CHATS (things said before that may matter now, best match first):\n${memories.map((m) => `[${m.at.slice(0, 10)}] They said: ${m.said.slice(0, 500)}\nYou answered: ${m.answered.slice(0, 400)}`).join("\n\n")}\n` : ""}
+${extra.usage ? `\nTHEIR LIMITS IN KNOWING RIGHT NOW (this message already counted). If they ask what they have left or how to get more, answer from this exactly. The free ones are a one-time start and don't come back; after them it's packs. Say /usage shows it any time without using a question:\n${extra.usage}\n` : ""}${memories.length ? `\nFROM EARLIER CHATS (things said before that may matter now, best match first):\n${memories.map((m) => `[${m.at.slice(0, 10)}] They said: ${m.said.slice(0, 500)}\nYou answered: ${m.answered.slice(0, 400)}`).join("\n\n")}\n` : ""}
 How to answer:
 - If a save answers the question, answer from it. Lead with the steps or setup itself, exact details (names, positions, reps). No generic tips on top unless asked.
 - If they ask for something a video doesn't cover (like how to install what it shows), don't open with what's missing. Start with a quick recap of what the video does show, then get them what they need from what you know, making clear in passing which part is yours ("Your video shows what each one does. Here's how to set them up:").
@@ -196,12 +232,21 @@ How to answer:
 - If what you're talking about has saves on it, add a line RELATED: with the ids of up to 5 of them that your answer didn't come from, best first. They're listed under your answer as "Videos related to this topic", linked, so they can rewatch them. Include the video the chat is about when the useful part came from you (like install steps its video doesn't show), so they're never told it came from their save, and other saves on the same thing. Only ones that really fit the topic; leave the line out when none do, like in small talk.
 - Last line, always: SOURCES: the ids of the saves your answer actually came from, comma separated, or SOURCES: none. Put REMEMBER and RELATED lines just before SOURCES.
 Today is ${today}.
-
+`;
+  // Their saves fill what's left of ASK_SYSTEM_CHARS (costs.ts): best matches first, then ways of thinking, then the rest.
+  const labels = 260;
+  const quoted = (h: Save) => (passages.get(h.id) ?? []).map((p) => `> ${p.slice(0, 700)}`).join("\n");
+  const hitBlocks = fitPieces(hits.map((h) => withLink(h, 4_500) + (quoted(h) ? `\nExact words from the video:\n${quoted(h)}` : "")), ASK_SYSTEM_CHARS - head.length - labels, 2);
+  let room = ASK_SYSTEM_CHARS - head.length - labels - hitBlocks.reduce((n, b) => n + b.length + 2, 0);
+  const mindsetBlocks = fitPieces(mindsets.map((s) => withLink(s, 1_500)), room, 2);
+  room -= mindsetBlocks.reduce((n, b) => n + b.length + 2, 0);
+  const restLines = fitPieces(rest.map((s) => `[id ${s.id}] "${s.title}" (${s.topic || "?"}) ${s.summary}${s.sourceUrl ? "" : " (sent as a file, no link)"}`.slice(0, 250)), room);
+  return `${head}
 THEIR SAVES THAT MATCH THIS QUESTION:
-${hits.length ? hits.map((h) => withLink(h) + ((passages.get(h.id) ?? []).length ? `\nExact words from the video:\n${passages.get(h.id)!.map((p) => `> ${p}`).join("\n")}` : "")).join("\n\n") : "(none match)"}
-${mindsets.length ? `\nTHEIR SAVED WAYS OF THINKING (use when relevant):\n${mindsets.map(withLink).join("\n\n")}\n` : ""}
+${hitBlocks.join("\n\n") || "(none match)"}
+${mindsetBlocks.length ? `\nTHEIR SAVED WAYS OF THINKING (use when relevant):\n${mindsetBlocks.join("\n\n")}\n` : ""}
 EVERYTHING ELSE THEY'VE SAVED (you may use and cite these too):
-${rest.map((s) => `[id ${s.id}] "${s.title}" (${s.topic || "?"}) ${s.summary}${s.sourceUrl ? "" : " (sent as a file, no link)"}`).join("\n") || "(nothing)"}`;
+${restLines.join("\n") || "(nothing)"}`;
 }
 
 /** The wrap-up after a scroll session: what they kept and how it connects. */
@@ -213,7 +258,7 @@ export function buildWrapUpPrompt(kept: Save[], others: Save[], facts: string[])
 - No coaching, no pushing them to start, no questions, no advice that isn't in the videos. Under 90 words. **bold** is fine; no headings.
 
 WHAT THEY KEPT:
-${kept.map(saveText).join("\n\n")}
+${fitPieces(kept.map((s) => saveText(s).slice(0, 1_500)), 12_000, 2).join("\n\n")}
 
 ${contextBlock(facts, others)}`;
 }

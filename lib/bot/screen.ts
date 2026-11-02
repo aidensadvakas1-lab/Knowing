@@ -7,6 +7,7 @@ import "server-only";
 import type Anthropic from "@anthropic-ai/sdk";
 import { MODELS } from "../constants";
 import { getAnthropic } from "../server";
+import { READ_MAX_TOKENS } from "./costs";
 
 export const SCREEN_TEXT_PROMPT = `These are frames from one short video, in order, about a second apart. Copy out the text that appears on screen, word for word, so nothing someone might need later gets lost: commands and code, links and web addresses, @handles, names of apps, tools, packages, products and places, settings, numbers, amounts and prices, and captions or titles. Keep the exact spelling, capitals and symbols. Write each piece once, in the order it first appears, one per line. Skip the app's own buttons and counters (likes, comments, shares, follow) and anything you can't read clearly. If there's no text, write NONE.`;
 
@@ -25,7 +26,7 @@ export async function readScreenText(frames: string[]): Promise<string> {
   const content: Anthropic.ContentBlockParam[] = [{ type: "text", text: SCREEN_TEXT_PROMPT }];
   for (const data of frames) content.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data } });
   const response = await getAnthropic().messages.create(
-    { model: MODELS.read, max_tokens: 4_000, output_config: { effort: "low" }, messages: [{ role: "user", content }] },
+    { model: MODELS.read, max_tokens: READ_MAX_TOKENS, output_config: { effort: "low" }, messages: [{ role: "user", content }] },
     // Watching has to fit in the webhook's minute, so this step never holds it up for long.
     { timeout: 25_000, maxRetries: 0 },
   );
