@@ -84,14 +84,16 @@ Add these in Vercel under **Project Settings → Environment Variables**, then r
 |---|---|
 | `TELEGRAM_BOT_TOKEN` | From BotFather |
 | `TELEGRAM_WEBHOOK_SECRET` | Any random string of letters, numbers, `_` or `-` (make one up, 30+ characters) |
-| `TELEGRAM_ALLOWED_USERS` | Your Telegram user id (see step 6). Comma-separate to add friends |
+| `TELEGRAM_ALLOWED_USERS` | Your Telegram user id (see step 6). Comma-separate to add more people by hand |
 | `SUPABASE_URL` | From Supabase |
 | `SUPABASE_SERVICE_ROLE_KEY` | From Supabase |
 | `ANTHROPIC_API_KEY` | From Anthropic |
 | `OPENAI_API_KEY` | From OpenAI (optional) |
 | `KNOWING_DAILY_VIDEOS` | Optional. Videos per person per day (default 5) |
 | `KNOWING_DAILY_QUESTIONS` | Optional. Questions per person per day (default 10) |
-| `KNOWING_OWNER_ID` | Optional. Who gets error alerts (default: the first id in `TELEGRAM_ALLOWED_USERS`) |
+| `KNOWING_OWNER_ID` | Optional. Who gets error alerts, join notices and `/invite` (default: the first id in `TELEGRAM_ALLOWED_USERS`) |
+| `KNOWING_INVITE_SPOTS` | Optional. How many people can join with the invite link (default 10) |
+| `KNOWING_INVITE_CODE` | Optional. Your own code for the invite link, 6 to 64 letters, numbers, `_` or `-`. Change it to stop an old link working |
 | `KNOWING_CRON_SECRET` | For wrap-ups (step 7). Another random string you make up, different from the webhook secret |
 
 ### 5. Connect Telegram to your app
@@ -111,7 +113,19 @@ tap Start. Running it again is harmless.
 Send your bot any message. Because you're not on the list yet, it replies with your Telegram id.
 Put that number in `TELEGRAM_ALLOWED_USERS` in Vercel, redeploy, and send `/start`.
 
-The bot only answers people on that list, so a stranger who finds it can't spend your credits.
+The bot only answers people on that list or people who joined with your invite link, so a stranger
+who finds it can't spend your credits.
+
+### Invite people (no settings needed)
+
+Send your bot `/invite`. It replies with your invite link and how many spots are used. Share the
+link: anyone who opens it and taps Start is in, until the spots run out (10 by default, set
+`KNOWING_INVITE_SPOTS` for more). The bot messages you each time someone joins, and when someone
+is turned away because it's full. People added in `TELEGRAM_ALLOWED_USERS` don't use a spot.
+
+The link's code comes from your webhook secret, so it can't be guessed. If it spreads further than
+you wanted, set `KNOWING_INVITE_CODE` to a new code and redeploy: the old link stops working, and
+people who already joined stay in.
 
 ### 7. Turn on wrap-ups (optional)
 

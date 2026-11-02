@@ -1,12 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
-import { handleUpdate, isOutOfCredit, limitText, parseAllowed, resetsIn, secretMatches, spend, type Deps, type Update } from "@/lib/bot/handle";
+import { handleUpdate, inviteCode, isOutOfCredit, limitText, parseAllowed, resetsIn, secretMatches, spend, type Deps, type Update } from "@/lib/bot/handle";
 import { MemoryRetriever } from "@/lib/bot/rag";
 import { MemoryStore } from "@/lib/bot/store";
 import type { Answer, Brain, InlineButton, Media, Save, SaveDraft, TelegramApi, WatchResult } from "@/lib/bot/types";
 
 interface Sent { chatId: number; html: string; buttons?: InlineButton[][]; id: number }
 
-function setup(opts: { answer?: Partial<Answer>; draft?: Partial<SaveDraft>; watch?: (saves: Save[]) => Partial<WatchResult>; limits?: Deps["limits"] } = {}) {
+function setup(opts: { answer?: Partial<Answer>; draft?: Partial<SaveDraft>; watch?: (saves: Save[]) => Partial<WatchResult>; limits?: Deps["limits"]; spots?: number } = {}) {
   const sent: Sent[] = [];
   const edits: Sent[] = [];
   let nextId = 100;
@@ -30,18 +30,86 @@ function setup(opts: { answer?: Partial<Answer>; draft?: Partial<SaveDraft>; wat
   const store = new MemoryStore();
   const retriever = new MemoryRetriever();
   const alerts: string[] = [];
-  const deps: Deps = { tg, store, brain, media, retriever, isAllowed: (id) => id === 7, limits: opts.limits ?? { videos: 50, questions: 50 }, alert: async (t) => void alerts.push(t) };
+  const deps: Deps = { tg, store, brain, media, retriever, isAllowed: (id) => id === 7, ownerId: 7, invite: { code: "join-abc123", spots: opts.spots ?? 10, link: async () => "https://t.me/KnowingTestBot?start=join-abc123" }, limits: opts.limits ?? { videos: 50, questions: 50 }, alert: async (t) => void alerts.push(t) };
   return { deps, sent, edits, store, brain, media, retriever, alerts };
 }
 
-const text = (t: string, from = 7): Update => ({ message: { message_id: 1, chat: { id: 7 }, from: { id: from }, text: t } });
-const tap = (data: string, messageId = 100): Update => ({ callback_query: { id: "cb", from: { id: 7 }, data, message: { message_id: messageId, chat: { id: 7 } } } });
+const text = (t: string, from = 7, name?: string): Update => ({ message: { message_id: 1, chat: { id: from }, from: { id: from, first_name: name }, text: t } });
+const tap = (data: string, messageId = 100, from = 7): Update => ({ callback_query: { id: "cb", from: { id: from }, data, message: { message_id: messageId, chat: { id: from } } } });
 const datas = (b?: InlineButton[][]) => (b ?? []).flat().map((x) => x.callback_data);
 
 describe("parseAllowed", () => {
   it("reads comma or space separated ids", () => {
     expect([...parseAllowed("1, 22 333,x")]).toEqual([1, 22, 333]);
     expect(parseAllowed(undefined).size).toBe(0);
+  });
+});
+
+describe("inviteCode", () => {
+  it("makes a short code Telegram accepts, the same every time, from the webhook secret", () => {
+    const code = inviteCode("s3cret");
+    expect(code).toMatch(/^[A-Za-z0-9_-]{12}$/);
+    expect(inviteCode("s3cret")).toBe(code);
+    expect(inviteCode("other")).not.toBe(code);
+  });
+  it("uses KNOWING_INVITE_CODE when it's a valid code", () => {
+    expect(inviteCode("s3cret", " summer-beta ")).toBe("summer-beta");
+    expect(inviteCode("s3cret", "no spaces allowed")).toBe(inviteCode("s3cret"));
+    expect(inviteCode("s3cret", "")).toBe(inviteCode("s3cret"));
+  });
+});
+
+describe("invite link", () => {
+  it("turns away people without the link", async () => {
+    const { deps, sent, store } = setup();
+    await handleUpdate(text("hi", 99), deps);
+    await handleUpdate(text("/start wrong-code", 99), deps);
+    expect(sent.map((m) => m.html)).toEqual([expect.stringContaining("invite-only"), expect.stringContaining("invite-only")]);
+    expect(await store.hasUser(99)).toBe(false);
+  });
+
+  it("lets someone in with the link, welcomes them and tells the owner", async () => {
+    const { deps, sent, store, brain } = setup();
+    await handleUpdate(text("/start join-abc123", 99, "Sam <3"), deps);
+    expect(await store.hasUser(99)).toBe(true);
+    expect(sent.find((m) => m.chatId === 7)?.html).toBe("Sam &lt;3 joined Knowing with your invite link. 1 of 10 spots used.");
+    expect(sent.find((m) => m.chatId === 99)?.html).toContain("Send me videos");
+    await handleUpdate(text("what was that drill?", 99), deps);
+    expect(brain.answer).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops at the spot limit, without counting people let in through settings", async () => {
+    const { deps, sent, store } = setup({ spots: 1 });
+    await handleUpdate(text("hello", 7), deps); // the owner, let in through settings
+    await handleUpdate(text("/start join-abc123", 98), deps);
+    await handleUpdate(text("/start join-abc123", 99, "Alex"), deps);
+    expect(await store.hasUser(98)).toBe(true);
+    expect(await store.hasUser(99)).toBe(false);
+    expect(sent.filter((m) => m.chatId === 99).at(-1)?.html).toContain("full right now");
+    expect(sent.filter((m) => m.chatId === 7).at(-1)?.html).toContain("Alex tried to join with your invite link, but all 1 spots are taken");
+  });
+
+  it("gives the owner the link and the spots used with /invite, and nobody else", async () => {
+    const { deps, sent, brain } = setup();
+    await handleUpdate(text("/start join-abc123", 99), deps);
+    await handleUpdate(text("/invite"), deps);
+    expect(sent.at(-1)?.html).toContain("https://t.me/KnowingTestBot?start=join-abc123");
+    expect(sent.at(-1)?.html).toContain("1 of 10 spots used");
+    await handleUpdate(text("/invite", 99), deps);
+    expect(sent.at(-1)?.html).not.toContain("t.me");
+    expect(brain.answer).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps someone's spot and today's limits after /delete", async () => {
+    const { deps, store } = setup({ limits: { videos: 1, questions: 50 } });
+    await handleUpdate(text("/start join-abc123", 99), deps);
+    await handleUpdate(text("https://vm.tiktok.com/one/", 99), deps);
+    await handleUpdate(tap("wipe:yes", 100, 99), deps);
+    expect(await store.hasUser(99)).toBe(true);
+    const user = await store.getUser(99);
+    expect(user.facts).toEqual([]);
+    expect(user.usage.videos).toBe(1);
+    expect(store.saves.filter((s) => s.userId === 99)).toHaveLength(0);
   });
 });
 
@@ -59,11 +127,15 @@ describe("isOutOfCredit and secretMatches", () => {
 });
 
 describe("handleUpdate", () => {
-  it("keeps strangers out and tells them their id", async () => {
-    const { deps, sent, brain } = setup();
+  it("keeps strangers out, including their button taps", async () => {
+    const { deps, sent, brain, store } = setup();
     await handleUpdate(text("hello", 9), deps);
+    expect(sent[0]?.html).toContain("invite-only");
     expect(sent[0]?.html).toContain("<code>9</code>");
+    await handleUpdate(tap("wipe:yes", 100, 9), deps);
+    expect(deps.tg.answerCallback).toHaveBeenLastCalledWith("cb", "Knowing is invite-only for now.");
     expect(brain.answer).not.toHaveBeenCalled();
+    expect(await store.hasUser(9)).toBe(false);
   });
 
   it("watches a shared TikTok link and reacts briefly, with the steps one tap away", async () => {
@@ -303,7 +375,7 @@ describe("handleUpdate", () => {
     expect(store.saves).toHaveLength(1);
     await handleUpdate(tap("wipe:yes"), deps);
     expect(store.saves).toHaveLength(0);
-    expect(store.users.has(7)).toBe(false);
+    expect((await store.getUser(7)).turns).toEqual([]);
     expect(edits.at(-1)?.html).toContain("Deleted");
   });
 });

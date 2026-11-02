@@ -54,6 +54,12 @@ export class MemoryStore implements Store {
     this.users.delete(userId);
     this.saves = this.saves.filter((s) => s.userId !== userId);
   }
+  async hasUser(id: number) {
+    return this.users.has(id);
+  }
+  async listUserIds() {
+    return [...this.users.keys()];
+  }
   async getSave(userId: number, id: string) {
     const s = this.saves.find((x) => x.id === id && x.userId === userId);
     return s ? structuredClone(s) : null;
@@ -218,6 +224,16 @@ export class SupabaseStore implements Store {
   /** Saves, their search chunks and chat memories go with the user row (on delete cascade). */
   async deleteUser(userId: number): Promise<void> {
     await this.rest(`bot_users?id=eq.${userId}`, { method: "DELETE" });
+  }
+
+  async hasUser(id: number): Promise<boolean> {
+    const rows = await this.rest<Array<{ id: number }>>(`bot_users?id=eq.${id}&select=id`);
+    return rows.length > 0;
+  }
+
+  async listUserIds(): Promise<number[]> {
+    const rows = await this.rest<Array<{ id: number }>>("bot_users?select=id");
+    return rows.map((r) => Number(r.id));
   }
 
   async getSave(userId: number, id: string): Promise<Save | null> {

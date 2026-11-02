@@ -70,7 +70,7 @@ Any Node host that runs Next.js works too (Netlify, Railway, Render, Fly.io).
 | `KNOWING_TRANSCRIBE_URL` | No | OpenAI's endpoint | Any OpenAI-compatible transcription endpoint, e.g. Groq's `https://api.groq.com/openai/v1/audio/transcriptions` (then set `OPENAI_API_KEY` to that service's key). |
 | `KNOWING_TRANSCRIBE_MODEL` | No | `gpt-4o-mini-transcribe` | Speech-to-text model (`whisper-large-v3` on Groq). |
 | `KNOWING_VIDEO_MODEL` | No | `claude-sonnet-5-5` | Model that watches uploaded videos. |
-| `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET`, `TELEGRAM_ALLOWED_USERS` | For the bot | *(none)* | Turn on the Telegram bot. Setup in [docs/TELEGRAM.md](docs/TELEGRAM.md). |
+| `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET`, `TELEGRAM_ALLOWED_USERS` | For the bot | *(none)* | Turn on the Telegram bot. More people join with the invite link from `/invite`. Setup in [docs/TELEGRAM.md](docs/TELEGRAM.md). |
 | `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` | For the bot | *(none)* | Where the bot keeps saves. Tables in [docs/supabase.sql](docs/supabase.sql). |
 | `KNOWING_BOT_MODEL` | No | `claude-sonnet-5-5` | Model behind the bot's answers and chat. `claude-haiku-5-5` makes answers almost free, but it knows less. |
 | `KNOWING_BOT_EFFORT` | No | `medium` | How hard the bot thinks before answering: `low`, `medium` or `high`. Medium is enough to troubleshoot a tutorial; low is cheaper and quicker. |

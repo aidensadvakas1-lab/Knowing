@@ -32,6 +32,14 @@ export class Telegram implements TelegramApi {
     return json.result as T;
   }
 
+  private name = "";
+
+  /** The bot's @username, for invite links. Asked once per server instance. */
+  async username(): Promise<string> {
+    if (!this.name) this.name = (await this.call<{ username: string }>("getMe", {})).username;
+    return this.name;
+  }
+
   async sendMessage(chatId: number, html: string, buttons?: InlineButton[][]): Promise<number> {
     const msg = await this.call<{ message_id: number }>("sendMessage", {
       chat_id: chatId,

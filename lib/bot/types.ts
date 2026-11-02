@@ -91,6 +91,10 @@ export interface Store {
   deleteSave(userId: number, id: string): Promise<void>;
   /** Everything about a user: their row, saves and search index. */
   deleteUser(userId: number): Promise<void>;
+  /** True if they have a row: they've used the bot, or joined with the invite link. */
+  hasUser(id: number): Promise<boolean>;
+  /** Everyone with a row, for counting invite spots. */
+  listUserIds(): Promise<number[]>;
   /** Newest first. */
   listSaves(userId: number, limit?: number): Promise<Save[]>;
   /** Users with a scroll session that hasn't had its wrap-up yet. */

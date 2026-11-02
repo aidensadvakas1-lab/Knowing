@@ -6,16 +6,17 @@
  *   a sentence or two (how it connects to their other saves). No coaching.
  * - Any other text: answer from their saves and what they've told us.
  * - Buttons: Show steps, Start now, Add what it says, Fix something, Keep both / Replace.
- * - /start, /help, /saved, /memory, /delete.
+ * - /start, /help, /saved, /memory, /delete, and /invite for the owner.
+ * - An invite link lets people in without editing settings, up to a set number of spots.
  * - Daily limits per user, and an alert to the owner when something breaks.
  * - Shares close together make a sitting, wrapped up later in wrapup.ts.
  */
-import { timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { answerText, escapeHtml as esc, reactionButtons, reactionText, saveButtons, saveCard, savedList, stepButtons, stepText } from "./format";
 import { WELCOME } from "./profile";
 import { relevantSaves, sharedVideoTurns } from "./prompts";
 import { groupHits, searchQuery, type Retriever } from "./rag";
-import { FACTS_KEPT, newSaveId, TURNS_KEPT } from "./store";
+import { FACTS_KEPT, newSaveId, newUser, TURNS_KEPT } from "./store";
 import { findUrl } from "./tiktok";
 import type { Brain, BotUser, ChatMemory, InlineButton, Media, Save, Store, TelegramApi, WatchInput } from "./types";
 
@@ -26,8 +27,12 @@ export interface Deps {
   media: Media;
   /** Finds the saves and passages that answer a question (hybrid vector + word search). */
   retriever: Retriever;
-  /** Who may use the bot. Each message costs API money, so it's private by default. */
+  /** People let in through settings (TELEGRAM_ALLOWED_USERS). They don't use invite spots. */
   isAllowed(userId: number): boolean;
+  /** Who gets join notices and may use /invite. 0 if nobody. */
+  ownerId: number;
+  /** The invite link: whoever opens it can join, until `spots` people have joined that way. */
+  invite: { code: string; spots: number; link(): Promise<string> };
   /** Most videos and questions per user per day, so one person can't run up the API bill. */
   limits: { videos: number; questions: number };
   /** Tells the owner something broke. */
@@ -51,6 +56,17 @@ export interface Update {
     data?: string;
     message?: { message_id: number; chat: { id: number } };
   };
+}
+
+/**
+ * The invite code in the link (t.me/<bot>?start=<code>). Made from the webhook
+ * secret, so it needs no setting of its own and can't be guessed. Telegram
+ * allows letters, digits, _ and - in it.
+ */
+export function inviteCode(secret: string, override?: string): string {
+  const own = override?.trim() ?? "";
+  if (/^[A-Za-z0-9_-]{6,64}$/.test(own)) return own;
+  return createHash("sha256").update(`knowing-invite:${secret}`).digest("base64url").slice(0, 12);
 }
 
 /** Constant-time compare, for the webhook secret. */
@@ -119,11 +135,18 @@ export async function handleUpdate(update: Update, deps: Deps): Promise<void> {
   const userId = msg.from.id;
   const text = (msg.text ?? msg.caption ?? "").trim();
 
-  if (!deps.isAllowed(userId)) {
-    await deps.tg.sendMessage(chatId, `This bot is private for now. Your Telegram id is <code>${userId}</code>. Send it to the owner to get access.`);
-    return;
-  }
   try {
+    if (!(await hasAccess(userId, deps))) {
+      const code = text.startsWith("/start ") ? text.slice(7).trim() : "";
+      const invited = code !== "" && deps.invite.code !== "" && secretMatches(code, deps.invite.code);
+      if (!invited) return void (await deps.tg.sendMessage(chatId, privateText(userId)));
+      if (!(await join(chatId, userId, msg.from.first_name, deps))) return;
+    }
+    if (text.startsWith("/invite") && userId === deps.ownerId) {
+      const used = await spotsUsed(deps);
+      await deps.tg.sendMessage(chatId, `Your invite link:\n${await deps.invite.link()}\n\n${used} of ${deps.invite.spots} spots used. Anyone who opens the link can join until the spots run out. I'll message you each time someone joins.`);
+      return;
+    }
     if (text === "/start" || text.startsWith("/start ") || text.startsWith("/help")) {
       await deps.tg.sendMessage(chatId, WELCOME);
       return;
@@ -168,6 +191,39 @@ export async function handleUpdate(update: Update, deps: Deps): Promise<void> {
   } catch (error) {
     await deps.tg.sendMessage(chatId, await failed(error, "handling a message", deps)).catch(() => {});
   }
+}
+
+/** For strangers. The id is how the owner lets themselves in on a fresh setup (docs/TELEGRAM.md, step 6). */
+const privateText = (id: number) => `Knowing is invite-only for now. Ask the person who told you about it for an invite link.\n\nYour Telegram id: <code>${id}</code>`;
+const FULL = "Knowing is full right now, so I can't let you in yet. I've let the owner know.";
+
+/** Let in through settings, or already joined with the invite link. */
+async function hasAccess(userId: number, deps: Deps): Promise<boolean> {
+  return deps.isAllowed(userId) || (await deps.store.hasUser(userId));
+}
+
+/** People who joined with the invite link (everyone with a row who isn't let in through settings). */
+async function spotsUsed(deps: Deps): Promise<number> {
+  return (await deps.store.listUserIds()).filter((id) => !deps.isAllowed(id)).length;
+}
+
+/** Tells the owner something that needs no reply. Never stops the user's own message. */
+async function tellOwner(deps: Deps, html: string): Promise<void> {
+  if (deps.ownerId) await deps.tg.sendMessage(deps.ownerId, html).catch((error) => console.error("Owner notice failed", error));
+}
+
+/** Someone opened the invite link: let them in if a spot is free. Tells the owner either way. */
+async function join(chatId: number, userId: number, name: string | undefined, deps: Deps): Promise<boolean> {
+  const used = await spotsUsed(deps);
+  const who = name ? esc(name) : "Someone";
+  if (used >= deps.invite.spots) {
+    await deps.tg.sendMessage(chatId, FULL);
+    await tellOwner(deps, `${who} tried to join with your invite link, but all ${deps.invite.spots} spots are taken. To make room, raise KNOWING_INVITE_SPOTS in Vercel.`);
+    return false;
+  }
+  await deps.store.saveUser(newUser(userId));
+  await tellOwner(deps, `${who} joined Knowing with your invite link. ${used + 1} of ${deps.invite.spots} spots used.`);
+  return true;
 }
 
 function memoryText(user: BotUser): string {
@@ -271,11 +327,16 @@ async function onButton(q: NonNullable<Update["callback_query"]>, deps: Deps) {
   const messageId = q.message?.message_id;
   const data = q.data ?? "";
   if (!chatId || !messageId) return deps.tg.answerCallback(q.id);
-  if (!deps.isAllowed(q.from.id)) return deps.tg.answerCallback(q.id, "This bot is private.");
   try {
+    if (!(await hasAccess(q.from.id, deps))) return await deps.tg.answerCallback(q.id, "Knowing is invite-only for now.");
     const [kind, id = "", n = "0"] = data.split(":");
     if (kind === "wipe") {
-      if (id === "yes") await deps.store.deleteUser(q.from.id);
+      if (id === "yes") {
+        const { usage } = await deps.store.getUser(q.from.id);
+        await deps.store.deleteUser(q.from.id);
+        // An empty row keeps their spot and today's limits, so deleting doesn't lock them out or reset the limits.
+        await deps.store.saveUser({ ...newUser(q.from.id), usage });
+      }
       await deps.tg.answerCallback(q.id, id === "yes" ? "Deleted" : undefined);
       await deps.tg.editMessage(chatId, messageId, id === "yes" ? "Deleted. Everything you saved, our chats and everything I remembered about you are gone." : "Cancelled. Nothing was deleted.");
       return;
