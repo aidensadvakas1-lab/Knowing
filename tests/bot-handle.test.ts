@@ -534,6 +534,16 @@ describe("handleUpdate", () => {
     expect(store.saves).toHaveLength(0);
   });
 
+  it("watches every kind of video sent to it: GIFs, round videos and files of any format", async () => {
+    const { deps, media } = setup();
+    const send = (message: Record<string, unknown>) => handleUpdate({ message: { message_id: 1, chat: { id: 7 }, from: { id: 7 }, ...message } } as Update, deps);
+    await send({ animation: { file_id: "gif", duration: 3 } });
+    await send({ video_note: { file_id: "round", duration: 9 } });
+    await send({ document: { file_id: "mov", mime_type: "application/octet-stream", file_name: "IMG_0042.MOV" } });
+    await send({ document: { file_id: "pdf", mime_type: "application/pdf", file_name: "notes.pdf" } });
+    expect(vi.mocked(media.fromTelegramFile).mock.calls.map((c) => c[0])).toEqual(["gif", "round", "mov"]);
+  });
+
   it("stops when the free ones are used up", async () => {
     const { deps, sent, brain, media } = setup({ limits: { videos: 1, questions: 1 } });
     await handleUpdate(text("https://vm.tiktok.com/one/", FRIEND), deps);

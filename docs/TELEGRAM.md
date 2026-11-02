@@ -252,7 +252,11 @@ change the column in `supabase.sql`).
 - **TikTok downloads are the fragile part.** TikTok has no download API, so the bot uses a resolver
   service (tikwm.com's free API by default; set `KNOWING_TIKTOK_RESOLVER` to swap it). When it fails,
   the bot falls back to the post's caption and says so. Sending the video file itself always works.
-- **Videos sent as files:** up to 20 MB (Telegram's limit for bots).
+- **Videos sent as files:** any format ffmpeg reads (mp4, mov, webm, mkv and more), as a video, a GIF, a round
+  video or a file. Up to 20 MB (Telegram's limit for bots). A link straight to a video file works too.
+- **Instagram, X, Facebook, Threads and Snapchat links:** these apps show the bot a login page instead of the
+  video, so the bot doesn't try. It tells the person to save the video and send the file. YouTube and other
+  links still get their transcript or page text.
 - **Search quality depends on what was captured.** If a video's details were only spoken and the audio
   couldn't be transcribed, they aren't in the save. "Add what it says" fixes that.
 - **Time:** each update has 60 seconds on Vercel's free plan, which fits TikTok-length videos.

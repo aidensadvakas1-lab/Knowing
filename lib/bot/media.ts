@@ -14,6 +14,7 @@ import { fetchSource } from "../fetch-source";
 import { isAiConfigured } from "../server";
 import { isTranscriptionConfigured, transcribeAudio } from "../transcribe";
 import { FRAME_COUNT, FRAME_PIXELS, MAX_SECONDS, SCAN_MAX } from "./costs";
+import { isVideoFileLink, LOGIN_WALLED, platformName, sendTheFileNote } from "./platforms";
 import { readScreenText } from "./screen";
 import { isTikTok, resolveTikTok } from "./tiktok";
 import type { Media, WatchInput } from "./types";
@@ -209,9 +210,17 @@ export function createMedia(fileUrl: (fileId: string) => Promise<string>): Media
           };
         }
       }
-      // YouTube transcripts and articles: text only.
+      // A link straight to a video file: watch it like one sent to the bot.
+      if (isVideoFileLink(url)) return { ...(await watchVideoBytes(await downloadBytes(url, MAX_VIDEO_BYTES), 0)), caption: "" };
+      const platform = platformName(url);
+      // Instagram, X, Facebook and the like don't let the bot download their videos, and show it a
+      // login wall, so their page text would be junk. Say how to get it watched instead.
+      if (LOGIN_WALLED.has(platform)) return { frames: [], transcript: "", caption: "", notes: [sendTheFileNote(platform)] };
+      // YouTube transcripts, Reddit posts and articles: text only.
       const fetched = await fetchSource(url);
-      return { frames: [], transcript: fetched.text, caption: fetched.title, notes: fetched.warning ? [fetched.warning] : [] };
+      const notes = fetched.warning ? [fetched.warning] : [];
+      if (platform && !fetched.text) notes.splice(0, notes.length, sendTheFileNote(platform));
+      return { frames: [], transcript: fetched.text, caption: fetched.title, notes };
     },
 
     async fromTelegramFile(fileId: string, durationSec: number): Promise<WatchInput> {

@@ -154,6 +154,22 @@ describe("createMedia (real ffmpeg)", () => {
     expect(got.caption).toBe("Install steps");
   }, 30_000);
 
+  it("says to send the file for an Instagram link, instead of saving its login page", async () => {
+    const fetch = vi.fn(async () => new Response("<html>Log in to Instagram</html>"));
+    vi.stubGlobal("fetch", fetch);
+    const got = await createMedia(async () => "").fromLink("https://www.instagram.com/reel/C9abc123/?igsh=xyz");
+    expect(got).toEqual({ frames: [], transcript: "", caption: "", notes: [expect.stringContaining("send me the file")] });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("watches a link straight to a video file", async () => {
+    vi.stubEnv("OPENAI_API_KEY", "");
+    vi.stubEnv("ANTHROPIC_API_KEY", "");
+    serveClip("540x960", 2);
+    const got = await createMedia(async () => "").fromLink("https://cdn.example.com/clip.mov");
+    expect(got.frames.length).toBeGreaterThan(0);
+  }, 30_000);
+
   it("falls back to the caption when TikTok can't be downloaded", async () => {
     vi.stubGlobal("fetch", vi.fn(async (url: string) =>
       String(url).includes("tikwm") ? Response.json({ code: -1 }) : Response.json({ title: "Bank setup caption", author_name: "pro" }),

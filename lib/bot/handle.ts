@@ -17,6 +17,7 @@
  */
 import { createHash, timingSafeEqual } from "node:crypto";
 import { answerText, escapeHtml as esc, reactionButtons, reactionText, saveButtons, saveCard, savedList, stepButtons, stepText } from "./format";
+import { isVideoFile } from "./platforms";
 import { WELCOME } from "./profile";
 import { buyButtons, invoiceFor, packName, PAYSUPPORT_HELP, priceList, readPack, SUPPORT_HELP, TERMS } from "./shop";
 import { relevantSaves, sharedVideoTurns } from "./prompts";
@@ -55,7 +56,11 @@ export interface Update {
     text?: string;
     caption?: string;
     video?: { file_id: string; duration?: number; file_size?: number };
-    document?: { file_id: string; mime_type?: string; file_size?: number };
+    /** GIFs and silent clips. Telegram also sends these as a document. */
+    animation?: { file_id: string; duration?: number; file_size?: number };
+    /** Round video messages. */
+    video_note?: { file_id: string; duration?: number; file_size?: number };
+    document?: { file_id: string; mime_type?: string; file_name?: string; file_size?: number };
     successful_payment?: { currency: string; total_amount: number; invoice_payload: string; telegram_payment_charge_id: string };
   };
   /** Telegram checks with us right before charging Stars. */
@@ -222,7 +227,8 @@ export async function handleUpdate(update: Update, deps: Deps): Promise<void> {
       return;
     }
 
-    const video = msg.video ?? (msg.document?.mime_type?.startsWith("video/") ? msg.document : undefined);
+    // Any kind of video: a normal one, a GIF, a round video message, or a file of any video format.
+    const video = msg.video ?? msg.animation ?? msg.video_note ?? (isVideoFile(msg.document) ? msg.document : undefined);
     if (video) {
       if ((video.file_size ?? 0) > 20 * 1024 * 1024) {
         await deps.tg.sendMessage(chatId, "That video is over 20 MB, which is Telegram's limit for bots. Share the TikTok link instead.");
