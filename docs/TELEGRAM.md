@@ -70,6 +70,10 @@ Use prepaid credits with auto-reload off so it can never charge more.
 3. Under **Project Settings → API**, copy the **Project URL** (`SUPABASE_URL`) and the
    **service_role** key (`SUPABASE_SERVICE_ROLE_KEY`). Keep the service key secret.
 
+Supabase's free plan pauses a project after a week with no activity. To stop that, Vercel calls
+`/api/telegram/keepalive` once a day (set in [`vercel.json`](../vercel.json)), which makes one tiny
+read. Nothing to set up. Optionally add a `CRON_SECRET` in Vercel so only Vercel's cron can call it.
+
 ### 3. Get the AI keys (prepaid, with limits)
 
 - **Anthropic** ([console.anthropic.com](https://console.anthropic.com)): add $10 of credit,
