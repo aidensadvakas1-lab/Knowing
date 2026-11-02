@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { handleUpdate, isOutOfCredit, parseAllowed, secretMatches, spend, type Deps, type Update } from "@/lib/bot/handle";
+import { handleUpdate, isOutOfCredit, limitText, parseAllowed, resetsIn, secretMatches, spend, type Deps, type Update } from "@/lib/bot/handle";
 import { MemoryRetriever } from "@/lib/bot/rag";
 import { MemoryStore } from "@/lib/bot/store";
 import type { Answer, Brain, InlineButton, Media, Save, SaveDraft, TelegramApi, WatchResult } from "@/lib/bot/types";
@@ -275,6 +275,15 @@ describe("handleUpdate", () => {
     await handleUpdate(text("and the other one?"), deps);
     expect(brain.answer).toHaveBeenCalledTimes(1);
     expect(sent.at(-1)?.html).toContain("daily limit");
+  });
+
+  it("says when the limits reset, at midnight UTC", () => {
+    const at = (iso: string) => Date.parse(iso);
+    expect(resetsIn(at("2026-11-02T18:00:00Z"))).toBe("in about 6 hours");
+    expect(resetsIn(at("2026-11-02T22:40:00Z"))).toBe("in about 1 hour");
+    expect(resetsIn(at("2026-11-02T23:30:00Z"))).toBe("in under an hour");
+    expect(limitText("videos", 5, at("2026-11-02T18:00:00Z"))).toBe("That's 5 videos today, the daily limit, so I didn't save this one. Send it again in about 6 hours.");
+    expect(limitText("questions", 10, at("2026-11-02T18:00:00Z"))).toBe("That's 10 questions today, the daily limit. You can ask more in about 6 hours.");
   });
 
   it("resets the limits on a new day", () => {

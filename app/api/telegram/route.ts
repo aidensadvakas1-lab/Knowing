@@ -23,8 +23,8 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 120;
 
 /** Defaults for the daily limits per user; override with KNOWING_DAILY_VIDEOS / KNOWING_DAILY_QUESTIONS. */
-const DAILY_VIDEOS = 15;
-const DAILY_QUESTIONS = 50;
+const DAILY_VIDEOS = 5;
+const DAILY_QUESTIONS = 10;
 
 /** At most one alert per few minutes per server instance, so a broken key doesn't flood the owner. */
 const ALERT_GAP_MS = 5 * 60_000;

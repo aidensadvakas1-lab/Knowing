@@ -98,8 +98,18 @@ export function spend(user: BotUser, kind: "videos" | "questions", limit: number
   return true;
 }
 
-const limitText = (kind: "videos" | "questions", n: number) =>
-  `That's ${n} ${kind} today, the daily limit. ${kind === "videos" ? "Send it again tomorrow." : "Ask again tomorrow."}`;
+/** When the limits reset (midnight UTC), in words: "in about 6 hours". */
+export function resetsIn(now = Date.now()): string {
+  const minutes = Math.ceil((86_400_000 - (now % 86_400_000)) / 60_000);
+  if (minutes < 60) return "in under an hour";
+  const hours = Math.round(minutes / 60);
+  return `in about ${hours} hour${hours === 1 ? "" : "s"}`;
+}
+
+export const limitText = (kind: "videos" | "questions", n: number, now = Date.now()) =>
+  kind === "videos"
+    ? `That's ${n} videos today, the daily limit, so I didn't save this one. Send it again ${resetsIn(now)}.`
+    : `That's ${n} questions today, the daily limit. You can ask more ${resetsIn(now)}.`;
 
 export async function handleUpdate(update: Update, deps: Deps): Promise<void> {
   if (update.callback_query) return onButton(update.callback_query, deps);

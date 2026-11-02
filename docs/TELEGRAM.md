@@ -32,8 +32,8 @@ screen from frames about a second apart, so a command or link that flashes by is
 **half a cent more**. Claude Sonnet (`KNOWING_BOT_MODEL`) also answers and chats, thinking at medium
 effort so it can troubleshoot a tutorial step by step: about **2–3 cents a message**, and up to about
 5 cents when it has to work through an error. Speech goes through OpenAI's `gpt-4o-mini-transcribe`,
-and Vercel, Supabase and Telegram stay on free plans. For one person sharing about 5 videos and
-sending about 15 messages a day, expect roughly **$25 a month**. Setting `KNOWING_BOT_EFFORT=low`
+and Vercel, Supabase and Telegram stay on free plans. At the default daily limits of 5 videos and
+10 questions, one person can spend at most about **$20 a month**. Setting `KNOWING_BOT_EFFORT=low`
 brings answers back to about 2 cents. The daily limits below cap what any one person can spend.
 
 To change how videos are watched, set `KNOWING_WATCH_MODEL` in Vercel and redeploy:
@@ -89,8 +89,8 @@ Add these in Vercel under **Project Settings → Environment Variables**, then r
 | `SUPABASE_SERVICE_ROLE_KEY` | From Supabase |
 | `ANTHROPIC_API_KEY` | From Anthropic |
 | `OPENAI_API_KEY` | From OpenAI (optional) |
-| `KNOWING_DAILY_VIDEOS` | Optional. Videos per person per day (default 15) |
-| `KNOWING_DAILY_QUESTIONS` | Optional. Questions per person per day (default 50) |
+| `KNOWING_DAILY_VIDEOS` | Optional. Videos per person per day (default 5) |
+| `KNOWING_DAILY_QUESTIONS` | Optional. Questions per person per day (default 10) |
 | `KNOWING_OWNER_ID` | Optional. Who gets error alerts (default: the first id in `TELEGRAM_ALLOWED_USERS`) |
 | `KNOWING_CRON_SECRET` | For wrap-ups (step 7). Another random string you make up, different from the webhook secret |
 
@@ -131,7 +131,7 @@ To turn them off again: `select cron.unschedule('knowing-wrapups');`
 ## Keeping it safe and cheap
 
 - **Daily limits.** Each person gets `KNOWING_DAILY_VIDEOS` videos and `KNOWING_DAILY_QUESTIONS`
-  questions a day (reset at midnight UTC). Failed attempts don't count.
+  questions a day (5 and 10 by default, reset at midnight UTC). Failed attempts don't count.
 - **Alerts.** When something breaks, the owner gets a Telegram message from the bot saying what
   (at most one every 5 minutes). If the AI credit runs out, users are told the bot is paused, not broken.
 - **Delete.** `/delete` wipes a person's saves, chats, search index and memory after they confirm.
