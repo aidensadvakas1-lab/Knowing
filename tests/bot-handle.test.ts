@@ -351,13 +351,13 @@ describe("handleUpdate", () => {
     expect(vi.mocked(brain.answer).mock.calls[1]?.[0].user.facts).toEqual(["Plays Siege on PC, Gold rank"]);
   });
 
-  it("says Your video, not From your save, when the answer came from its own knowledge", async () => {
+  it("lists the video under related, not From your save, when the answer came from its own knowledge", async () => {
     const { deps, sent, brain } = setup();
     await handleUpdate(text("https://vm.tiktok.com/ZMabc/"), deps);
     vi.mocked(brain.answer).mockImplementationOnce(async ({ saves }) => ({ text: "Your video shows the drill. Here's a warm-up:", sources: [], about: saves.map((s) => s.id), remember: [] }));
     await handleUpdate(text("how do I warm up for it?"), deps);
     const reply = sent.at(-1)!.html;
-    expect(reply).toContain('Your video: <a href="https://vm.tiktok.com/ZMabc/">Split dodge drill</a>');
+    expect(reply).toContain('<b>Videos related to this topic:</b>\n• <a href="https://vm.tiktok.com/ZMabc/">Split dodge drill</a>');
     expect(reply).not.toContain("From your save");
   });
 

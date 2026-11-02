@@ -109,16 +109,18 @@ export function savedList(saves: Save[]): string {
 }
 
 /**
- * An answer plus where it came from, each save linked to its video. "From your
- * save" only when the answer came from it; a save the chat was just about
- * (install steps its video skips, say) is "Your video" instead.
+ * An answer plus its videos, each linked. "From your save" only when the
+ * answer came from it. Other videos on the same topic (including one the chat
+ * is about when the answer came from Claude, like install steps its video
+ * skips) go in a list under "Videos related to this topic", so they can
+ * rewatch them without being told the answer came from there.
  */
-export function answerText(text: string, sources: Save[], about: Save[] = []): string {
-  const plural = (list: Save[]) => (list.length > 1 ? "s" : "");
-  const others = about.filter((s) => !sources.includes(s));
-  const lines = [
-    sources.length ? `<i>From your save${plural(sources)}: ${sources.map(linkedTitle).join(", ")}</i>` : "",
-    others.length ? `<i>Your video${plural(others)}: ${others.map(linkedTitle).join(", ")}</i>` : "",
-  ].filter(Boolean);
-  return mdToHtml(text) + (lines.length ? `\n\n${lines.join("\n")}` : "");
+export const RELATED_SHOWN = 5;
+
+export function answerText(text: string, sources: Save[], related: Save[] = []): string {
+  const others = [...new Set(related)].filter((s) => !sources.includes(s)).slice(0, RELATED_SHOWN);
+  const parts = [mdToHtml(text)];
+  if (sources.length) parts.push(`<i>From your save${sources.length > 1 ? "s" : ""}: ${sources.map(linkedTitle).join(", ")}</i>`);
+  if (others.length) parts.push(["<b>Videos related to this topic:</b>", ...others.map((s) => `• ${linkedTitle(s)}`)].join("\n"));
+  return parts.join("\n\n");
 }

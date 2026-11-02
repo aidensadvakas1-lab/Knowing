@@ -134,7 +134,9 @@ describe("buildAskSystem", () => {
     expect(p).toContain("point them to the official source");
     expect(p).toContain("so they can tap it to copy");
     expect(p).toContain("```");
-    expect(p).toContain("put its id on an ABOUT: line instead");
+    expect(p).toContain("so they're never told it came from their save");
+    expect(p).toContain('listed under your answer as "Videos related to this topic"');
+    expect(p).toContain("leave the line out when none do, like in small talk");
   });
 
   it("gives each matching save's link, so it can hand a video back", () => {
@@ -167,6 +169,7 @@ describe("parseAnswer", () => {
     const a = parseAnswer("Run this first.\nREMEMBER: Uses a Mac\nABOUT: m1, zz, a1\nSOURCES: a1", ["a1", "m1"]);
     expect(a).toEqual({ text: "Run this first.", sources: ["a1"], about: ["m1"], remember: ["Uses a Mac"] });
     expect(parseAnswer("Steps from me.\nABOUT: m1\nSOURCES: none", ["m1"])).toMatchObject({ text: "Steps from me.", sources: [], about: ["m1"] });
+    expect(parseAnswer("Here's the plan.\nRELATED: m1, b2, a1\nSOURCES: a1", ["a1", "m1", "b2"])).toMatchObject({ text: "Here's the plan.", sources: ["a1"], about: ["m1", "b2"] });
   });
   it("handles a plain answer", () => {
     expect(parseAnswer("Nothing saved on that yet.\nSOURCES: none", [])).toMatchObject({ text: "Nothing saved on that yet.", sources: [], remember: [] });
