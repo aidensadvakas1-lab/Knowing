@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import ffmpegPath from "ffmpeg-static";
 import { fetchSource } from "../fetch-source";
+import { fetchRetry } from "../net";
 import { isAiConfigured } from "../server";
 import { isTranscriptionConfigured, transcribeAudio } from "../transcribe";
 import { FRAME_COUNT, FRAME_PIXELS, MAX_SECONDS, SCAN_MAX, VOICE_MAX_SECONDS } from "./costs";
@@ -27,7 +28,7 @@ const MAX_VIDEO_BYTES = 60 * 1024 * 1024;
 
 /** Download a URL into memory, refusing anything over `maxBytes`. */
 export async function downloadBytes(url: string, maxBytes: number, signal?: AbortSignal): Promise<Buffer> {
-  const res = await fetch(url, { signal, headers: { "user-agent": "Mozilla/5.0 (KnowingBot)" } });
+  const res = await fetchRetry(url, { signal, headers: { "user-agent": "Mozilla/5.0 (KnowingBot)" } }, "Downloading the video");
   if (!res.ok || !res.body) throw new Error(`Download failed (${res.status})`);
   const declared = Number(res.headers.get("content-length") || 0);
   if (declared > maxBytes) throw new Error("That video is too large.");

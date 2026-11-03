@@ -4,6 +4,7 @@
  * same hybrid search as MemoryRetriever: meaning + exact words, fused by rank.
  */
 import "server-only";
+import { fetchRetry } from "../net";
 import { chatText, chunkSave, type Embedder, type Hit, type Retriever } from "./rag";
 import type { ChatMemory, Save } from "./types";
 
@@ -18,11 +19,11 @@ export function createEmbedder(): Embedder | null {
   return {
     async embed(texts: string[]): Promise<number[][]> {
       if (!texts.length) return [];
-      const res = await fetch(process.env.KNOWING_EMBED_URL || DEFAULT_EMBED_URL, {
-        method: "POST",
-        headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
-        body: JSON.stringify({ model: EMBED_MODEL, input: texts.map((t) => t.slice(0, 8_000)) }),
-      });
+      const res = await fetchRetry(
+        process.env.KNOWING_EMBED_URL || DEFAULT_EMBED_URL,
+        { method: "POST", headers: { authorization: `Bearer ${key}`, "content-type": "application/json" }, body: JSON.stringify({ model: EMBED_MODEL, input: texts.map((t) => t.slice(0, 8_000)) }) },
+        "Embeddings",
+      );
       if (!res.ok) throw new Error(`Embeddings failed: ${res.status} ${await res.text().catch(() => "")}`);
       const body = (await res.json()) as { data?: Array<{ embedding: number[]; index?: number }> };
       const data = [...(body.data ?? [])].sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
@@ -39,10 +40,11 @@ export class SupabaseRetriever implements Retriever {
   ) {}
 
   private async rest(path: string, init: RequestInit): Promise<unknown> {
-    const res = await fetch(`${this.url.replace(/\/$/, "")}/rest/v1/${path}`, {
-      ...init,
-      headers: { apikey: this.key, authorization: `Bearer ${this.key}`, "content-type": "application/json", ...(init.headers as Record<string, string>) },
-    });
+    const res = await fetchRetry(
+      `${this.url.replace(/\/$/, "")}/rest/v1/${path}`,
+      { ...init, headers: { apikey: this.key, authorization: `Bearer ${this.key}`, "content-type": "application/json", ...(init.headers as Record<string, string>) } },
+      `Supabase ${path.split("?")[0]}`,
+    );
     if (!res.ok) throw new Error(`Supabase ${path.split("?")[0]}: ${res.status} ${await res.text().catch(() => "")}`);
     const text = await res.text();
     return text ? JSON.parse(text) : null;

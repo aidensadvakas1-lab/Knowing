@@ -5,6 +5,7 @@
  *   (server only). Tables are in docs/supabase.sql.
  * - `MemoryStore` keeps everything in memory, for tests.
  */
+import { fetchRetry } from "../net";
 import { readRules } from "./folders";
 import type { BotUser, DigestState, FilingRule, Payment, Referral, Save, Sitting, Store, Wallet } from "./types";
 
@@ -234,10 +235,11 @@ export class SupabaseStore implements Store {
   ) {}
 
   private async rest<T>(path: string, init: RequestInit = {}): Promise<T> {
-    const res = await fetch(`${this.url.replace(/\/$/, "")}/rest/v1/${path}`, {
-      ...init,
-      headers: { apikey: this.key, authorization: `Bearer ${this.key}`, "content-type": "application/json", ...(init.headers as Record<string, string>) },
-    });
+    const res = await fetchRetry(
+      `${this.url.replace(/\/$/, "")}/rest/v1/${path}`,
+      { ...init, headers: { apikey: this.key, authorization: `Bearer ${this.key}`, "content-type": "application/json", ...(init.headers as Record<string, string>) } },
+      `Supabase ${init.method ?? "GET"} ${path.split("?")[0]}`,
+    );
     if (!res.ok) throw new Error(`Supabase ${init.method ?? "GET"} ${path.split("?")[0]}: ${res.status} ${await res.text().catch(() => "")}`);
     const text = await res.text();
     return (text ? JSON.parse(text) : null) as T;
@@ -283,7 +285,9 @@ export class SupabaseStore implements Store {
 
   /** A save still goes through before the folder column exists: it's then filed by its topic, like before. */
   private async writeSave(path: string, method: "POST" | "PATCH", save: Save): Promise<void> {
-    const write = (row: Partial<SaveRow>) => this.rest(path, { method, headers: { prefer: "return=minimal" }, body: JSON.stringify(row) });
+    // A new save is an upsert, so a retry after a dropped connection (the first try may have gone through) can't fail as a duplicate.
+    const prefer = method === "POST" ? "resolution=merge-duplicates,return=minimal" : "return=minimal";
+    const write = (row: Partial<SaveRow>) => this.rest(path, { method, headers: { prefer }, body: JSON.stringify(row) });
     try {
       await write(toRow(save));
     } catch (error) {

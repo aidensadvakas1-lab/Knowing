@@ -675,6 +675,43 @@ describe("handleUpdate", () => {
     expect(alerts[0]).toContain("boom");
   });
 
+  it("gives the video back when it can't be saved, and says so", async () => {
+    const { deps, edits, store, brain, alerts } = setup({ limits: { videos: 3, questions: 3 } });
+    vi.mocked(brain.watch).mockRejectedValueOnce(new Error("Supabase GET saves: couldn't connect after 3 tries (ECONNRESET)"));
+    await handleUpdate(text("https://vm.tiktok.com/ZMabc/", FRIEND), deps);
+    expect(edits.at(-1)?.html).toBe("Something went wrong on my side, so I didn't save that one. Send it again in a minute. It didn't use up a video.");
+    expect(alerts[0]).toContain("ECONNRESET");
+    expect(store.saves).toHaveLength(0);
+    expect((await store.getUser(FRIEND)).usage.videos).toBe(0);
+    expect((await store.getUser(FRIEND)).turns).toEqual([]);
+    // A bought one goes back in the wallet.
+    await store.saveWallet(FRIEND, { videos: 2, questions: 0, paid: [] });
+    const user = await store.getUser(FRIEND);
+    await store.saveUser({ ...user, usage: { ...user.usage, videos: 3 } });
+    vi.mocked(deps.media.fromLink).mockRejectedValueOnce(new Error("Downloading the video: couldn't connect after 3 tries"));
+    await handleUpdate(text("https://vm.tiktok.com/ZMdef/", FRIEND), deps);
+    expect(edits.at(-1)?.html).toContain("I couldn't open that video");
+    expect(edits.at(-1)?.html).toContain("It didn't use up a video.");
+    expect((await store.getWallet(FRIEND)).videos).toBe(2);
+  });
+
+  it("keeps a video that was saved even if the reply after it breaks", async () => {
+    const { deps, edits, store } = setup({ limits: { videos: 3, questions: 3 } });
+    vi.mocked(deps.tg.editMessage).mockRejectedValueOnce(new Error("Telegram editMessageText: couldn't connect after 3 tries"));
+    await handleUpdate(text("https://vm.tiktok.com/ZMabc/", FRIEND), deps);
+    expect(store.saves).toHaveLength(1);
+    expect(edits.at(-1)?.html).toContain("✓ <i>Saved: Split dodge drill</i>");
+    expect((await store.getUser(FRIEND)).usage.videos).toBe(1);
+  });
+
+  it("gives a question back when the answer breaks", async () => {
+    const { deps, sent, brain, store } = setup({ limits: { videos: 3, questions: 3 } });
+    vi.mocked(brain.answer).mockRejectedValueOnce(new TypeError("fetch failed"));
+    await handleUpdate(text("hi", FRIEND), deps);
+    expect(sent.at(-1)?.html).toBe("Something went wrong on my side. Try again in a minute. It didn't use up a question.");
+    expect((await store.getUser(FRIEND)).usage.questions).toBe(0);
+  });
+
   it("says it's paused, not broken, when the API is out of credit", async () => {
     const { deps, edits, store, brain, alerts } = setup();
     vi.mocked(brain.watch).mockRejectedValueOnce(new Error("400 Your credit balance is too low to access the Anthropic API"));

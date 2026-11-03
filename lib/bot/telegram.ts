@@ -3,6 +3,7 @@
  * https://core.telegram.org/bots/api
  */
 import "server-only";
+import { fetchRetry } from "../net";
 import type { InlineButton, Invoice, TelegramApi } from "./types";
 
 /** Telegram rejects messages over 4096 characters. */
@@ -22,11 +23,11 @@ export class Telegram implements TelegramApi {
   constructor(private readonly token: string) {}
 
   private async call<T>(method: string, body: Record<string, unknown>): Promise<T> {
-    const res = await fetch(`https://api.telegram.org/bot${this.token}/${method}`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-    });
+    const res = await fetchRetry(
+      `https://api.telegram.org/bot${this.token}/${method}`,
+      { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) },
+      `Telegram ${method}`,
+    );
     const json = (await res.json().catch(() => ({}))) as { ok?: boolean; result?: T; description?: string };
     if (!json.ok) throw new TelegramError(`${method}: ${json.description ?? res.status}`, res.status);
     return json.result as T;

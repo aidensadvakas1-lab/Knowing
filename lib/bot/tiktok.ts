@@ -6,6 +6,7 @@
  * KNOWING_TIKTOK_RESOLVER). It is the fragile part of the bot: when it fails,
  * the caller falls back to the caption from TikTok's public oEmbed endpoint.
  */
+import { fetchRetry } from "../net";
 import { parseHttpUrl } from "../sources";
 
 const DEFAULT_RESOLVER = "https://www.tikwm.com/api/";
@@ -65,7 +66,7 @@ export function parseResolverResponse(json: unknown, base = DEFAULT_RESOLVER): R
 /** Ask the resolver for the post's video. Throws when it can't. */
 export async function resolveTikTok(url: string, signal?: AbortSignal): Promise<ResolvedTikTok> {
   const base = process.env.KNOWING_TIKTOK_RESOLVER || DEFAULT_RESOLVER;
-  const res = await fetch(`${base}?url=${encodeURIComponent(url)}&hd=0`, { signal, headers: { accept: "application/json" } });
+  const res = await fetchRetry(`${base}?url=${encodeURIComponent(url)}&hd=0`, { signal, headers: { accept: "application/json" } }, "The TikTok resolver");
   if (!res.ok) throw new Error(`TikTok resolver answered ${res.status}`);
   const parsed = parseResolverResponse(await res.json().catch(() => null), base);
   if (!parsed) throw new Error("TikTok resolver couldn't read that post");
