@@ -61,3 +61,34 @@ describe("folders in the database", () => {
     expect(await store.getCollections(7)).toEqual([]);
   });
 });
+
+describe("using one up in the database", () => {
+  it("asks the database to do it in one step, and never writes usage with the rest of the user", async () => {
+    const calls: Array<{ url: string; body: string }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init: RequestInit) => (calls.push({ url, body: String(init.body) }), new Response(url.includes("rpc/") ? '"free"' : "", { status: 200 }))));
+    const store = new SupabaseStore("https://x.supabase.co", "key");
+    expect(await store.spend(7, "videos", { free: 5, planDaily: 0, day: "2026-11-03" })).toBe("free");
+    expect(calls[0].url).toContain("/rest/v1/rpc/bot_spend");
+    expect(JSON.parse(calls[0].body)).toEqual({ p_id: 7, p_kind: "videos", p_free: 5, p_plan_daily: 0, p_day: "2026-11-03" });
+    await store.saveUser({ id: 7, facts: [], turns: [], awaitingWordsFor: null, usage: { day: "", videos: 0, questions: 0 }, sitting: null });
+    expect(JSON.parse(calls[1].body)).not.toHaveProperty("usage");
+  });
+
+  it("keeps working the old way until the functions are added", async () => {
+    const calls: Array<{ url: string; method: string; body: string }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init: RequestInit) => {
+        calls.push({ url, method: init.method ?? "GET", body: String(init.body ?? "") });
+        if (url.includes("rpc/")) return new Response('{"code":"PGRST202","message":"Could not find the function public.bot_spend"}', { status: 404 });
+        if ((init.method ?? "GET") === "GET") return new Response(JSON.stringify([{ usage: { day: "2026-11-01", videos: 5, questions: 0 }, wallet: { videos: 2 } }]), { status: 200 });
+        return new Response(null, { status: 204 });
+      }),
+    );
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const store = new SupabaseStore("https://x.supabase.co", "key");
+    expect(await store.spend(7, "videos", { free: 5, planDaily: 0, day: "2026-11-03" })).toBe("wallet");
+    expect(calls.at(-1)).toMatchObject({ method: "PATCH" });
+    expect(JSON.parse(calls.at(-1)!.body).wallet).toMatchObject({ videos: 1 });
+  });
+});

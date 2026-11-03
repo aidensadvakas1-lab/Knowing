@@ -8,7 +8,7 @@
 import { fetchRetry } from "../net";
 import { readCollections } from "./collections";
 import { readRules } from "./folders";
-import type { BotUser, Collection, DigestState, FilingRule, Payment, Plan, Referral, Save, Sitting, Store, Wallet } from "./types";
+import type { BotUser, Collection, DigestState, FilingRule, PackKind, Payment, Plan, Referral, Save, Sitting, Spent, SpendRule, Store, Usage, Wallet } from "./types";
 
 /** Recent turns kept per user, so follow-ups make sense. Older chats are kept as searchable memories. */
 export const TURNS_KEPT = 16;
@@ -86,6 +86,32 @@ export function readPlan(raw: unknown): Plan | null {
   };
 }
 
+/**
+ * The rule bot_spend in docs/supabase.sql follows, in one place for the
+ * in-memory store: today's plan, then a free one, then a bought one. Changes
+ * `usage` and `wallet` in place.
+ */
+export function takeOne(usage: Usage, wallet: Wallet, kind: PackKind, rule: SpendRule): Spent | null {
+  const plan = wallet.plan;
+  if (plan && rule.planDaily > 0) {
+    if (plan.day !== rule.day) Object.assign(plan, { day: rule.day, videos: 0, questions: 0 });
+    if (plan[kind] < rule.planDaily) {
+      plan[kind] += 1;
+      return "plan";
+    }
+  }
+  if (usage[kind] < rule.free) {
+    usage[kind] += 1;
+    if (!usage.day) usage.day = rule.day;
+    return "free";
+  }
+  if (wallet[kind] > 0) {
+    wallet[kind] -= 1;
+    return "wallet";
+  }
+  return null;
+}
+
 /** A short id that fits inside Telegram's 64-byte button data. */
 export function newSaveId(): string {
   return Date.now().toString(36).slice(-5) + Math.random().toString(36).slice(2, 6);
@@ -106,9 +132,39 @@ export class MemoryStore implements Store {
     return structuredClone(this.users.get(id) ?? newUser(id));
   }
   async saveUser(user: BotUser) {
-    const sitting = this.users.get(user.id)?.sitting ?? null; // like the database, saving the row leaves the sitting alone
-    this.users.set(user.id, structuredClone({ ...user, sitting, turns: user.turns.slice(-TURNS_KEPT), facts: user.facts.slice(-FACTS_KEPT) }));
+    const old = this.users.get(user.id);
+    // Like the database, saving the row leaves the sitting and what they've used alone.
+    const sitting = old?.sitting ?? null;
+    const usage = old?.usage ?? newUser(user.id).usage;
+    this.users.set(user.id, structuredClone({ ...user, sitting, usage, turns: user.turns.slice(-TURNS_KEPT), facts: user.facts.slice(-FACTS_KEPT) }));
     this.active.set(user.id, new Date().toISOString());
+  }
+  async setUsage(userId: number, usage: Usage) {
+    const user = this.users.get(userId);
+    if (user) user.usage = { ...usage };
+  }
+  async spend(userId: number, kind: PackKind, rule: SpendRule) {
+    const user = this.users.get(userId);
+    if (!user) return null;
+    const wallet = readWallet(this.wallets.get(userId));
+    const from = takeOne(user.usage, wallet, kind, rule);
+    if (from) this.wallets.set(userId, wallet);
+    return from;
+  }
+  async giveBack(userId: number, kind: PackKind, from: Spent, day: string) {
+    const user = this.users.get(userId);
+    const wallet = readWallet(this.wallets.get(userId));
+    if (from === "free" && user) user.usage[kind] = Math.max(0, user.usage[kind] - 1);
+    if (from === "wallet") wallet[kind] += 1;
+    if (from === "plan" && wallet.plan?.day === day) wallet.plan[kind] = Math.max(0, wallet.plan[kind] - 1);
+    this.wallets.set(userId, wallet);
+  }
+  async addPlanCost(userId: number, dollars: number) {
+    const wallet = readWallet(this.wallets.get(userId));
+    if (!wallet.plan) return null;
+    wallet.plan.cost += Math.max(0, dollars);
+    this.wallets.set(userId, wallet);
+    return wallet.plan.cost;
   }
   async addSave(save: Save) {
     this.saves.unshift(structuredClone(save));
@@ -321,7 +377,7 @@ export class SupabaseStore implements Store {
         facts: user.facts.slice(-FACTS_KEPT),
         turns: user.turns.slice(-TURNS_KEPT),
         awaiting_words_for: user.awaitingWordsFor,
-        usage: user.usage,
+        // Not usage: only bot_spend and bot_give_back change it, so a slow reply can't undo a use.
         updated_at: new Date().toISOString(),
       }),
     });
@@ -390,6 +446,83 @@ export class SupabaseStore implements Store {
   /** Saves, their search chunks and chat memories go with the user row (on delete cascade). */
   async deleteUser(userId: number): Promise<void> {
     await this.rest(`bot_users?id=eq.${userId}`, { method: "DELETE" });
+  }
+
+  /**
+   * Until docs/supabase.sql has been run again, the one-step functions aren't
+   * there. Then the bot keeps working the old way (read, then write) instead of
+   * stopping, and says so in the log.
+   */
+  private async orOldWay<T>(rpc: () => Promise<T>, old: () => Promise<T>): Promise<T> {
+    try {
+      return await rpc();
+    } catch (error) {
+      if (!/PGRST202|Could not find the function|404/.test(String(error))) throw error;
+      console.error("Run docs/supabase.sql again in Supabase: the bot_spend functions are missing", error);
+      return old();
+    }
+  }
+
+  private async readRow(userId: number): Promise<{ usage: Usage; wallet: Wallet } | null> {
+    const rows = await this.rest<Array<{ usage: unknown; wallet: unknown }>>(`bot_users?id=eq.${userId}&select=usage,wallet`);
+    return rows[0] ? { usage: readUsage(rows[0].usage), wallet: readWallet(rows[0].wallet) } : null;
+  }
+
+  private async writeRow(userId: number, row: { usage?: Usage; wallet?: Wallet }): Promise<void> {
+    await this.rest(`bot_users?id=eq.${userId}`, { method: "PATCH", headers: { prefer: "return=minimal" }, body: JSON.stringify(row) });
+  }
+
+  async spend(userId: number, kind: PackKind, rule: SpendRule): Promise<Spent | null> {
+    return this.orOldWay(
+      async () => {
+        const from = await this.rest<string | null>("rpc/bot_spend", {
+          method: "POST",
+          body: JSON.stringify({ p_id: userId, p_kind: kind, p_free: rule.free, p_plan_daily: rule.planDaily, p_day: rule.day }),
+        });
+        return from === "plan" || from === "free" || from === "wallet" ? from : null;
+      },
+      async () => {
+        const row = await this.readRow(userId);
+        if (!row) return null;
+        const from = takeOne(row.usage, row.wallet, kind, rule);
+        if (from) await this.writeRow(userId, from === "free" ? { usage: row.usage } : { wallet: row.wallet });
+        return from;
+      },
+    );
+  }
+
+  async giveBack(userId: number, kind: PackKind, from: Spent, day: string): Promise<void> {
+    await this.orOldWay(
+      () => this.rest("rpc/bot_give_back", { method: "POST", body: JSON.stringify({ p_id: userId, p_kind: kind, p_from: from, p_day: day }) }),
+      async () => {
+        const row = await this.readRow(userId);
+        if (!row) return;
+        if (from === "free") return this.writeRow(userId, { usage: { ...row.usage, [kind]: Math.max(0, row.usage[kind] - 1) } });
+        if (from === "wallet") row.wallet[kind] += 1;
+        if (from === "plan" && row.wallet.plan?.day === day) row.wallet.plan[kind] = Math.max(0, row.wallet.plan[kind] - 1);
+        await this.writeRow(userId, { wallet: row.wallet });
+      },
+    );
+  }
+
+  async addPlanCost(userId: number, dollars: number): Promise<number | null> {
+    return this.orOldWay(
+      async () => {
+        const total = await this.rest<number | string | null>("rpc/bot_plan_cost", { method: "POST", body: JSON.stringify({ p_id: userId, p_dollars: dollars }) });
+        return total === null ? null : Number(total);
+      },
+      async () => {
+        const row = await this.readRow(userId);
+        if (!row?.wallet.plan) return null;
+        row.wallet.plan.cost += Math.max(0, dollars);
+        await this.writeRow(userId, { wallet: row.wallet });
+        return row.wallet.plan.cost;
+      },
+    );
+  }
+
+  async setUsage(userId: number, usage: Usage): Promise<void> {
+    await this.rest(`bot_users?id=eq.${userId}`, { method: "PATCH", headers: { prefer: "return=minimal" }, body: JSON.stringify({ usage }) });
   }
 
   async hasUser(id: number): Promise<boolean> {

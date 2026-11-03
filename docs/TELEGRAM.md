@@ -216,6 +216,12 @@ payment_id` gives the Stars back and removes the pack. People can send `/support
 with a message, which reaches you with their id; answer with `/reply user_id your message`. `/terms`
 shows the terms Telegram asks for.
 
+**Nothing can be used twice.** Using up a video or question happens in one step inside the
+database (`bot_spend` in [`supabase.sql`](supabase.sql)), so forwarding twenty videos at once
+can't get more than someone has. **Prices follow the models you set:** switch
+`KNOWING_WATCH_MODEL` or `KNOWING_BOT_MODEL` to a stronger model and the refill's price goes up
+on its own (`priceOf` in [`lib/bot/costs.ts`](../lib/bot/costs.ts)), so it still can't sell at a loss.
+
 ### Knowing Plus (monthly plan)
 
 Instead of buying refills, people can subscribe with `/plan` (or the ⭐ Knowing Plus button under

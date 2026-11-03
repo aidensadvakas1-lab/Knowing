@@ -69,6 +69,16 @@ export interface Usage {
 /** The two things that are limited: videos watched and questions asked. */
 export type PackKind = "videos" | "questions";
 
+/** Where a use came from. */
+export type Spent = "plan" | "free" | "wallet";
+
+/** How many each source allows right now. `day` is today in UTC (YYYY-MM-DD). */
+export interface SpendRule {
+  free: number;
+  planDaily: number;
+  day: string;
+}
+
 /** A pack on sale: videos and questions together in one purchase, for how many Stars. */
 export interface Pack {
   videos: number;
@@ -195,6 +205,18 @@ export interface Store {
    */
   getWallet(userId: number): Promise<Wallet>;
   saveWallet(userId: number, wallet: Wallet): Promise<void>;
+  /**
+   * Use one up in a single step, so many messages at once can't use more than
+   * they have: today's plan (up to `planDaily`), then a free one (up to `free`),
+   * then a bought one. Null when there's none left.
+   */
+  spend(userId: number, kind: PackKind, rule: SpendRule): Promise<Spent | null>;
+  /** Give one back, in a single step. A plan one only counts back on the same `day`. */
+  giveBack(userId: number, kind: PackKind, from: Spent, day: string): Promise<void>;
+  /** Add dollars to this month of the plan, in a single step. The new total, or null with no plan. */
+  addPlanCost(userId: number, dollars: number): Promise<number | null>;
+  /** Put back what they had used (after /delete). saveUser never writes it, so a reply can't undo a use. */
+  setUsage(userId: number, usage: Usage): Promise<void>;
   /** Newest first. */
   listSaves(userId: number, limit?: number): Promise<Save[]>;
   /** Users with a scroll session that hasn't had its wrap-up yet. */
