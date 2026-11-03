@@ -246,8 +246,15 @@ switched off automatically.
 - **Free amount, given once.** Each person gets `KNOWING_FREE_VIDEOS` videos and
   `KNOWING_FREE_QUESTIONS` questions (5 and 10 by default). They never refill, and `/delete`
   doesn't hand out new ones. After that it's packs. The owner has no limits.
+- **Dropped connections.** Every call to Supabase, Telegram, OpenAI, the TikTok resolver and video
+  downloads is tried up to 3 times when the connection drops or the service is busy (`lib/net.ts`;
+  the Anthropic SDK retries on its own). If a video or a question still fails, it's given back
+  (free or bought) and the person is told it didn't use one up. A video that was saved stays saved,
+  even if the reply after it breaks.
 - **Alerts.** When something breaks, the owner gets a Telegram message from the bot saying what
-  (at most one every 5 minutes). If the AI credit runs out, users are told the bot is paused, not broken.
+  (at most one every 5 minutes), with which service and why, like
+  `Supabase POST saves: couldn't connect after 3 tries (ECONNRESET)`. If the AI credit runs out,
+  users are told the bot is paused, not broken.
 - **Delete.** `/delete` wipes a person's saves, chats, search index and memory after they confirm.
 - **Already set up before these existed?** Run [`supabase.sql`](supabase.sql) again. It only adds
   what's missing. Folders need its `folder` and `filing` columns: until then videos still save

@@ -28,6 +28,7 @@
  * - Shares close together make a sitting, wrapped up later in wrapup.ts.
  */
 import { createHash, timingSafeEqual } from "node:crypto";
+import { NetworkError, networkCode } from "../net";
 import { flashback, OFF_TEXT, OFFER_BUTTONS, OFFER_TEXT, ON_TEXT } from "./digest";
 import { addRules, cleanFolderName, dropRules, findFolder, folderKey, folders, matchFolder, renameRules, topicFolder, UNSORTED, type Folder } from "./folders";
 import { answerText, buttonsFor, deleteButtons, escapeHtml as esc, folderList, folderView, mergeButtons, moveButtons, reactionButtons, reactionText, saveButtons, saveCard, savedList, stepButtons, stepText, type ButtonsAt } from "./format";
@@ -141,7 +142,9 @@ export function isOutOfCredit(error: unknown): boolean {
 async function failed(error: unknown, where: string, deps: Deps): Promise<string> {
   console.error(`Bot failed while ${where}`, error);
   const broke = isOutOfCredit(error);
-  const detail = (error instanceof Error ? error.message : String(error)).slice(0, 300);
+  // "fetch failed" alone doesn't say why; the low-level reason (like ECONNRESET) does.
+  const code = error instanceof Error && !(error instanceof NetworkError) ? networkCode(error) : "";
+  const detail = `${error instanceof Error ? error.message : String(error)}${code ? ` (${code})` : ""}`.slice(0, 300);
   await deps.alert(`${broke ? "Out of API credit" : "Error"} while ${where}: ${detail}`).catch(() => {});
   return broke ? PAUSED : FAIL;
 }
@@ -284,9 +287,10 @@ export async function handleUpdate(update: Update, deps: Deps): Promise<void> {
         await deps.tg.sendMessage(chatId, "That video is over 20 MB, which is Telegram's limit for bots. Share the TikTok link instead.");
         return;
       }
-      if (!(await allow(user, "videos", deps))) return await limitReached(chatId, "videos", deps);
+      const paid = await allow(user, "videos", deps);
+      if (!paid) return await limitReached(chatId, "videos", deps);
       const duration = "duration" in video && typeof video.duration === "number" ? video.duration : 0;
-      return await watchAndSave(chatId, user, () => deps.media.fromTelegramFile(video.file_id, duration), "", text, deps);
+      return await watchAndSave(chatId, user, () => deps.media.fromTelegramFile(video.file_id, duration), "", text, paid, deps);
     }
 
     if (msg.voice) return await voiceMessage(chatId, user, msg.voice, deps, msg.from.first_name);
@@ -294,8 +298,11 @@ export async function handleUpdate(update: Update, deps: Deps): Promise<void> {
     const url = findUrl(text);
     // Links from apps that won't let the bot in only get told how to send the video, so they don't use one up.
     const walled = Boolean(url && LOGIN_WALLED.has(platformName(url)));
-    if (url && !walled && !(await allow(user, "videos", deps))) return await limitReached(chatId, "videos", deps);
-    if (url) return await watchAndSave(chatId, user, () => deps.media.fromLink(url), url, text.replace(url, "").trim(), deps);
+    if (url) {
+      const paid = walled ? "nothing" : await allow(user, "videos", deps);
+      if (!paid) return await limitReached(chatId, "videos", deps);
+      return await watchAndSave(chatId, user, () => deps.media.fromLink(url), url, text.replace(url, "").trim(), paid, deps);
+    }
 
     if (!text) return;
     await onText(chatId, user, text, deps, msg.from.first_name);
@@ -319,14 +326,20 @@ async function onText(chatId: number, user: BotUser, text: string, deps: Deps, n
     // Too late, or not a name (a question, a long message): answered like any other message below.
   }
   // Remaking a save is a Claude call like an answer, so it uses a question.
-  if (user.awaitingWordsFor) {
-    if (!(await allow(user, "questions", deps))) return await limitReached(chatId, "questions", deps);
-    return await addWords(chatId, user, text, deps, heard);
-  }
+  const remaking = Boolean(user.awaitingWordsFor);
   // Before the limit check: checking what's left shouldn't use a question, and works when none are left.
-  if (asksAboutUsage(text)) return await showUsage(chatId, user, deps);
-  if (!(await allow(user, "questions", deps))) return await limitReached(chatId, "questions", deps);
-  await answer(chatId, user, text, deps, name, heard);
+  if (!remaking && asksAboutUsage(text)) return await showUsage(chatId, user, deps);
+  const paid = await allow(user, "questions", deps);
+  if (!paid) return await limitReached(chatId, "questions", deps);
+  try {
+    if (remaking) await addWords(chatId, user, text, deps, heard);
+    else await answer(chatId, user, text, deps, name, heard);
+  } catch (error) {
+    // Every connection is tried again first (lib/net.ts). If it still breaks, the question is given back.
+    const said = await failed(error, remaking ? "remaking a save" : "answering", deps);
+    await giveBack(user, "questions", paid, deps);
+    await deps.tg.sendMessage(chatId, paid === "nothing" ? said : `${said} It didn't use up a question.`).catch(() => {});
+  }
 }
 
 /**
@@ -394,13 +407,33 @@ async function digestCommand(chatId: number, userId: number, arg: string, deps: 
 }
 
 /** Count one use: their free ones first, then what they bought. False when both are used up. The owner has no limit. */
-async function allow(user: BotUser, kind: PackKind, deps: Deps): Promise<boolean> {
-  if (user.id === deps.ownerId) return true;
-  if (spend(user, kind, deps.limits[kind])) return true;
+/** What a use came out of: nothing (the owner, or a link that doesn't count), a free one, or their wallet. */
+type Paid = "nothing" | "free" | "wallet";
+
+/** Use up a free one, or else one they bought. Null when they have none left. */
+async function allow(user: BotUser, kind: PackKind, deps: Deps): Promise<Paid | null> {
+  if (user.id === deps.ownerId) return "nothing";
+  if (spend(user, kind, deps.limits[kind])) return "free";
   const wallet = await deps.store.getWallet(user.id).catch((error) => void console.error("Reading the wallet failed", error));
-  if (!wallet || wallet[kind] < 1) return false;
+  if (!wallet || wallet[kind] < 1) return null;
   await deps.store.saveWallet(user.id, { ...wallet, [kind]: wallet[kind] - 1 });
-  return true;
+  return "wallet";
+}
+
+/** Give back a use that got them nothing, like a video that couldn't be saved. Never throws. */
+async function giveBack(user: BotUser, kind: PackKind, paid: Paid, deps: Deps): Promise<void> {
+  try {
+    if (paid === "free") {
+      user.usage[kind] = Math.max(0, user.usage[kind] - 1);
+      await deps.store.saveUser(user);
+    }
+    if (paid === "wallet") {
+      const wallet = await deps.store.getWallet(user.id);
+      await deps.store.saveWallet(user.id, { ...wallet, [kind]: wallet[kind] + 1 });
+    }
+  } catch (error) {
+    console.error("Giving back a use failed", error);
+  }
 }
 
 /** Their wallet, or null if it can't be read (then /usage just leaves extras out). */
@@ -573,28 +606,44 @@ function memoryButtons(user: BotUser) {
   return user.facts.slice(0, 20).map((f, i) => [{ text: `Forget ${i + 1}: ${f.slice(0, 30)}`, callback_data: `forget:${i}` }]);
 }
 
-async function watchAndSave(chatId: number, user: BotUser, get: () => Promise<WatchInput>, sourceUrl: string, note: string, deps: Deps) {
+/** Said when a video couldn't be saved, so they know nothing was lost and it's safe to send again. */
+const NOT_USED = "It didn't use up a video.";
+
+/**
+ * Watch a video and save it. Every connection is tried again if it drops
+ * (lib/net.ts), so a blip doesn't lose it. If it still can't be saved, the
+ * video they spent on it is given back and they're told to send it again.
+ */
+async function watchAndSave(chatId: number, user: BotUser, get: () => Promise<WatchInput>, sourceUrl: string, note: string, paid: Paid, deps: Deps) {
   const status = await deps.tg.sendMessage(chatId, "Watching…");
+  const turns = user.turns;
+  const unsaved = async (text: string) => {
+    user.turns = turns;
+    await giveBack(user, "videos", paid, deps);
+    await deps.tg.editMessage(chatId, status, paid === "nothing" ? text : `${text} ${NOT_USED}`).catch(() => {});
+  };
   let input: WatchInput;
   try {
     input = await get();
   } catch (error) {
     await failed(error, `opening ${sourceUrl || "a sent video"}`, deps);
-    await deps.tg.editMessage(chatId, status, "I couldn't open that video. Try sending it again, or send the video file itself.");
-    return;
+    return await unsaved("I couldn't open that video. Try sending it again, or send the video file itself.");
   }
   if (!input.frames.length && !input.transcript && !input.caption) {
-    await deps.tg.editMessage(chatId, status, ["I couldn't get anything out of that one.", ...input.notes].join("\n"));
-    return;
+    return await unsaved(["I couldn't get anything out of that one.", ...input.notes].join("\n"));
   }
+  const progress = { saved: "" };
   try {
-    await saveWatched(chatId, status, user, input, sourceUrl, note, deps);
+    await saveWatched(chatId, status, user, input, sourceUrl, note, deps, progress);
   } catch (error) {
-    await deps.tg.editMessage(chatId, status, await failed(error, "watching a video", deps)).catch(() => {});
+    const said = await failed(error, progress.saved ? "telling someone their video was saved" : "watching a video", deps);
+    // Saved, and only the reply after it broke: say so, and keep the video counted.
+    if (progress.saved) return void (await deps.tg.editMessage(chatId, status, `✓ <i>Saved: ${esc(progress.saved)}</i>\n\n/saved lists it.`).catch(() => {}));
+    await unsaved(said === PAUSED ? PAUSED : "Something went wrong on my side, so I didn't save that one. Send it again in a minute.");
   }
 }
 
-async function saveWatched(chatId: number, status: number, user: BotUser, input: WatchInput, sourceUrl: string, note: string, deps: Deps) {
+async function saveWatched(chatId: number, status: number, user: BotUser, input: WatchInput, sourceUrl: string, note: string, deps: Deps, progress = { saved: "" }) {
   const saves = await deps.store.listSaves(user.id);
   const rules = await rulesOf(user.id, deps);
   const watched = await deps.brain.watch({ ...input, note, facts: user.facts, saves, rules });
@@ -615,6 +664,7 @@ async function saveWatched(chatId: number, status: number, user: BotUser, input:
   user.turns = [...user.turns, ...sharedVideoTurns(save, watched.reply, note)].slice(-TURNS_KEPT);
   await deps.store.saveUser(user); // saves belong to a user row, so make sure it exists
   await deps.store.addSave(save);
+  progress.saved = save.title;
   // For the wrap-up. If this fails, only the wrap-up is lost, so the save still goes through.
   await deps.store.touchSitting(user.id, save.createdAt).catch((error) => console.error("Sitting update failed", error));
   await reindex(save, deps);
