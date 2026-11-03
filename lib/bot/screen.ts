@@ -9,6 +9,7 @@ import { formatTimestamp } from "../video-math";
 import { MODELS } from "../constants";
 import { getAnthropic } from "../server";
 import { READ_MAX_TOKENS } from "./costs";
+import { chargeClaude } from "./meter";
 
 export const SCREEN_TEXT_PROMPT = `These are frames from one short video, in order, about a second apart. Copy out the text that appears on screen, word for word, so nothing someone might need later gets lost: commands and code, links and web addresses, @handles, names of apps, tools, packages, products and places, settings, numbers, amounts and prices, and captions or titles. Keep the exact spelling, capitals and symbols. Write each piece once, in the order it first appears, one per line. Skip the app's own buttons and counters (likes, comments, shares, follow) and anything you can't read clearly. If there's no text, write NONE.`;
 
@@ -42,6 +43,7 @@ export async function readScreenText(frames: string[], times: number[] = []): Pr
     // Watching has to fit in the webhook's minute, so this step never holds it up for long.
     { timeout: 25_000, maxRetries: 0 },
   );
+  chargeClaude(MODELS.read, response.usage);
   if (response.stop_reason === "refusal") return "";
   return cleanScreenText(response.content.map((b) => (b.type === "text" ? b.text : "")).join(""));
 }

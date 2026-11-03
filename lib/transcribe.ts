@@ -5,6 +5,7 @@
  */
 import "server-only";
 import { MODELS } from "./constants";
+import { fetchRetry } from "./net";
 import type { ApiErrorCode } from "./types";
 
 const DEFAULT_URL = "https://api.openai.com/v1/audio/transcriptions";
@@ -43,12 +44,7 @@ export async function transcribeAudio(audio: Blob, signal?: AbortSignal, filenam
   form.append("response_format", "json");
   let res: Response;
   try {
-    res = await fetch(process.env.KNOWING_TRANSCRIBE_URL || DEFAULT_URL, {
-      method: "POST",
-      headers: { authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
-      body: form,
-      signal,
-    });
+    res = await fetchRetry(process.env.KNOWING_TRANSCRIBE_URL || DEFAULT_URL, { method: "POST", headers: { authorization: `Bearer ${process.env.OPENAI_API_KEY}` }, body: form, signal }, "Transcription");
   } catch {
     throw new TranscribeError("Couldn't reach the transcription service. Try again.", "upstream_error");
   }

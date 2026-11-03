@@ -9,6 +9,7 @@ import "server-only";
 import type Anthropic from "@anthropic-ai/sdk";
 import { BOT_EFFORT, MODELS } from "../constants";
 import { getAnthropic } from "../server";
+import { chargeClaude } from "./meter";
 import { ANSWER_MAX_TOKENS, QUESTION_CHARS, REWRITE_MAX_TOKENS, WATCH_MAX_TOKENS, WRAPUP_MAX_TOKENS } from "./costs";
 import { buildAskSystem, buildFixPrompt, buildRewritePrompt, buildWatchPrompt, buildWrapUpPrompt, cleanDraft, cleanWatch, frameLabel, parseAnswer, recentHistory, WATCH_SCHEMA } from "./prompts";
 import type { Brain } from "./types";
@@ -26,6 +27,7 @@ async function watchJson(content: Anthropic.ContentBlockParam[], maxTokens: numb
     output_config: { effort: "medium", format: { type: "json_schema", schema: WATCH_SCHEMA } },
     messages: [{ role: "user", content }],
   });
+  chargeClaude(model, response.usage);
   // A gaming clip can trip the strong model's safety filter by mistake; the cheap model gets a second look.
   if (response.stop_reason === "refusal" && model !== MODELS.fallback) return watchJson(content, maxTokens, MODELS.fallback);
   if (response.stop_reason === "refusal") throw new Error("refused");
@@ -51,11 +53,11 @@ export function createBrain(): Brain {
       return cleanDraft(await watchJson([{ type: "text", text: prompt }], REWRITE_MAX_TOKENS), save.title);
     },
 
-    async answer({ user, question, saves, retrieved, name, memories, usage, rules, about }) {
+    async answer({ user, question, saves, retrieved, name, memories, usage, rules, collections, about }) {
       const history = recentHistory(user.turns);
-      const system = buildAskSystem(user, saves, retrieved, today(), { name, memories, usage, rules, about });
-      const ask = (model: string) =>
-        getAnthropic().messages.create({
+      const system = buildAskSystem(user, saves, retrieved, today(), { name, memories, usage, rules, collections, about });
+      const ask = async (model: string) => {
+        const response = await getAnthropic().messages.create({
           model,
           // Thinking counts toward this too. Capped so a question's worst case stays known (costs.ts).
           max_tokens: ANSWER_MAX_TOKENS,
@@ -64,6 +66,9 @@ export function createBrain(): Brain {
           system,
           messages: [...history, { role: "user", content: question.slice(0, QUESTION_CHARS) }],
         });
+        chargeClaude(model, response.usage);
+        return response;
+      };
       let response = await ask(MODELS.bot);
       // A safety filter can misfire on a harmless chat too; the cheap model gets a second look.
       if (response.stop_reason === "refusal" && MODELS.bot !== MODELS.fallback) response = await ask(MODELS.fallback);
@@ -80,6 +85,7 @@ export function createBrain(): Brain {
         output_config: { effort: "low" },
         messages: [{ role: "user", content: buildWrapUpPrompt(kept, others, facts) }],
       });
+      chargeClaude(MODELS.bot, response.usage);
       if (response.stop_reason === "refusal") throw new Error("refused");
       return response.content.map((b) => (b.type === "text" ? b.text : "")).join("").trim();
     },

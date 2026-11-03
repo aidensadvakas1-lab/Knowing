@@ -5,8 +5,10 @@
  *   (server only). Tables are in docs/supabase.sql.
  * - `MemoryStore` keeps everything in memory, for tests.
  */
+import { fetchRetry } from "../net";
+import { readCollections } from "./collections";
 import { readRules } from "./folders";
-import type { BotUser, DigestState, FilingRule, Payment, Referral, Save, Sitting, Store, Wallet } from "./types";
+import type { BotUser, Collection, DigestState, FilingRule, Payment, Plan, Referral, Save, Sitting, Store, Wallet } from "./types";
 
 /** Recent turns kept per user, so follow-ups make sense. Older chats are kept as searchable memories. */
 export const TURNS_KEPT = 16;
@@ -44,10 +46,44 @@ export function readWallet(raw: unknown): Wallet {
   const r = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
   const count = (v: unknown) => Math.max(0, Math.floor(Number(v) || 0));
   const paid = (Array.isArray(r.paid) ? r.paid : [])
-    .filter((p): p is Payment => !!p && typeof p.charge === "string" && (p.kind === "videos" || p.kind === "questions"))
-    // Payments from before pack sizes have no count: those packs were 10 videos or 20 questions.
-    .map((p) => ({ charge: p.charge, kind: p.kind, count: count(p.count) || (p.kind === "videos" ? 10 : 20), stars: count(p.stars), at: String(p.at ?? "") }));
-  return { videos: count(r.videos), questions: count(r.questions), paid: paid.slice(-PAYMENTS_KEPT) };
+    .map((p) => (p && typeof p === "object" ? (p as Record<string, unknown>) : {}))
+    .filter((p) => typeof p.charge === "string")
+    .map((p): Payment => {
+      // Payments from before bundles bought one kind: { kind, count }, and before pack sizes, 10 videos or 20 questions.
+      const old = p.kind === "videos" || p.kind === "questions" ? (count(p.count) || (p.kind === "videos" ? 10 : 20)) : 0;
+      return {
+        charge: String(p.charge),
+        videos: p.kind === "videos" ? old : count(p.videos),
+        questions: p.kind === "questions" ? old : count(p.questions),
+        stars: count(p.stars),
+        at: String(p.at ?? ""),
+        ...(p.plan === true ? { plan: true } : {}),
+      };
+    })
+    .filter((p) => p.videos || p.questions || p.plan);
+  return { videos: count(r.videos), questions: count(r.questions), paid: paid.slice(-PAYMENTS_KEPT), plan: readPlan(r.plan) };
+}
+
+/** Knowing Plus read from the wallet, or null if there's none (or it's broken). */
+export function readPlan(raw: unknown): Plan | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  const until = String(r.until ?? "");
+  const charge = String(r.charge ?? "");
+  if (!Number.isFinite(Date.parse(until)) || !charge) return null;
+  const count = (v: unknown) => Math.max(0, Math.floor(Number(v) || 0));
+  const cost = Number(r.cost);
+  return {
+    until,
+    first: String(r.first || charge),
+    charge,
+    stars: count(r.stars),
+    day: /^\d{4}-\d{2}-\d{2}$/.test(String(r.day)) ? String(r.day) : "",
+    videos: count(r.videos),
+    questions: count(r.questions),
+    cost: Number.isFinite(cost) && cost > 0 ? cost : 0,
+    canceled: r.canceled === true,
+  };
 }
 
 /** A short id that fits inside Telegram's 64-byte button data. */
@@ -61,6 +97,7 @@ export class MemoryStore implements Store {
   digests = new Map<number, DigestState>();
   referrals = new Map<number, Referral>();
   filing = new Map<number, FilingRule[]>();
+  collections = new Map<number, Collection[]>();
   /** When each user's row was last saved, like updated_at. */
   active = new Map<number, string>();
   saves: Save[] = [];
@@ -88,6 +125,7 @@ export class MemoryStore implements Store {
     this.digests.delete(userId);
     this.referrals.delete(userId);
     this.filing.delete(userId);
+    this.collections.delete(userId);
     this.saves = this.saves.filter((s) => s.userId !== userId);
   }
   async hasUser(id: number) {
@@ -141,6 +179,13 @@ export class MemoryStore implements Store {
   async saveFiling(userId: number, rules: FilingRule[]) {
     if (!this.users.has(userId)) this.users.set(userId, newUser(userId));
     this.filing.set(userId, readRules(structuredClone(rules)));
+  }
+  async getCollections(userId: number) {
+    return readCollections(structuredClone(this.collections.get(userId) ?? []));
+  }
+  async saveCollections(userId: number, collections: Collection[]) {
+    if (!this.users.has(userId)) this.users.set(userId, newUser(userId));
+    this.collections.set(userId, readCollections(structuredClone(collections)));
   }
   async getReferral(userId: number) {
     return readReferral(structuredClone(this.referrals.get(userId)));
@@ -234,10 +279,11 @@ export class SupabaseStore implements Store {
   ) {}
 
   private async rest<T>(path: string, init: RequestInit = {}): Promise<T> {
-    const res = await fetch(`${this.url.replace(/\/$/, "")}/rest/v1/${path}`, {
-      ...init,
-      headers: { apikey: this.key, authorization: `Bearer ${this.key}`, "content-type": "application/json", ...(init.headers as Record<string, string>) },
-    });
+    const res = await fetchRetry(
+      `${this.url.replace(/\/$/, "")}/rest/v1/${path}`,
+      { ...init, headers: { apikey: this.key, authorization: `Bearer ${this.key}`, "content-type": "application/json", ...(init.headers as Record<string, string>) } },
+      `Supabase ${init.method ?? "GET"} ${path.split("?")[0]}`,
+    );
     if (!res.ok) throw new Error(`Supabase ${init.method ?? "GET"} ${path.split("?")[0]}: ${res.status} ${await res.text().catch(() => "")}`);
     const text = await res.text();
     return (text ? JSON.parse(text) : null) as T;
@@ -283,7 +329,9 @@ export class SupabaseStore implements Store {
 
   /** A save still goes through before the folder column exists: it's then filed by its topic, like before. */
   private async writeSave(path: string, method: "POST" | "PATCH", save: Save): Promise<void> {
-    const write = (row: Partial<SaveRow>) => this.rest(path, { method, headers: { prefer: "return=minimal" }, body: JSON.stringify(row) });
+    // A new save is an upsert, so a retry after a dropped connection (the first try may have gone through) can't fail as a duplicate.
+    const prefer = method === "POST" ? "resolution=merge-duplicates,return=minimal" : "return=minimal";
+    const write = (row: Partial<SaveRow>) => this.rest(path, { method, headers: { prefer }, body: JSON.stringify(row) });
     try {
       await write(toRow(save));
     } catch (error) {
@@ -318,6 +366,20 @@ export class SupabaseStore implements Store {
       method: "POST",
       headers: { prefer: "resolution=merge-duplicates,return=minimal" },
       body: JSON.stringify({ id: userId, filing: readRules(rules) }),
+    });
+  }
+
+  async getCollections(userId: number): Promise<Collection[]> {
+    const rows = await this.rest<Array<{ collections: unknown }>>(`bot_users?id=eq.${userId}&select=collections`);
+    return readCollections(rows[0]?.collections);
+  }
+
+  /** Writes only the collections column, creating the row if needed. */
+  async saveCollections(userId: number, collections: Collection[]): Promise<void> {
+    await this.rest("bot_users", {
+      method: "POST",
+      headers: { prefer: "resolution=merge-duplicates,return=minimal" },
+      body: JSON.stringify({ id: userId, collections: readCollections(collections) }),
     });
   }
 

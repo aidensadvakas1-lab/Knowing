@@ -2,8 +2,9 @@
  * Telegram message text (HTML parse mode) and buttons for saves, drill
  * steps and answers.
  */
+import { collectionKey, findCollection, videosIn } from "./collections";
 import { findFolder, folderKey, folderOf, folders, sections, type Folder } from "./folders";
-import { SAVE_TYPE_LABEL, type FilingRule, type InlineButton, type Save } from "./types";
+import { SAVE_TYPE_LABEL, type Collection, type FilingRule, type InlineButton, type Save } from "./types";
 
 export const escapeHtml = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
@@ -55,7 +56,7 @@ export function reactionButtons(s: Save, decideAgainst?: Save | null, kind: "dup
   if (canRun(s)) row.push({ text: "Start now", callback_data: `open:${s.id}` });
   if (row.length) rows.push(row);
   if (s.needsWords && !s.words) rows.push([{ text: "Add what it says", callback_data: `words:${s.id}` }]);
-  rows.push([folderButton(s, "r"), { text: "Fix something", callback_data: `fix:${s.id}` }]);
+  rows.push([folderButton(s, "r"), collectButton(s, "r")], [fixButton(s)]);
   return rows;
 }
 
@@ -69,6 +70,13 @@ export type ButtonsAt = "r" | "c";
 function folderButton(s: Save, at: ButtonsAt): InlineButton {
   return { text: `📂 ${folderOf(s).slice(0, 28)}`, callback_data: `mv:${s.id}:${at}` };
 }
+
+/** "📌 Collect": adds it to (or takes it out of) their collections. */
+function collectButton(s: Save, at: ButtonsAt): InlineButton {
+  return { text: "📌 Collect", callback_data: `cl:${s.id}:${at}` };
+}
+
+const fixButton = (s: Save): InlineButton => ({ text: "Fix something", callback_data: `fix:${s.id}` });
 
 /** The buttons a save had at `at`, with its folder button up to date. */
 export function buttonsFor(s: Save, at: ButtonsAt): InlineButton[][] {
@@ -90,6 +98,20 @@ export function moveButtons(s: Save, saves: Save[], at: ButtonsAt): InlineButton
   return rows;
 }
 
+/** Most collections offered under a video; the rest are in /collections. */
+const COLLECT_CHOICES = 12;
+
+/** 📌 under a video: each collection, ticked when the video's in it (a tap adds or takes it out), then a new one. */
+export function collectButtons(s: Save, collections: Collection[], at: ButtonsAt): InlineButton[][] {
+  const shown = collections.slice(0, COLLECT_CHOICES);
+  const rows: InlineButton[][] = [];
+  for (let i = 0; i < shown.length; i += 2) {
+    rows.push(shown.slice(i, i + 2).map((c) => ({ text: `${c.ids.includes(s.id) ? "✓ " : ""}${c.name}`, callback_data: `clt:${s.id}:${collectionKey(c.name)}:${at}` })));
+  }
+  rows.push([{ text: "➕ New collection", callback_data: `clnew:${s.id}` }, { text: "« Back", callback_data: `mvback:${s.id}:${at}` }]);
+  return rows;
+}
+
 /** The full save, shown when asked. */
 export function saveCard(s: Save, notes: string[] = []): string {
   const lines = [
@@ -108,8 +130,8 @@ export function saveButtons(s: Save): InlineButton[][] {
   const rows: InlineButton[][] = [];
   if (canRun(s)) rows.push([{ text: "Start now", callback_data: `open:${s.id}` }]);
   if (s.needsWords && !s.words) rows.push([{ text: "Add what it says", callback_data: `words:${s.id}` }]);
-  rows.push([folderButton(s, "c"), { text: "Fix something", callback_data: `fix:${s.id}` }]);
-  rows.push([{ text: "🗑 Delete", callback_data: `del:${s.id}` }]);
+  rows.push([folderButton(s, "c"), collectButton(s, "c")]);
+  rows.push([fixButton(s), { text: "🗑 Delete", callback_data: `del:${s.id}` }]);
   return rows;
 }
 
@@ -175,6 +197,7 @@ export function folderList(saves: Save[]): { html: string; buttons: InlineButton
   for (let i = 0; i < shown.length; i += 2) {
     buttons.push(shown.slice(i, i + 2).map((f) => ({ text: `${f.name} (${f.saves.length})`, callback_data: `folder:${folderKey(f.name)}` })));
   }
+  buttons.push([{ text: "📌 Your collections", callback_data: "cols:" }]);
   const more = all.length > shown.length ? `\n\n${all.length - shown.length} smaller folders aren't shown. /saved lists everything.` : "";
   return {
     html: `📂 <b>Your folders</b>\n${saves.length} video${saves.length === 1 ? "" : "s"} in ${all.length} folder${all.length === 1 ? "" : "s"}, filed for you as you save them. Tap one to open it. To move a video, tap 📂 under it, or ask me ("put my pasta videos in Dinner ideas").${more}`,
@@ -230,4 +253,43 @@ export function mergeButtons(saves: Save[], key: string): InlineButton[][] {
   }
   rows.push([{ text: "« Back", callback_data: `folder:${key}` }]);
   return rows;
+}
+
+const COLLECTIONS_ABOUT = "Collections are your own lists, like Date night or Watch later. A video can be in as many as you like, and it stays in its folder too.";
+
+/** /collections: one button per collection, two to a row, then a new one. */
+export function collectionList(collections: Collection[], saves: Save[]): { html: string; buttons: InlineButton[][] } {
+  const add: InlineButton[] = [{ text: "➕ New collection", callback_data: "colnew:" }];
+  if (!collections.length) {
+    return { html: `📌 <b>Your collections</b>\nNone yet. ${COLLECTIONS_ABOUT}\n\nTap 📌 Collect under a video, ask me ("add my pasta videos to Date night"), or make one now.`, buttons: [add] };
+  }
+  const buttons: InlineButton[][] = [];
+  for (let i = 0; i < collections.length; i += 2) {
+    buttons.push(collections.slice(i, i + 2).map((c) => ({ text: `${c.name} (${videosIn(c, saves).length})`, callback_data: `col:${collectionKey(c.name)}` })));
+  }
+  buttons.push(add);
+  return { html: `📌 <b>Your collections</b>\n${COLLECTIONS_ABOUT} Tap one to open it. To add a video, tap 📌 Collect under it, or ask me.`, buttons };
+}
+
+/** One collection: its videos (newest saved first), each linked, with number buttons that open the notes, then rename and delete. */
+export function collectionView(collections: Collection[], saves: Save[], key: string): { html: string; buttons: InlineButton[][] } | null {
+  const collection = findCollection(collections, key);
+  if (!collection) return null;
+  const list = videosIn(collection, saves);
+  const listed = list.slice(0, LISTED);
+  const lines = [`📌 <b>${escapeHtml(collection.name)}</b> · ${list.length} video${list.length === 1 ? "" : "s"}`, ""];
+  if (!list.length) lines.push("Nothing in it yet. Tap 📌 Collect under a video to add it, or ask me (\"add my pasta videos to this\").");
+  listed.forEach((s, i) => lines.push(`${i + 1}. ${linkedTitle(s)} <i>(📂 ${escapeHtml(folderOf(s))}, ${shortDate(s.createdAt)})</i>`));
+  if (list.length > listed.length) lines.push(`…and ${list.length - listed.length} more. Ask me about them any time.`);
+  if (list.length) lines.push("", "Tap a number for its notes. To take a video out, tap 📌 Collect under it.");
+  const buttons: InlineButton[][] = [];
+  for (let i = 0; i < listed.length; i += 6) {
+    buttons.push(listed.slice(i, i + 6).map((s, j) => ({ text: String(i + j + 1), callback_data: `show:${s.id}` })));
+  }
+  buttons.push([
+    { text: "✏️ Rename", callback_data: `crn:${key}` },
+    { text: "🗑 Delete", callback_data: `cdl:${key}` },
+  ]);
+  buttons.push([{ text: "« All collections", callback_data: "cols:" }]);
+  return { html: lines.join("\n"), buttons };
 }

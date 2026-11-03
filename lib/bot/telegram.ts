@@ -3,6 +3,7 @@
  * https://core.telegram.org/bots/api
  */
 import "server-only";
+import { fetchRetry } from "../net";
 import type { InlineButton, Invoice, TelegramApi } from "./types";
 
 /** Telegram rejects messages over 4096 characters. */
@@ -18,15 +19,20 @@ export class TelegramError extends Error {
   }
 }
 
+/** Telegram wants exactly one action per button: a link, or data sent back to us. */
+export function keyboard(buttons: InlineButton[][]): Array<Array<{ text: string; url?: string; callback_data?: string }>> {
+  return buttons.map((row) => row.map((b) => (b.url ? { text: b.text, url: b.url } : { text: b.text, callback_data: b.callback_data })));
+}
+
 export class Telegram implements TelegramApi {
   constructor(private readonly token: string) {}
 
   private async call<T>(method: string, body: Record<string, unknown>): Promise<T> {
-    const res = await fetch(`https://api.telegram.org/bot${this.token}/${method}`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-    });
+    const res = await fetchRetry(
+      `https://api.telegram.org/bot${this.token}/${method}`,
+      { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) },
+      `Telegram ${method}`,
+    );
     const json = (await res.json().catch(() => ({}))) as { ok?: boolean; result?: T; description?: string };
     if (!json.ok) throw new TelegramError(`${method}: ${json.description ?? res.status}`, res.status);
     return json.result as T;
@@ -46,7 +52,7 @@ export class Telegram implements TelegramApi {
       text: html.slice(0, MAX_TEXT),
       parse_mode: "HTML",
       link_preview_options: { is_disabled: true },
-      ...(buttons?.length ? { reply_markup: { inline_keyboard: buttons } } : {}),
+      ...(buttons?.length ? { reply_markup: { inline_keyboard: keyboard(buttons) } } : {}),
     });
     return msg.message_id;
   }
@@ -59,7 +65,7 @@ export class Telegram implements TelegramApi {
         text: html.slice(0, MAX_TEXT),
         parse_mode: "HTML",
         link_preview_options: { is_disabled: true },
-        reply_markup: { inline_keyboard: buttons ?? [] },
+        reply_markup: { inline_keyboard: keyboard(buttons ?? []) },
       });
     } catch (error) {
       // Tapping the same button twice edits to identical text, which Telegram rejects. Harmless.
@@ -69,7 +75,7 @@ export class Telegram implements TelegramApi {
 
   async editButtons(chatId: number, messageId: number, buttons: InlineButton[][]): Promise<void> {
     try {
-      await this.call("editMessageReplyMarkup", { chat_id: chatId, message_id: messageId, reply_markup: { inline_keyboard: buttons } });
+      await this.call("editMessageReplyMarkup", { chat_id: chatId, message_id: messageId, reply_markup: { inline_keyboard: keyboard(buttons) } });
     } catch (error) {
       if (!(error instanceof TelegramError && /not modified/i.test(error.message))) throw error;
     }
@@ -103,6 +109,23 @@ export class Telegram implements TelegramApi {
 
   async refundStars(userId: number, charge: string): Promise<void> {
     await this.call("refundStarPayment", { user_id: userId, telegram_payment_charge_id: charge });
+  }
+
+  /** Subscriptions can only be sold through a link (Telegram allows 30 days, 2592000 seconds). */
+  async createInvoiceLink(invoice: Invoice, period?: number): Promise<string> {
+    return this.call<string>("createInvoiceLink", {
+      title: invoice.title.slice(0, 32),
+      description: invoice.description.slice(0, 255),
+      payload: invoice.payload,
+      provider_token: "",
+      currency: "XTR",
+      prices: [{ label: invoice.title.slice(0, 32), amount: invoice.stars }],
+      ...(period ? { subscription_period: period } : {}),
+    });
+  }
+
+  async editStarSubscription(userId: number, charge: string, canceled: boolean): Promise<void> {
+    await this.call("editUserStarSubscription", { user_id: userId, telegram_payment_charge_id: charge, is_canceled: canceled });
   }
 
   /**

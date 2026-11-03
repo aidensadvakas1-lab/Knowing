@@ -7,6 +7,7 @@
  *
  * The menu is set with GET /api/telegram/setup.
  */
+import { planDeal, type PlanOffer } from "./plan";
 import { priceList } from "./shop";
 import type { Pack } from "./types";
 
@@ -14,6 +15,8 @@ import type { Pack } from "./types";
 export interface Setup {
   limits: { videos: number; questions: number };
   packs: Pack[];
+  /** Knowing Plus, when it's on sale. */
+  plan?: PlanOffer;
   /** Anyone can start it with the bot's link. False means invite-only. */
   open: boolean;
 }
@@ -29,14 +32,16 @@ interface Command {
 
 /** Every command anyone can use, in the order /commands lists them. */
 export const ALL_COMMANDS: Command[] = [
-  { command: "help", short: "How everything works", does: "The welcome and a tap-through guide to everything. /start does the same.", menu: true },
+  { command: "help", short: "How everything works", does: "The welcome, a tap-through guide to everything, this list and your own invite link. /start does the same.", menu: true },
   { command: "commands", short: "Every command explained", does: "This list.", menu: true },
   { command: "folders", short: "Your videos in folders", does: "Your folders as buttons. Tap one to see its videos, then rename it, merge it into another or delete it (its videos move to Unsorted, so nothing is lost). Big folders are split into sections for you.", menu: true },
+  { command: "collections", short: "Your own lists of videos", does: "Your own lists, like Date night or Watch later. A video can be in many and stays in its folder. Add with 📌 Collect or by asking; open one to rename or delete it.", menu: true },
   { command: "saved", short: "Everything you've saved", does: "Every video you've saved, folder by folder, each linked.", menu: true },
   { command: "digest", short: "Weekly flashback on or off", does: "Your weekly flashback: every Sunday, what you saved that week or a few older videos worth another look. /digest on and /digest off turn it on and off. It's off unless you turn it on.", menu: true },
   { command: "memory", short: "What I remember about you", does: "What I remember about you, with a button to forget each thing.", menu: true },
   { command: "usage", short: "What you have left", does: "Your free videos and questions left, and any extras you bought or earned. Free to check. /limits does the same.", menu: true },
-  { command: "buy", short: "Get more videos or questions", does: "Packs of extra videos or questions, paid with Telegram Stars. They never expire.", menu: true },
+  { command: "buy", short: "Get more videos and questions", does: "A refill of videos and questions together, or Knowing Plus, paid with Telegram Stars. Refills never expire.", menu: true },
+  { command: "plan", short: "Knowing Plus: more every day", does: "Knowing Plus: 5 videos and 10 questions every day, starting again at midnight UTC, for a monthly Stars subscription. Shows today's numbers, and cancels or turns renewal back on.", menu: true },
   { command: "invite", short: "Invite friends, earn free videos", does: "Your own invite link. When a friend joins with it, saves a video and asks me something, you get 3 free videos, for up to 5 friends.", menu: true },
   { command: "support", short: "Ask the owner for help", does: "Sends your message to the owner, like /support it didn't answer me. The reply comes here.", menu: true },
   { command: "paysupport", short: "Help with a payment", does: "For a payment problem or a refund, like /paysupport I paid but didn't get my videos." },
@@ -67,7 +72,7 @@ export const WELCOME = `Hi, I'm Knowing. Send me any video and I'll remember exa
 Tap a topic to see how it works. /commands lists everything.`;
 
 const free = (s: Setup) => `${s.limits.videos} free videos and ${s.limits.questions} free questions`;
-const prices = (s: Setup) => (s.packs.length ? `${priceList(s.packs, "videos")}; ${priceList(s.packs, "questions")}` : "");
+const prices = (s: Setup) => (s.packs.length ? priceList(s.packs) : "");
 
 /** One page of the guide behind the buttons under WELCOME. */
 interface GuidePage {
@@ -87,7 +92,7 @@ Instagram, X and Facebook don't let me download from a link, so save the video t
 
 I watch it, listen to it and read what's on screen, then tell you what I kept and which folder it's in.
 
-Under each video: <b>Show steps</b>, <b>Start now</b> (go through it step by step), <b>📂</b> (move it to another folder), <b>Fix something</b> (tell me what I got wrong) and <b>Add what it says</b> (when I couldn't hear it).`,
+Under each video: <b>Show steps</b>, <b>Start now</b> (go through it step by step), <b>📂</b> (move it to another folder), <b>📌 Collect</b> (add it to your own lists), <b>Fix something</b> (tell me what I got wrong) and <b>Add what it says</b> (when I couldn't hear it).`,
   },
   {
     id: "ask",
@@ -107,6 +112,7 @@ I file every video in a folder, like Cooking or Gym. /folders shows them.
 • <b>Move lots at once:</b> just ask, like "put my pasta videos in Dinner ideas".
 • <b>Rename, merge or delete</b> a folder: open it in /folders. Deleting moves its videos to Unsorted, so nothing is lost.
 • <b>Rules:</b> say "anything about cars goes in Car mods" and new videos follow it.
+• <b>Collections:</b> your own lists, like Date night or Watch later. A video can be in as many as you like and stays in its folder. Tap 📌 Collect under a video, or ask me. /collections shows them.
 
 I learn from where you put things, and big folders split into sections by themselves.`,
   },
@@ -120,7 +126,7 @@ If you turn it on, every Sunday I send a short note with what you saved that wee
     id: "limits",
     button: "⭐ Limits and extras",
     text: (s) => `<b>Limits and extras</b>
-You start with ${free(s)}, given once. Asking me to move videos uses a question; the buttons are free. /usage shows what's left, and /buy gets more any time${prices(s) ? `: ${prices(s)}` : ""}. Extras never expire.
+You start with ${free(s)}, given once. Asking me to move videos uses a question; the buttons are free. /usage shows what's left, and /buy gets more any time${prices(s) ? `: ${prices(s)}` : ""}. Extras never expire.${s.plan ? `\n\n<b>${s.plan.name}</b> (/plan): ${planDeal(s.plan)}. Unused ones don't carry over, and you can cancel any time.` : ""}
 
 /invite gives you your own link. When a friend joins with it, saves a video and asks me something, you get 3 free videos (for up to 5 friends).`,
   },
@@ -162,10 +168,11 @@ export function aboutKnowing(s: Setup, owner = false): string {
   const commands = [...ALL_COMMANDS, ...(owner ? OWNER_COMMANDS : [])].map((c) => `/${c.command}: ${c.does}`).join("\n");
   return `What Knowing is: a Telegram bot. People send it videos to keep, and it watches each one (frames, speech and on-screen text, the first 5 minutes), saves exactly what it showed, files it in a folder and reacts like a friend. Later they ask about them in their own words, by text or a voice message (up to a minute), and get the exact thing back with the moment in the video and a link. They can also just chat; it remembers what they tell it and every chat.
 Saving: share from TikTok, YouTube and most apps (Share, then Telegram, then Knowing), paste a link, or send a video file in any format, a GIF or a round video (Telegram lets bots take files up to 20 MB). Instagram, X and Facebook don't let it download from a link, so the file has to be sent. A link from those doesn't use up a video.
-Buttons under a saved video: Show steps; Start now (step by step, for drills and plans); 📂 with its folder's name (move it, or make a new folder); Fix something (say what's wrong and it's corrected); Add what it says (paste the words when it couldn't hear them); Keep both or Replace the old one (when it's a repeat). A save's full card (from Show steps, or a number in a folder) also has Delete.
+Buttons under a saved video: Show steps; Start now (step by step, for drills and plans); 📂 with its folder's name (move it, or make a new folder); 📌 Collect (tick the collections it's in, or make a new one); Fix something (say what's wrong and it's corrected); Add what it says (paste the words when it couldn't hear them); Keep both or Replace the old one (when it's a repeat). A save's full card (from Show steps, or a number in a folder) also has Delete.
 Folders: every video is in one. It picks the folder, going by their folders, what they've moved where and their rules. They move a video with 📂, or many at once by asking ("put my pasta videos in Dinner ideas"), rename, merge or delete a folder in /folders (deleting moves its videos to Unsorted) or by asking, and set rules by asking ("anything about cars goes in Car mods"). Big folders split into sections by themselves.
+Collections: their own lists (up to 30), apart from folders; nothing is added on its own. Asking to add or take out videos uses a question. Deleting one keeps its videos.
 Weekly flashback: off unless they turn it on; Sundays around 17:00 UTC; what they saved that week, or older videos worth another look.
-Limits: everyone starts with ${free(s)}, given once; they don't refill. Each message to the AI uses a question (asking it to move or rename things too); buttons, commands and checking what's left don't. ${s.packs.length ? `After that, packs paid with Telegram Stars: ${prices(s)}. They never expire and are used after the free ones.` : "Buying more is turned off right now."} Friends: their own /invite link earns 3 free videos per friend who joins, saves a video and asks something (up to 5 friends). ${s.open ? "Anyone can start Knowing with its link." : "Knowing is invite-only for now: people join with an invite link."}
+Limits: everyone starts with ${free(s)}, given once; they don't refill. Each message to the AI uses a question (asking it to move or rename things too); buttons, commands and checking what's left don't. ${s.packs.length ? `After that, packs paid with Telegram Stars, each with videos and questions together (one purchase): ${prices(s)}. They never expire and are used after the free ones.` : "Buying more is turned off right now."}${s.plan ? ` Or ${s.plan.name} (/plan), a Stars subscription: ${planDeal(s.plan)}, used before anything else; unused ones don't carry over; renews every 30 days, cancel any time; fair use: very heavy use in a month drops it to ${s.plan.slowVideos} video and ${s.plan.slowQuestions} questions a day, then pauses it until it renews.` : ""} Friends: their own /invite link earns 3 free videos per friend who joins, saves a video and asks something (up to 5 friends). ${s.open ? "Anyone can start Knowing with its link." : "Knowing is invite-only for now: people join with an invite link."}
 Payments: /paysupport for problems or refunds; /terms has the rules. Telegram's own support can't help with purchases in a bot.
 Commands:
 ${commands}`;

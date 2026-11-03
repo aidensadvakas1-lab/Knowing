@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   ASK_SYSTEM_CHARS,
   HISTORY_CHARS,
+  packPrice,
   PAYOUT_PER_STAR,
   pricedPacks,
   REWRITE_TEXT_CHARS,
@@ -17,6 +18,8 @@ import { RULES_KEPT } from "@/lib/bot/folders";
 import { aboutKnowing } from "@/lib/bot/profile";
 import { PACK_SIZES } from "@/lib/bot/shop";
 import { newUser } from "@/lib/bot/store";
+import { COLLECTIONS_KEPT } from "@/lib/bot/collections";
+import { PLAN } from "@/lib/bot/plan";
 import type { Save } from "@/lib/bot/types";
 
 const long = (n: number) => "word ".repeat(Math.ceil(n / 5)).slice(0, n);
@@ -43,25 +46,21 @@ describe("worst-case costs", () => {
   it("never sells a pack for less than its worst case costs, with room to spare", () => {
     for (const pack of pricedPacks()) {
       const pays = pack.stars * PAYOUT_PER_STAR;
-      expect(worstPackCost(pack.kind, pack.count), `${pack.count} ${pack.kind}`).toBeLessThanOrEqual(pays * SAFETY);
+      expect(worstPackCost(pack), `${pack.videos} + ${pack.questions}`).toBeLessThanOrEqual(pays * SAFETY);
     }
   });
 
-  it("puts every pack size on sale at a round price", () => {
+  it("puts every bundle on sale at a round price", () => {
     const packs = pricedPacks();
-    expect(packs.map((p) => `${p.count} ${p.kind}`)).toEqual([...PACK_SIZES.videos.map((n) => `${n} videos`), ...PACK_SIZES.questions.map((n) => `${n} questions`)]);
+    expect(packs.map((p) => ({ videos: p.videos, questions: p.questions }))).toEqual(PACK_SIZES);
     for (const p of packs) expect(p.stars % 50).toBe(0);
   });
 
-  it("keeps the prices Aiden set: voice questions, timestamps, folders and flashbacks didn't change them", () => {
-    expect(pricedPacks().map((p) => `${p.count} ${p.kind}: ${p.stars}`)).toEqual([
-      "10 videos: 150",
-      "20 videos: 300",
-      "50 videos: 750",
-      "20 questions: 150",
-      "40 questions: 300",
-      "100 questions: 750",
-    ]);
+  it("sells one refill, videos and questions together, at the price Aiden picked", () => {
+    expect(pricedPacks().map((p) => `${p.videos} videos + ${p.questions} questions: ${p.stars}`)).toEqual(["5 videos + 10 questions: 150"]);
+    // Bigger bundles would still be priced from their worst case, at the same price per item.
+    expect(packPrice({ videos: 10, questions: 20 })).toBe(300);
+    expect(packPrice({ videos: 25, questions: 50 })).toBe(750);
   });
 
   it("keeps one video and one question cheap enough to matter", () => {
@@ -77,7 +76,7 @@ describe("the limits the worst case relies on", () => {
   /** As many filing rules as are kept, as long as they can be. */
   const rules = Array.from({ length: RULES_KEPT }, (_, i) => ({ folder: `${long(36)}${i}`, about: long(120) }));
   /** Everything Knowing knows about itself, for the owner (the longest version). */
-  const about = aboutKnowing({ limits: { videos: 5, questions: 10 }, packs: pricedPacks(), open: true }, true);
+  const about = aboutKnowing({ limits: { videos: 5, questions: 10 }, packs: pricedPacks(), plan: PLAN, open: true }, true);
 
   it("caps the text sent with a video's frames", () => {
     const prompt = buildWatchPrompt({ caption: long(9_000), transcript: long(60_000), screenText: long(9_000), note: long(4_096), frameCount: 20, facts: user.facts, saves });
@@ -100,6 +99,15 @@ describe("the limits the worst case relies on", () => {
     const system = buildAskSystem(user, saves, retrieved, "2026-11-02", { name: long(200), memories, usage: long(600), rules, about });
     expect(about.length).toBeLessThan(6_000);
     expect(system.length).toBeLessThanOrEqual(ASK_SYSTEM_CHARS);
+    expect(system).toContain("THEIR SAVES THAT MATCH THIS QUESTION:\n[id s0]");
+  });
+
+  it("still fits the best match when they have every collection there can be, each full", () => {
+    const retrieved = saves.slice(0, 6).map((save) => ({ save, passages: [long(2_000), long(2_000)] }));
+    const collections = Array.from({ length: COLLECTIONS_KEPT }, (_, i) => ({ name: `${long(36)}${i}`, ids: saves.map((s) => s.id) }));
+    const system = buildAskSystem(user, saves, retrieved, "2026-11-02", { name: long(200), memories, usage: long(600), rules, collections, about });
+    expect(system.length).toBeLessThanOrEqual(ASK_SYSTEM_CHARS);
+    expect(system).toContain("THEIR COLLECTIONS");
     expect(system).toContain("THEIR SAVES THAT MATCH THIS QUESTION:\n[id s0]");
   });
 

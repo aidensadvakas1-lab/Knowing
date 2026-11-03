@@ -62,6 +62,9 @@ alter table saves add column if not exists folder text not null default '';
 -- Their filing rules ([{folder, about}]), like "anything about cars goes in Car mods".
 alter table bot_users add column if not exists filing jsonb not null default '[]';
 
+-- Their collections ([{name, ids}]): lists they make themselves, like Date night. A video can be in many.
+alter table bot_users add column if not exists collections jsonb not null default '[]';
+
 -- Retrieval (RAG): each save is split into chunks with an embedding (meaning)
 -- and a full-text index (exact words). match_chunks merges both rankings.
 create extension if not exists vector;

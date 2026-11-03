@@ -66,13 +66,13 @@ export interface Usage {
   questions: number;
 }
 
-/** What can be bought with Telegram Stars. */
+/** The two things that are limited: videos watched and questions asked. */
 export type PackKind = "videos" | "questions";
 
-/** A pack on sale: how many of what, for how many Stars. */
+/** A pack on sale: videos and questions together in one purchase, for how many Stars. */
 export interface Pack {
-  kind: PackKind;
-  count: number;
+  videos: number;
+  questions: number;
   stars: number;
 }
 
@@ -80,19 +80,41 @@ export interface Pack {
 export interface Payment {
   /** Telegram's id for the payment, needed to refund it. */
   charge: string;
-  kind: PackKind;
-  /** How many it added. */
-  count: number;
+  /** How many of each it added. */
+  videos: number;
+  questions: number;
   stars: number;
   at: string;
+  /** A Knowing Plus payment (it added no extras). */
+  plan?: boolean;
 }
 
-/** Extras bought with Stars. Used after the free ones, and they never expire. */
+/** Knowing Plus (plan.ts): videos and questions every day, renewed monthly with Telegram Stars. */
+export interface Plan {
+  /** When the paid month ends (ISO). Telegram renews it then unless it's canceled. */
+  until: string;
+  /** The first payment's id, which names the subscription (to cancel or turn renewal back on). */
+  first: string;
+  /** The latest payment's id, to refund it. */
+  charge: string;
+  stars: number;
+  /** The UTC day (YYYY-MM-DD) the counts below are for. */
+  day: string;
+  videos: number;
+  questions: number;
+  /** What this month has really cost so far, in dollars, for the fair-use guard. */
+  cost: number;
+  /** Renewal is off; it still works until `until`. */
+  canceled: boolean;
+}
+
+/** Extras bought with Stars, and the plan if they have one. Extras are used after the free ones and never expire. */
 export interface Wallet {
   videos: number;
   questions: number;
   /** Most recent payments, newest last. */
   paid: Payment[];
+  plan: Plan | null;
 }
 
 /** Everything kept per Telegram user besides their saves. */
@@ -139,6 +161,13 @@ export interface FilingRule {
   folder: string;
   /** What goes there, in their words. */
   about: string;
+}
+
+/** A list they made themselves, like Date night. A video can be in many, and stays in its folder too. */
+export interface Collection {
+  name: string;
+  /** The saves in it, oldest added first. */
+  ids: string[];
 }
 
 /** One scroll session: videos shared close together. Which videos is worked out from the saves' times. */
@@ -189,6 +218,10 @@ export interface Store {
   getFiling(userId: number): Promise<FilingRule[]>;
   /** Writes only the filing rules, creating the row if needed. Throws if the column is missing. */
   saveFiling(userId: number, rules: FilingRule[]): Promise<void>;
+  /** Their collections. Throws if the collections column is missing (docs/supabase.sql not run again). */
+  getCollections(userId: number): Promise<Collection[]>;
+  /** Writes only the collections, creating the row if needed. Throws if the column is missing. */
+  saveCollections(userId: number, collections: Collection[]): Promise<void>;
   /** Their invite record. Throws if the referral column is missing (docs/supabase.sql not run again). */
   getReferral(userId: number): Promise<Referral>;
   /** Writes only the invite record, creating the row if needed. */
@@ -243,6 +276,10 @@ export interface Answer {
   renames: Array<{ from: string; to: string }>;
   /** Filing rules they asked for. */
   rules: FilingRule[];
+  /** Videos they asked to add to a collection (a new one or one they have). */
+  collects: Array<{ collection: string; ids: string[] }>;
+  /** Videos they asked to take out of a collection. */
+  uncollects: Array<{ collection: string; ids: string[] }>;
 }
 
 /** How a new save relates to what's already saved. */
@@ -272,6 +309,8 @@ export interface AskInput {
   usage?: string;
   /** Their filing rules, so the answer knows them and can change them. */
   rules?: FilingRule[];
+  /** Their collections, so the answer knows what's in them and can add to them. */
+  collections?: Collection[];
   /** Everything Knowing is and does (profile.ts aboutKnowing), so questions about the bot get real answers. */
   about?: string;
 }
@@ -296,6 +335,8 @@ export interface Brain {
 export interface InlineButton {
   text: string;
   callback_data: string;
+  /** Opens a link instead (callback_data is then ignored), like a payment link. */
+  url?: string;
 }
 
 /** A bill for something paid in Telegram Stars. */
@@ -320,4 +361,8 @@ export interface TelegramApi {
   /** Telegram asks right before charging; it has to be answered within 10 seconds. */
   answerPreCheckout(queryId: string, ok: boolean, error?: string): Promise<void>;
   refundStars(userId: number, charge: string): Promise<void>;
+  /** A payment link; with `period` (seconds) it's a subscription that renews on its own. */
+  createInvoiceLink(invoice: Invoice, period?: number): Promise<string>;
+  /** Turn a Stars subscription's renewal off (canceled) or back on. */
+  editStarSubscription(userId: number, charge: string, canceled: boolean): Promise<void>;
 }

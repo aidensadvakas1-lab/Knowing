@@ -17,8 +17,9 @@ save captions or repeat themselves, and you can talk to it about anything.
 | Tap **Fix something** | Tell it what it got wrong and the save is rewritten |
 | Tap **Show steps** / **Start now** | The full steps, or a step-by-step run with **Next** / **Back** that counts each time you finish |
 | Tap **📂 Cooking** under a video | Shows the folder it's in. Tap to move it: pick another folder or **➕ New folder** and type a name. Free (no AI) |
+| Tap **📌 Collect** under a video | Your collections, ticked where the video is in one. Tap to add it or take it out, or **➕ New collection** and type a name. The video stays in its folder. Free (no AI) |
 | Tap **🗑 Delete** on a save's card | Deletes that one video, after asking |
-| `/start` or `/help` | A short welcome with topic buttons (saving, asking, folders, flashback, limits, your data, all commands) that open a few lines each |
+| `/start` or `/help` | A short welcome with topic buttons (saving, asking, folders, flashback, limits, your data, all commands) that open a few lines each, then the list of every command and their own invite link (the owner gets the bot's main link) |
 | `/commands` | Every command and what it does (the owner also sees `/refund` and `/reply`) |
 | Ask about the bot ("how do I move a video?", "how much is a pack?") | Answered from what Knowing knows about itself: every command, button and feature, and the real limits and prices from your settings (`lib/bot/profile.ts aboutKnowing`, built from the same list as `/commands`, so it's never out of date) |
 | Ask a question | Answers from the matching saves and names them, each linked to its video (ask "send me the link to that video" and it's right there). If nothing matches exactly, it adapts the closest saves to your situation and says which parts are straight from your videos. Up to 5 other saves on the same topic are listed under **Videos related to this topic**, linked, so you can rewatch them |
@@ -29,11 +30,13 @@ save captions or repeat themselves, and you can talk to it about anything.
 | Mention something about you ("I'm Gold on PC", "I love Ferraris") | Remembers it, so you never repeat it. Every chat is also kept and searchable, so "what did I tell you about my tryout?" works weeks later |
 | `/memory` | Shows what it remembers about you, with a button to forget each one |
 | `/folders` (or `/tags`) | Every video is in one folder. Claude picks it as it's saved, the way you would: it follows your rules, then goes by what's in each folder, so if you made "Japan trip" and moved Tokyo videos in, the next Tokyo video goes there. Tap a folder for its videos (in sections like Legs and Arms once it has 8 or more), with dates, links and a button per video for its notes, plus **Rename**, **Merge** and **Delete** (its videos move to Unsorted, so nothing is lost) |
+| `/collections` (or `/lists`) | Lists you make yourself, like Date night or Watch later, up to 30. Unlike folders, a video can be in as many as you like, and nothing is added on its own. Open one for its videos (with their folder), plus **Rename** (to a name you already have merges them) and **Delete** (the videos stay saved). Or ask in chat: "add my pasta videos to Date night", "take the ramen one out of Japan" (uses a question) |
 | Ask "put my pasta videos in Dinner ideas", "rename Gym to Workouts" or "anything about cars goes in Car mods" | Moves them, renames the folder, or saves a filing rule that new videos follow, and lists what it did under the answer. It uses a question, like any message to the AI; the buttons are free. A folder's rule shows on its page, with **Stop the rule** |
 | `/saved` | Lists everything, grouped by folder, each linked to its video |
 | `/digest` | The weekly flashback: off until you turn it on (it's offered once, at `/start` or after the next save). Every Sunday around 17:00 UTC: what you saved that week by folder plus one from about a month ago, or, in a week with no saves, a few older ones (about a week, a month and three months old). No AI, so it's free. It pauses after 3 in a row with no reply, and `/digest off` stops it |
 | `/usage` (or ask "how many questions do I have left?") | Shows the free videos and questions left, any extras you bought, and buttons to buy more. Checking never uses up a question |
-| `/buy` | Every pack on sale, any time, even before the free ones run out |
+| `/buy` | The refill pack (videos and questions together) and Knowing Plus, any time, even before the free ones run out |
+| `/plan` | Knowing Plus: 5 videos and 10 questions every day for 500 ⭐ a month. Shows today's numbers and when it renews, with a button to cancel renewal or turn it back on |
 | `/invite` | Your own invite link. When a friend joins with it, saves a video and asks something, you get 3 free videos, for up to 5 friends. (For the owner, `/invite` gives the main link and the spots used) |
 
 If a video is mostly talking and audio isn't available, the card offers **Add what it says**: paste the caption and the save is rewritten to be exact.
@@ -122,7 +125,8 @@ Add these in Vercel under **Project Settings → Environment Variables**, then r
 | `KNOWING_PUBLIC_SPOTS` | Optional. The most people who can join while it's public (default: no limit) |
 | `KNOWING_INVITE_SPOTS` | Optional. How many people can join with the invite link when it's invite-only (default 20) |
 | `KNOWING_INVITE_CODE` | Optional. Your own code for the invite link, 6 to 64 letters, numbers, `_` or `-`. Change it to stop an old link working |
-| `KNOWING_PACK_STARS` | Optional. `0` turns buying off. Any other value is ignored: prices come from each pack's worst case |
+| `KNOWING_PACK_STARS` | Optional. `0` turns buying off (the refill and Knowing Plus). Any other value is ignored: prices come from each pack's worst case |
+| `KNOWING_PLAN` | Optional. `0` stops new Knowing Plus sign-ups. People already on it keep it until their month ends |
 | `KNOWING_CRON_SECRET` | For wrap-ups (step 7). Another random string you make up, different from the webhook secret |
 
 ### 5. Connect Telegram to your app
@@ -134,7 +138,7 @@ https://<your-app>.vercel.app/api/telegram/setup?key=<TELEGRAM_WEBHOOK_SECRET>
 ```
 
 It should say `"ok": true` and your bot's name. This points Telegram at your app and fills in the
-bot's commands menu (`/help`, `/commands`, `/folders`, `/saved`, `/digest`, `/memory`, `/usage`, `/buy`, `/invite`, `/support`, `/delete`) and the text people see
+bot's commands menu (`/help`, `/commands`, `/folders`, `/collections`, `/saved`, `/digest`, `/memory`, `/usage`, `/buy`, `/plan`, `/invite`, `/support`, `/delete`) and the text people see
 before they tap Start. Running it again is harmless, and it's needed once after updates that change
 what Telegram sends the bot (like payments).
 
@@ -181,17 +185,17 @@ adds. Worst case, 3 videos cost about 50¢ of AI, for a person who's actually us
 
 ### Sell extra videos and questions (Telegram Stars)
 
-People can buy a pack any time with `/buy` (or the buttons under `/usage`), and the message they
-get when they run out offers that kind's packs:
+People can buy the refill pack any time with `/buy` (or the button under `/usage`), and the message
+they get when they run out offers it. It's one purchase with videos and questions together, and
+there's just one, so the choice is easy:
 
 | Pack | Price | Worst case it can cost you | You get paid about |
 |---|---|---|---|
-| 10 videos | 150 ⭐ | $1.62 | $1.95 |
-| 20 videos | 300 ⭐ | $3.24 | $3.90 |
-| 50 videos | 750 ⭐ | $8.10 | $9.75 |
-| 20 questions | 150 ⭐ | $1.63 | $1.95 |
-| 40 questions | 300 ⭐ | $3.27 | $3.90 |
-| 100 questions | 750 ⭐ | $8.16 | $9.75 |
+| 5 videos + 10 questions | 150 ⭐ | $1.63 | $1.95 |
+
+To sell more sizes, add them to `PACK_SIZES` in [`lib/bot/shop.ts`](../lib/bot/shop.ts): each is
+priced the same way (10 + 20 would be 300 ⭐, 25 + 50 would be 750 ⭐). Packs bought before bundles
+still count and can still be refunded.
 
 A Star costs the buyer about 2 cents, so 150 ⭐ is about $3. Prices are worked out in
 [`lib/bot/costs.ts`](../lib/bot/costs.ts) so a pack's worst case uses at most 85% of what it pays,
@@ -211,6 +215,34 @@ What you get: the bot messages you about each payment, with a ready-to-send refu
 payment_id` gives the Stars back and removes the pack. People can send `/support` or `/paysupport`
 with a message, which reaches you with their id; answer with `/reply user_id your message`. `/terms`
 shows the terms Telegram asks for.
+
+### Knowing Plus (monthly plan)
+
+Instead of buying refills, people can subscribe with `/plan` (or the ⭐ Knowing Plus button under
+`/buy`, `/usage` and the out-of-videos message): **5 videos + 10 questions every day for 500 ⭐ a
+month**. The counts start again at midnight UTC and unused ones don't carry over. Telegram renews
+it every 30 days on its own; `/plan` cancels renewal (it keeps working until the month ends) or
+turns it back on. People can also cancel it in Telegram under Settings, My Stars. The plan is used
+first, then the free ones, then refills.
+
+It can't lose money, because what each use really costs is measured, not guessed
+([`lib/bot/meter.ts`](../lib/bot/meter.ts) adds up the tokens every AI call reports, and the
+audio heard). A month may spend 85% of what 500 ⭐ pays (about $5.50 of $6.50):
+
+| This month's real cost | What they get |
+|---|---|
+| Under 70% (about $3.90) | 5 videos + 10 questions a day |
+| 70% to 100% | 1 video + 3 questions a day, and they're told once |
+| Over 100% | Paused until it renews, and you and they are told. Their free ones and refills still work |
+
+At typical use (about 7 cents a video, 2.5 cents a question) using all of it every day costs about
+60 cents a day, so someone who does reaches the slow-down after about a week and the pause after
+about two and a half. Most people use far less and never see either. `/terms` says so.
+
+It's sold through a payment link (Telegram only allows subscriptions that way), with no setup of
+its own: it lives in the same `wallet` column, so no SQL. You get a message for each first payment
+and each renewal, with a refund command. `/refund user_id payment_id` on a plan payment gives the
+Stars back, ends the plan and turns its renewal off.
 
 Getting the money out: Stars collect in the bot's balance. Third-party write-ups put the payout at
 about 1.3 cents a Star after the app stores and Telegram take their share, withdrawable from 1,000
@@ -245,12 +277,19 @@ switched off automatically.
 
 - **Free amount, given once.** Each person gets `KNOWING_FREE_VIDEOS` videos and
   `KNOWING_FREE_QUESTIONS` questions (5 and 10 by default). They never refill, and `/delete`
-  doesn't hand out new ones. After that it's packs. The owner has no limits.
+  doesn't hand out new ones. After that it's packs or Knowing Plus. The owner has no limits.
+- **Dropped connections.** Every call to Supabase, Telegram, OpenAI, the TikTok resolver and video
+  downloads is tried up to 3 times when the connection drops or the service is busy (`lib/net.ts`;
+  the Anthropic SDK retries on its own). If a video or a question still fails, it's given back
+  (free or bought) and the person is told it didn't use one up. A video that was saved stays saved,
+  even if the reply after it breaks.
 - **Alerts.** When something breaks, the owner gets a Telegram message from the bot saying what
-  (at most one every 5 minutes). If the AI credit runs out, users are told the bot is paused, not broken.
+  (at most one every 5 minutes), with which service and why, like
+  `Supabase POST saves: couldn't connect after 3 tries (ECONNRESET)`. If the AI credit runs out,
+  users are told the bot is paused, not broken.
 - **Delete.** `/delete` wipes a person's saves, chats, search index and memory after they confirm.
 - **Already set up before these existed?** Run [`supabase.sql`](supabase.sql) again. It only adds
-  what's missing. Folders need its `folder` and `filing` columns: until then videos still save
+  what's missing. Folders need its `folder` and `filing` columns, and collections its `collections` column: until then videos still save
   (filed by topic, like before), but moving them says it isn't set up yet and the owner gets an alert.
 
 ## How it works
