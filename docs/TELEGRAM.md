@@ -35,7 +35,8 @@ save captions or repeat themselves, and you can talk to it about anything.
 | `/saved` | Lists everything, grouped by folder, each linked to its video |
 | `/digest` | The weekly flashback: off until you turn it on (it's offered once, at `/start` or after the next save). Every Sunday around 17:00 UTC: what you saved that week by folder plus one from about a month ago, or, in a week with no saves, a few older ones (about a week, a month and three months old). No AI, so it's free. It pauses after 3 in a row with no reply, and `/digest off` stops it |
 | `/usage` (or ask "how many questions do I have left?") | Shows the free videos and questions left, any extras you bought, and buttons to buy more. Checking never uses up a question |
-| `/buy` | The refill pack (videos and questions together), any time, even before the free ones run out |
+| `/buy` | The refill pack (videos and questions together) and Knowing Plus, any time, even before the free ones run out |
+| `/plan` | Knowing Plus: 5 videos and 10 questions every day for 500 ⭐ a month. Shows today's numbers and when it renews, with a button to cancel renewal or turn it back on |
 | `/invite` | Your own invite link. When a friend joins with it, saves a video and asks something, you get 3 free videos, for up to 5 friends. (For the owner, `/invite` gives the main link and the spots used) |
 
 If a video is mostly talking and audio isn't available, the card offers **Add what it says**: paste the caption and the save is rewritten to be exact.
@@ -124,7 +125,8 @@ Add these in Vercel under **Project Settings → Environment Variables**, then r
 | `KNOWING_PUBLIC_SPOTS` | Optional. The most people who can join while it's public (default: no limit) |
 | `KNOWING_INVITE_SPOTS` | Optional. How many people can join with the invite link when it's invite-only (default 20) |
 | `KNOWING_INVITE_CODE` | Optional. Your own code for the invite link, 6 to 64 letters, numbers, `_` or `-`. Change it to stop an old link working |
-| `KNOWING_PACK_STARS` | Optional. `0` turns buying off. Any other value is ignored: prices come from each pack's worst case |
+| `KNOWING_PACK_STARS` | Optional. `0` turns buying off (the refill and Knowing Plus). Any other value is ignored: prices come from each pack's worst case |
+| `KNOWING_PLAN` | Optional. `0` stops new Knowing Plus sign-ups. People already on it keep it until their month ends |
 | `KNOWING_CRON_SECRET` | For wrap-ups (step 7). Another random string you make up, different from the webhook secret |
 
 ### 5. Connect Telegram to your app
@@ -136,7 +138,7 @@ https://<your-app>.vercel.app/api/telegram/setup?key=<TELEGRAM_WEBHOOK_SECRET>
 ```
 
 It should say `"ok": true` and your bot's name. This points Telegram at your app and fills in the
-bot's commands menu (`/help`, `/commands`, `/folders`, `/collections`, `/saved`, `/digest`, `/memory`, `/usage`, `/buy`, `/invite`, `/support`, `/delete`) and the text people see
+bot's commands menu (`/help`, `/commands`, `/folders`, `/collections`, `/saved`, `/digest`, `/memory`, `/usage`, `/buy`, `/plan`, `/invite`, `/support`, `/delete`) and the text people see
 before they tap Start. Running it again is harmless, and it's needed once after updates that change
 what Telegram sends the bot (like payments).
 
@@ -214,6 +216,34 @@ payment_id` gives the Stars back and removes the pack. People can send `/support
 with a message, which reaches you with their id; answer with `/reply user_id your message`. `/terms`
 shows the terms Telegram asks for.
 
+### Knowing Plus (monthly plan)
+
+Instead of buying refills, people can subscribe with `/plan` (or the ⭐ Knowing Plus button under
+`/buy`, `/usage` and the out-of-videos message): **5 videos + 10 questions every day for 500 ⭐ a
+month**. The counts start again at midnight UTC and unused ones don't carry over. Telegram renews
+it every 30 days on its own; `/plan` cancels renewal (it keeps working until the month ends) or
+turns it back on. People can also cancel it in Telegram under Settings, My Stars. The plan is used
+first, then the free ones, then refills.
+
+It can't lose money, because what each use really costs is measured, not guessed
+([`lib/bot/meter.ts`](../lib/bot/meter.ts) adds up the tokens every AI call reports, and the
+audio heard). A month may spend 85% of what 500 ⭐ pays (about $5.50 of $6.50):
+
+| This month's real cost | What they get |
+|---|---|
+| Under 70% (about $3.90) | 5 videos + 10 questions a day |
+| 70% to 100% | 1 video + 3 questions a day, and they're told once |
+| Over 100% | Paused until it renews, and you and they are told. Their free ones and refills still work |
+
+At typical use (about 7 cents a video, 2.5 cents a question) using all of it every day costs about
+60 cents a day, so someone who does reaches the slow-down after about a week and the pause after
+about two and a half. Most people use far less and never see either. `/terms` says so.
+
+It's sold through a payment link (Telegram only allows subscriptions that way), with no setup of
+its own: it lives in the same `wallet` column, so no SQL. You get a message for each first payment
+and each renewal, with a refund command. `/refund user_id payment_id` on a plan payment gives the
+Stars back, ends the plan and turns its renewal off.
+
 Getting the money out: Stars collect in the bot's balance. Third-party write-ups put the payout at
 about 1.3 cents a Star after the app stores and Telegram take their share, withdrawable from 1,000
 Stars, 21 days after they were earned, as TON (a cryptocurrency) through Fragment. Check the current
@@ -247,7 +277,7 @@ switched off automatically.
 
 - **Free amount, given once.** Each person gets `KNOWING_FREE_VIDEOS` videos and
   `KNOWING_FREE_QUESTIONS` questions (5 and 10 by default). They never refill, and `/delete`
-  doesn't hand out new ones. After that it's packs. The owner has no limits.
+  doesn't hand out new ones. After that it's packs or Knowing Plus. The owner has no limits.
 - **Dropped connections.** Every call to Supabase, Telegram, OpenAI, the TikTok resolver and video
   downloads is tried up to 3 times when the connection drops or the service is busy (`lib/net.ts`;
   the Anthropic SDK retries on its own). If a video or a question still fails, it's given back

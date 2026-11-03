@@ -1,10 +1,12 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { charge } from "@/lib/bot/meter";
 import { folderKey } from "@/lib/bot/folders";
 import { asksAboutUsage, folderNameFrom, handleUpdate, inviteCode, isOutOfCredit, limitText, namingFor, parseAllowed, readNaming, secretMatches, spend, usageText, type Deps, type Update } from "@/lib/bot/handle";
 import { MemoryRetriever } from "@/lib/bot/rag";
 import { MemoryStore } from "@/lib/bot/store";
 import { ALL_COMMANDS, COMMANDS, WELCOME } from "@/lib/bot/profile";
 import { readReferral, referralCode } from "@/lib/bot/referral";
+import { PLAN, type PlanOffer } from "@/lib/bot/plan";
 import { NoTranscription, type Answer, type Brain, type InlineButton, type Media, type Pack, type Save, type SaveDraft, type TelegramApi, type WatchResult } from "@/lib/bot/types";
 
 /** Packs on sale in these tests. */
@@ -17,7 +19,7 @@ const FRIEND = 8;
 
 interface Sent { chatId: number; html: string; buttons?: InlineButton[][]; id: number }
 
-function setup(opts: { answer?: Partial<Answer>; draft?: Partial<SaveDraft>; watch?: (saves: Save[]) => Partial<WatchResult>; limits?: Deps["limits"]; spots?: number; packs?: Pack[]; heard?: { text: string; cut: boolean }; newcomers?: boolean; open?: { cap: number } } = {}) {
+function setup(opts: { answer?: Partial<Answer>; draft?: Partial<SaveDraft>; watch?: (saves: Save[]) => Partial<WatchResult>; limits?: Deps["limits"]; spots?: number; packs?: Pack[]; heard?: { text: string; cut: boolean }; newcomers?: boolean; open?: { cap: number }; plan?: PlanOffer } = {}) {
   const sent: Sent[] = [];
   const edits: Sent[] = [];
   /** Buttons changed in place (the text stays). */
@@ -32,6 +34,8 @@ function setup(opts: { answer?: Partial<Answer>; draft?: Partial<SaveDraft>; wat
     sendInvoice: vi.fn(async () => {}),
     answerPreCheckout: vi.fn(async () => {}),
     refundStars: vi.fn(async () => {}),
+    createInvoiceLink: vi.fn(async () => "https://t.me/$plan-link"),
+    editStarSubscription: vi.fn(async () => {}),
   };
   const draft: SaveDraft = { title: "Split dodge drill", topic: "Lacrosse, Dodging", type: "drill", summary: "Beat a defender.", steps: ["Jog", "Plant", "Split"], details: "", needsWords: false, ...opts.draft };
   const brain: Brain = {
@@ -50,7 +54,7 @@ function setup(opts: { answer?: Partial<Answer>; draft?: Partial<SaveDraft>; wat
   if (!opts.newcomers) for (const id of [7, FRIEND]) store.digests.set(id, { on: false, offered: true, sent: "", quiet: 0 });
   const retriever = new MemoryRetriever();
   const alerts: string[] = [];
-  const deps: Deps = { tg, store, brain, media, retriever, isAllowed: (id) => id === 7 || id === FRIEND, ownerId: 7, invite: { code: "join-abc123", spots: opts.spots ?? 10, key: "test-key", link: async (start = "join-abc123") => `https://t.me/KnowingTestBot${start ? `?start=${start}` : ""}` }, limits: opts.limits ?? { videos: 50, questions: 50 }, packs: opts.packs ?? PACKS, alert: async (t) => void alerts.push(t), open: opts.open };
+  const deps: Deps = { tg, store, brain, media, retriever, isAllowed: (id) => id === 7 || id === FRIEND, ownerId: 7, invite: { code: "join-abc123", spots: opts.spots ?? 10, key: "test-key", link: async (start = "join-abc123") => `https://t.me/KnowingTestBot${start ? `?start=${start}` : ""}` }, limits: opts.limits ?? { videos: 50, questions: 50 }, packs: opts.packs ?? PACKS, alert: async (t) => void alerts.push(t), open: opts.open, plan: opts.plan };
   return { deps, sent, edits, rebuttons, store, brain, media, retriever, alerts };
 }
 
@@ -283,7 +287,7 @@ describe("buying extras with Stars", () => {
     const { deps, sent } = setup({ limits: { videos: 1, questions: 1 } });
     await handleUpdate(text("https://vm.tiktok.com/one/", FRIEND), deps);
     await handleUpdate(text("https://vm.tiktok.com/two/", FRIEND), deps);
-    expect(sent.at(-1)?.html).toBe("You're out of videos (your free one is used up), so I didn't save this one.\n\nGet more to keep going. Each pack has videos and questions, and they never expire.");
+    expect(sent.at(-1)?.html).toBe("You're out of videos (your free one is used up), so I didn't save this one.\n\nGet more to keep going. A refill has videos and questions together, and it never expires.");
     expect(sent.at(-1)?.buttons).toEqual([[{ text: "5 videos + 10 questions, 150 ⭐", callback_data: "buy:5:10" }], [{ text: "10 videos + 20 questions, 300 ⭐", callback_data: "buy:10:20" }]]);
     await handleUpdate(tap("buy:10:20", 100, FRIEND), deps);
     expect(deps.tg.sendInvoice).toHaveBeenCalledWith(FRIEND, expect.objectContaining({ title: "10 videos + 20 questions", payload: "bundle:10:20:300", stars: 300 }));
@@ -295,7 +299,7 @@ describe("buying extras with Stars", () => {
   it("sells any pack with /buy, before the free ones run out", async () => {
     const { deps, sent } = setup();
     await handleUpdate(text("/buy", FRIEND), deps);
-    expect(sent.at(-1)?.html).toContain("Pick a pack.");
+    expect(sent.at(-1)?.html).toContain("<b>Refill:</b> 5 videos + 10 questions for 150 ⭐");
     expect(datas(sent.at(-1)?.buttons)).toEqual(["buy:5:10", "buy:10:20"]);
     await handleUpdate(tap("buy:5:10", 100, FRIEND), deps);
     expect(deps.tg.sendInvoice).toHaveBeenCalledWith(FRIEND, expect.objectContaining({ title: "5 videos + 10 questions", stars: 150 }));
@@ -377,7 +381,7 @@ describe("buying extras with Stars", () => {
     await handleUpdate(paid("ch1"), deps);
     await handleUpdate(text("/refund 99 ch1"), deps);
     expect(deps.tg.refundStars).toHaveBeenCalledWith(99, "ch1");
-    expect(await store.getWallet(99)).toEqual({ videos: 0, questions: 0, paid: [] });
+    expect(await store.getWallet(99)).toEqual({ videos: 0, questions: 0, paid: [], plan: null });
     expect(sent.filter((m) => m.chatId === 99).at(-1)?.html).toBe("Your payment of 150 ⭐ was refunded.");
     await handleUpdate(text("/refund 99 ch1", 99), deps); // only the owner can refund
     expect(deps.tg.refundStars).toHaveBeenCalledTimes(1);
@@ -409,6 +413,202 @@ describe("buying extras with Stars", () => {
   });
 });
 
+/** A Knowing Plus payment: the first month, or a renewal. */
+const planPaid = (charge: string, ends: string, first = true, from = 99): Update => ({
+  message: {
+    message_id: 3,
+    chat: { id: from },
+    from: { id: from, first_name: "Sam" },
+    successful_payment: { currency: "XTR", total_amount: 500, invoice_payload: "plan:500", telegram_payment_charge_id: charge, subscription_expiration_date: Date.parse(ends) / 1_000, is_recurring: true, is_first_recurring: first },
+  },
+});
+
+describe("Knowing Plus", () => {
+  afterEach(() => void vi.useRealTimers());
+  const at = (iso: string) => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(iso));
+  };
+  /** Someone who joined and is out of free ones, so only the plan and extras count. */
+  const onPlan = async () => {
+    const t = setup({ plan: PLAN, limits: { videos: 0, questions: 0 } });
+    await handleUpdate(text("/start join-abc123", 99), t.deps);
+    await handleUpdate(planPaid("s1", "2026-12-03T10:00:00Z"), t.deps);
+    return t;
+  };
+
+  it("is offered with /plan, /buy and when someone runs out, through a subscription link", async () => {
+    const { deps, sent } = setup({ plan: PLAN, limits: { videos: 1, questions: 1 } });
+    await handleUpdate(text("/start join-abc123", 99), deps);
+    await handleUpdate(text("/plan", 99), deps);
+    expect(deps.tg.createInvoiceLink).toHaveBeenCalledWith(expect.objectContaining({ title: "Knowing Plus", payload: "plan:500", stars: 500 }), 2_592_000);
+    expect(sent.at(-1)?.html).toContain("5 videos and 10 questions <b>every day</b>, for 500 ⭐ a month");
+    expect(sent.at(-1)?.html).toContain("Cancel any time with /plan");
+    expect(sent.at(-1)?.buttons?.[0][0]).toMatchObject({ text: "Subscribe for 500 ⭐ a month", url: "https://t.me/$plan-link" });
+    await handleUpdate(text("/buy", 99), deps);
+    expect(datas(sent.at(-1)?.buttons)).toEqual(["buy:5:10", "buy:10:20", "plan:get"]);
+    await handleUpdate(text("https://vm.tiktok.com/one/", 99), deps);
+    await handleUpdate(text("https://vm.tiktok.com/two/", 99), deps);
+    expect(sent.at(-1)?.html).toContain("Or get Knowing Plus: 5 videos + 10 questions every day for 500 ⭐ a month.");
+    expect(datas(sent.at(-1)?.buttons)).toContain("plan:get");
+    await handleUpdate(tap("plan:get", 100, 99), deps);
+    expect(deps.tg.createInvoiceLink).toHaveBeenCalledTimes(2);
+    expect(sent.at(-1)?.buttons?.[0][0].url).toBe("https://t.me/$plan-link");
+  });
+
+  it("isn't offered when it's turned off, and says so when the link can't be made", async () => {
+    const off = setup({ limits: { videos: 1, questions: 1 } });
+    await handleUpdate(text("/buy", FRIEND), off.deps);
+    expect(datas(off.sent.at(-1)?.buttons)).not.toContain("plan:get");
+    await handleUpdate(text("/plan", FRIEND), off.deps);
+    expect(off.sent.at(-1)?.html).toBe("Knowing Plus isn't on sale right now.");
+    const { deps, sent } = setup({ plan: PLAN });
+    vi.mocked(deps.tg.createInvoiceLink).mockRejectedValueOnce(new Error("createInvoiceLink: Bad Request: SUBSCRIPTION_PERIOD_INVALID"));
+    await handleUpdate(text("/plan", FRIEND), deps);
+    expect(sent.find((m) => m.chatId === FRIEND)?.html).toContain("nothing was charged");
+    expect(sent.at(-1)).toMatchObject({ chatId: 7, html: expect.stringContaining("SUBSCRIPTION_PERIOD_INVALID") });
+  });
+
+  it("only takes a payment at the price on sale, or the one they already pay", async () => {
+    const { deps } = setup({ plan: PLAN });
+    await handleUpdate(text("/start join-abc123", 99), deps);
+    await handleUpdate(checkout("plan:500", 500), deps);
+    await handleUpdate(checkout("plan:100", 100), deps);
+    await handleUpdate(checkout("plan:500", 400), deps);
+    expect(vi.mocked(deps.tg.answerPreCheckout).mock.calls.map((c) => c[1])).toEqual([true, false, false]);
+    // Turned off later: a renewal at their own price still goes through.
+    const off = setup({ limits: { videos: 0, questions: 0 } });
+    await handleUpdate(text("/start join-abc123", 99), off.deps);
+    await handleUpdate(checkout("plan:500", 500), off.deps);
+    await handleUpdate(planPaid("s1", "2026-12-03T10:00:00Z"), off.deps);
+    await handleUpdate(checkout("plan:500", 500), off.deps);
+    expect(vi.mocked(off.deps.tg.answerPreCheckout).mock.calls.map((c) => c[1])).toEqual([false, true]);
+  });
+
+  it("gives 5 videos and 10 questions a day, before the free ones, starting again at midnight UTC", async () => {
+    at("2026-11-03T10:00:00Z");
+    const { deps, sent, store, brain } = setup({ plan: PLAN, limits: { videos: 1, questions: 1 } });
+    await handleUpdate(text("/start join-abc123", 99), deps);
+    await handleUpdate(planPaid("s1", "2026-12-03T10:00:00Z"), deps);
+    expect(sent.find((m) => m.chatId === 99 && m.html.includes("Welcome to"))?.html).toContain("It renews on Dec 3; /plan cancels any time.");
+    expect(sent.find((m) => m.chatId === 7 && m.html.includes("started Knowing Plus"))?.html).toContain("/refund 99 s1");
+    for (let i = 0; i < 5; i++) await handleUpdate(text(`https://vm.tiktok.com/v${i}/`, 99), deps);
+    expect(store.saves).toHaveLength(5);
+    expect((await store.getUser(99)).usage.videos).toBe(0); // the free one is still there
+    await handleUpdate(text("https://vm.tiktok.com/v5/", 99), deps);
+    expect(store.saves).toHaveLength(6);
+    expect((await store.getUser(99)).usage.videos).toBe(1);
+    await handleUpdate(text("https://vm.tiktok.com/v6/", 99), deps);
+    expect(store.saves).toHaveLength(6);
+    expect(sent.at(-1)?.html).toBe("You've used today's videos from Knowing Plus. More at midnight UTC (in 14 h).\n\nNeed more before then? A refill never expires.");
+    expect(datas(sent.at(-1)?.buttons)).toEqual(["buy:5:10", "buy:10:20"]);
+    for (let i = 0; i < 10; i++) await handleUpdate(text(`question ${i}`, 99), deps);
+    expect(brain.answer).toHaveBeenCalledTimes(10);
+    expect((await store.getUser(99)).usage.questions).toBe(0);
+    await handleUpdate(text("/plan", 99), deps);
+    expect(sent.at(-1)?.html).toContain("Today: 0 of 5 videos and 0 of 10 questions left.");
+    expect(sent.at(-1)?.html).toContain("It renews on Dec 3 for 500 ⭐.");
+    await handleUpdate(text("/usage", 99), deps);
+    expect(sent.at(-1)?.html).toMatch(/^<b>Knowing Plus<\/b>:\nToday: 0 of 5 videos/);
+    expect(sent.at(-1)?.html).not.toContain("Or get Knowing Plus");
+    at("2026-11-04T00:05:00Z");
+    await handleUpdate(text("https://vm.tiktok.com/v7/", 99), deps);
+    expect(store.saves).toHaveLength(7);
+    expect((await store.getWallet(99)).plan).toMatchObject({ day: "2026-11-04", videos: 1, questions: 0 });
+  });
+
+  it("ends with the month unless it renews, and a renewal starts the month over", async () => {
+    at("2026-11-03T10:00:00Z");
+    const { deps, sent, store } = await onPlan();
+    at("2026-12-03T13:00:00Z"); // past the end and the short wait for Telegram's renewal
+    await handleUpdate(text("https://vm.tiktok.com/late/", 99), deps);
+    expect(store.saves).toHaveLength(0);
+    expect(sent.at(-1)?.html).toContain("You're out of videos");
+    await handleUpdate(planPaid("s2", "2027-01-02T13:00:00Z", false), deps);
+    expect(sent.find((m) => m.chatId === 99 && m.html.includes("renewed"))?.html).toBe("Knowing Plus renewed until Jan 2. Thanks!");
+    expect((await store.getWallet(99)).plan).toMatchObject({ first: "s1", charge: "s2", cost: 0, until: "2027-01-02T13:00:00.000Z" });
+    await handleUpdate(text("https://vm.tiktok.com/again/", 99), deps);
+    expect(store.saves).toHaveLength(1);
+    // The same payment sent twice counts once.
+    await handleUpdate(planPaid("s2", "2027-01-02T13:00:00Z", false), deps);
+    expect((await store.getWallet(99)).paid.filter((p) => p.plan)).toHaveLength(2);
+  });
+
+  it("slows down, then pauses until it renews, once a month's real cost nears what it pays, and says so once each", async () => {
+    at("2026-11-03T10:00:00Z");
+    const { deps, sent, store, brain } = await onPlan();
+    // Each answer really costs $1.50 here; the month can spend 500 ⭐ × $0.013 × 85% = $5.52.
+    vi.mocked(brain.answer).mockImplementation(async () => {
+      charge(1.5);
+      return { text: "Sure.", sources: [], about: [], remember: [], moves: [], renames: [], rules: [], collects: [], uncollects: [] };
+    });
+    for (let i = 0; i < 3; i++) await handleUpdate(text(`q${i}`, 99), deps);
+    expect(sent.filter((m) => m.html.startsWith("Heads up"))).toHaveLength(1);
+    expect(sent.find((m) => m.html.startsWith("Heads up"))?.html).toBe("Heads up: you've used Knowing Plus a lot this month, so it's 1 video and 3 questions a day until it renews on Dec 3.");
+    await handleUpdate(text("q3", 99), deps);
+    expect(brain.answer).toHaveBeenCalledTimes(3);
+    expect(sent.at(-1)?.html).toContain("You've used today's questions from Knowing Plus");
+    at("2026-11-04T09:00:00Z");
+    await handleUpdate(text("q4", 99), deps);
+    expect(sent.find((m) => m.chatId === 99 && m.html.includes("reached this month's fair use"))?.html).toBe("You've reached this month's fair use for Knowing Plus, so it's paused until it renews on Dec 3. Your free ones and extras still work.");
+    expect(sent.find((m) => m.chatId === 7 && m.html.includes("fair use"))?.html).toContain("$6.00 of $5.52");
+    await handleUpdate(text("q5", 99), deps);
+    expect(brain.answer).toHaveBeenCalledTimes(4);
+    expect(sent.at(-1)?.html).toContain("Knowing Plus is paused until it renews on Dec 3");
+    // Bought extras still work while it's paused.
+    const wallet = await store.getWallet(99);
+    await store.saveWallet(99, { ...wallet, questions: 1 });
+    await handleUpdate(text("q6", 99), deps);
+    expect(brain.answer).toHaveBeenCalledTimes(5);
+    expect((await store.getWallet(99)).plan?.cost).toBeCloseTo(6.004, 3); // extras aren't counted against the plan
+  });
+
+  it("counts a voice question's hearing too", async () => {
+    at("2026-11-03T10:00:00Z");
+    const { deps, store, media } = await onPlan();
+    vi.mocked(media.hearVoice).mockImplementation(async () => (charge(0.5), { text: "what was that drill?", cut: false }));
+    await handleUpdate(voice(99), deps);
+    expect((await store.getWallet(99)).plan).toMatchObject({ questions: 1 });
+    expect((await store.getWallet(99)).plan?.cost).toBeCloseTo(0.502, 3);
+  });
+
+  it("gives a video back to today's plan when it can't be saved", async () => {
+    at("2026-11-03T10:00:00Z");
+    const { deps, store, brain, edits } = await onPlan();
+    vi.mocked(brain.watch).mockRejectedValueOnce(new Error("Supabase GET saves: couldn't connect after 3 tries (ECONNRESET)"));
+    await handleUpdate(text("https://vm.tiktok.com/ZMabc/", 99), deps);
+    expect(edits.at(-1)?.html).toContain("It didn't use up a video.");
+    expect((await store.getWallet(99)).plan).toMatchObject({ videos: 0 });
+  });
+
+  it("cancels and turns renewal back on with /plan, and a refund ends it", async () => {
+    at("2026-11-03T10:00:00Z");
+    const { deps, sent, edits, store } = await onPlan();
+    await handleUpdate(text("/plan", 99), deps);
+    expect(datas(sent.at(-1)?.buttons)).toEqual(["plan:cancel"]);
+    await handleUpdate(tap("plan:cancel", 120, 99), deps);
+    expect(deps.tg.editStarSubscription).toHaveBeenLastCalledWith(99, "s1", true);
+    expect(edits.at(-1)?.html).toContain("It ends on Dec 3 (renewal is off).");
+    expect(datas(edits.at(-1)?.buttons)).toEqual(["plan:resume"]);
+    await handleUpdate(tap("plan:resume", 120, 99), deps);
+    expect(deps.tg.editStarSubscription).toHaveBeenLastCalledWith(99, "s1", false);
+    expect((await store.getWallet(99)).plan?.canceled).toBe(false);
+    await handleUpdate(text("/refund 99 s1"), deps);
+    expect(deps.tg.refundStars).toHaveBeenCalledWith(99, "s1");
+    expect(deps.tg.editStarSubscription).toHaveBeenLastCalledWith(99, "s1", true);
+    expect((await store.getWallet(99)).plan).toBeNull();
+    expect(sent.find((m) => m.chatId === 99 && m.html.includes("refunded"))?.html).toBe("Your Knowing Plus payment was refunded, so the plan has ended.");
+    expect(sent.at(-1)).toMatchObject({ chatId: 7, html: "Refunded, and their Knowing Plus has ended." });
+  });
+
+  it("keeps the plan after /delete", async () => {
+    at("2026-11-03T10:00:00Z");
+    const { deps, store } = await onPlan();
+    await handleUpdate(tap("wipe:yes", 100, 99), deps);
+    expect((await store.getWallet(99)).plan).toMatchObject({ charge: "s1" });
+  });
+});
+
 describe("usage", () => {
   const at = Date.parse("2026-11-02T18:00:00Z");
   const usage = { day: "2026-11-02", videos: 2, questions: 7 };
@@ -418,7 +618,7 @@ describe("usage", () => {
     expect(usageText(usage, limits, null, PACKS)).toBe(
       "<b>Free to start</b> (given once, they don't refill):\nVideos: 3 of 5 left\nQuestions: 3 of 10 left\n\n<b>Get more any time</b> with /buy, videos and questions in one pack: 5 videos + 10 questions for 150 ⭐, 10 + 20 for 300 ⭐. They never expire.",
     );
-    expect(usageText(usage, limits, { videos: 1, questions: 20, paid: [] }, PACKS)).toContain("<b>Extras:</b> 1 video and 20 questions, bought or earned with /invite. They never expire");
+    expect(usageText(usage, limits, { videos: 1, questions: 20, paid: [], plan: null }, PACKS)).toContain("<b>Extras:</b> 1 video and 20 questions, bought or earned with /invite. They never expire");
     expect(usageText(usage, limits, null, [])).not.toContain("⭐");
   });
 
@@ -445,7 +645,7 @@ describe("usage", () => {
 
   it("shows bought extras, and tells the bot the numbers so any wording works", async () => {
     const { deps, sent, brain, store } = setup({ limits: { videos: 5, questions: 10 } });
-    await store.saveWallet(FRIEND, { videos: 10, questions: 0, paid: [] });
+    await store.saveWallet(FRIEND, { videos: 10, questions: 0, paid: [], plan: null });
     await handleUpdate(text("/usage", FRIEND), deps);
     expect(sent.at(-1)?.html).toContain("Extras:</b> 10 videos and 0 questions");
     await handleUpdate(text("can I still send stuff today?", FRIEND), deps);
@@ -680,7 +880,7 @@ describe("handleUpdate", () => {
     expect((await store.getUser(FRIEND)).usage.videos).toBe(0);
     expect((await store.getUser(FRIEND)).turns).toEqual([]);
     // A bought one goes back in the wallet.
-    await store.saveWallet(FRIEND, { videos: 2, questions: 0, paid: [] });
+    await store.saveWallet(FRIEND, { videos: 2, questions: 0, paid: [], plan: null });
     const user = await store.getUser(FRIEND);
     await store.saveUser({ ...user, usage: { ...user.usage, videos: 3 } });
     vi.mocked(deps.media.fromLink).mockRejectedValueOnce(new Error("Downloading the video: couldn't connect after 3 tries"));
@@ -1207,7 +1407,7 @@ describe("what Knowing knows about itself", () => {
   });
 
   it("lists every command the bot handles, and puts the main ones in Telegram's menu", () => {
-    const handled = ["help", "commands", "folders", "collections", "saved", "digest", "memory", "usage", "buy", "invite", "support", "paysupport", "terms", "delete"];
+    const handled = ["help", "commands", "folders", "collections", "saved", "digest", "memory", "usage", "buy", "plan", "invite", "support", "paysupport", "terms", "delete"];
     expect(ALL_COMMANDS.map((c) => c.command).sort()).toEqual([...handled].sort());
     expect(COMMANDS.map((c) => c.command)).toContain("commands");
   });

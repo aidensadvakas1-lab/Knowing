@@ -37,6 +37,9 @@ import { isVideoFile, LOGIN_WALLED, platformName } from "./platforms";
 import { aboutKnowing, commandsText, GUIDE, guideButtons, WELCOME, type Setup } from "./profile";
 import { buyButtons, invoiceFor, packName, PAYSUPPORT_HELP, priceList, readPack, SUPPORT_HELP, TERMS } from "./shop";
 import { relevantSaves, sharedVideoTurns } from "./prompts";
+import { costOf, metered } from "./meter";
+import { levelNotice, PLAN, PLAN_PERIOD_SECONDS, planActive, planButton, planButtons, planDeal, planInvoice, planLeft, planLevel, planOfferText, planStatus, readPlanPayload, refundPlan, shortDate, untilReset, usePlan, type PlanOffer } from "./plan";
+import { planBudget } from "./costs";
 import { hasStarted, readReferral, REFERRAL_MAX, REFERRAL_QUESTIONS, REFERRAL_REWARD, REFERRAL_VIDEOS, referralCode } from "./referral";
 import { groupHits, searchQuery, type Retriever } from "./rag";
 import { FACTS_KEPT, newSaveId, newUser, TURNS_KEPT } from "./store";
@@ -70,6 +73,8 @@ export interface Deps {
   limits: { videos: number; questions: number };
   /** The packs of extras on sale and their prices in Stars (costs.ts pricedPacks). Empty turns buying off. */
   packs: Pack[];
+  /** Knowing Plus on sale (plan.ts PLAN). Missing stops new sign-ups; anyone already on it keeps it until it ends. */
+  plan?: PlanOffer;
   /** Tells the owner something broke. */
   alert(text: string): Promise<void>;
 }
@@ -90,7 +95,16 @@ export interface Update {
     document?: { file_id: string; mime_type?: string; file_name?: string; file_size?: number };
     /** A voice message: a question asked out loud. */
     voice?: { file_id: string; duration?: number; file_size?: number };
-    successful_payment?: { currency: string; total_amount: number; invoice_payload: string; telegram_payment_charge_id: string };
+    successful_payment?: {
+      currency: string;
+      total_amount: number;
+      invoice_payload: string;
+      telegram_payment_charge_id: string;
+      /** A subscription's payments (Knowing Plus): when the paid month ends, in Unix seconds. */
+      subscription_expiration_date?: number;
+      is_recurring?: boolean;
+      is_first_recurring?: boolean;
+    };
   };
   /** Telegram checks with us right before charging Stars. */
   pre_checkout_query?: { id: string; from: { id: number }; currency: string; total_amount: number; invoice_payload: string };
@@ -170,9 +184,11 @@ export function limitText(kind: "videos" | "questions", n: number): string {
  * packs on sale. Also given to the model, so a question about it in other
  * words gets the same numbers.
  */
-export function usageText(usage: Usage, limits: Deps["limits"], wallet: Wallet | null, packs: Pack[]): string {
+export function usageText(usage: Usage, limits: Deps["limits"], wallet: Wallet | null, packs: Pack[], plan?: PlanOffer): string {
   const left = (kind: PackKind) => Math.max(0, limits[kind] - usage[kind]);
+  const onPlan = planActive(wallet?.plan);
   const lines = [
+    ...(onPlan && wallet?.plan ? [`${planStatus(wallet.plan).replace(" is on.", ":")}`, "", "They're used first, then these:", ""] : []),
     `<b>Free to start</b> (given once, they don't refill):`,
     `Videos: ${left("videos")} of ${limits.videos} left`,
     `Questions: ${left("questions")} of ${limits.questions} left`,
@@ -183,17 +199,19 @@ export function usageText(usage: Usage, limits: Deps["limits"], wallet: Wallet |
   if (packs.length) {
     lines.push("", `<b>Get more any time</b> with /buy, videos and questions in one pack: ${priceList(packs)}. They never expire.`);
   }
+  if (plan && !onPlan) lines.push("", `<b>Or get ${plan.name}</b> with /plan: ${planDeal(plan)}.`);
   return lines.join("\n");
 }
 
 /** What the model is told about limits when the owner asks: they have none, and what everyone else gets, so the owner can ask about prices too. */
 function ownerUsage(deps: Deps): string {
   const packs = deps.packs.length ? `, then can buy packs of videos and questions together with /buy: ${priceList(deps.packs)}` : "; buying more is turned off";
-  return `They're the owner of this bot, so they have no limits and never need to buy anything. Everyone else starts with ${deps.limits.videos} free videos and ${deps.limits.questions} free questions, given once${packs}.`;
+  const plan = deps.plan ? ` Or ${deps.plan.name} (/plan): ${planDeal(deps.plan)}, with a fair-use guard so it never costs more than it pays.` : "";
+  return `They're the owner of this bot, so they have no limits and never need to buy anything. Everyone else starts with ${deps.limits.videos} free videos and ${deps.limits.questions} free questions, given once${packs}.${plan}`;
 }
 
 /** What the guide and Claude are told about the bot's settings. */
-const setupOf = (deps: Deps): Setup => ({ limits: deps.limits, packs: deps.packs, open: Boolean(deps.open) });
+const setupOf = (deps: Deps): Setup => ({ limits: deps.limits, packs: deps.packs, plan: deps.plan, open: Boolean(deps.open) });
 
 /**
  * "How many questions do I have left?", "what's my limit": answered with
@@ -277,7 +295,8 @@ export async function handleUpdate(update: Update, deps: Deps): Promise<void> {
       return;
     }
     if (text.startsWith("/usage") || text.startsWith("/limits")) return await showUsage(chatId, user, deps);
-    if (text.startsWith("/buy")) return await showShop(chatId, deps);
+    if (text.startsWith("/buy")) return await showShop(chatId, userId, deps);
+    if (text.startsWith("/plan")) return await showPlan(chatId, userId, deps);
     if (text.startsWith("/delete")) {
       const count = (await deps.store.listSaves(userId)).length;
       await deps.tg.sendMessage(chatId, `This deletes your ${count} save${count === 1 ? "" : "s"}, our chats and everything I remember about you. It can't be undone.`, [
@@ -295,7 +314,7 @@ export async function handleUpdate(update: Update, deps: Deps): Promise<void> {
         return;
       }
       const paid = await allow(user, "videos", deps);
-      if (!paid) return await limitReached(chatId, "videos", deps);
+      if (!paid) return await limitReached(chatId, userId, "videos", deps);
       const duration = "duration" in video && typeof video.duration === "number" ? video.duration : 0;
       return await watchAndSave(chatId, user, () => deps.media.fromTelegramFile(video.file_id, duration), "", text, paid, deps);
     }
@@ -307,7 +326,7 @@ export async function handleUpdate(update: Update, deps: Deps): Promise<void> {
     const walled = Boolean(url && LOGIN_WALLED.has(platformName(url)));
     if (url) {
       const paid = walled ? "nothing" : await allow(user, "videos", deps);
-      if (!paid) return await limitReached(chatId, "videos", deps);
+      if (!paid) return await limitReached(chatId, userId, "videos", deps);
       return await watchAndSave(chatId, user, () => deps.media.fromLink(url), url, text.replace(url, "").trim(), paid, deps);
     }
 
@@ -322,7 +341,7 @@ export async function handleUpdate(update: Update, deps: Deps): Promise<void> {
 const ALL_SAVES = 1_000;
 
 /** A typed message, or a voice message's words: a question, or the words Fix / Add what it says asked for. `heard` shows what a voice message said. */
-async function onText(chatId: number, user: BotUser, text: string, deps: Deps, name?: string, heard = "") {
+async function onText(chatId: number, user: BotUser, text: string, deps: Deps, name?: string, heard = "", spent = 0) {
   // A name for a new folder, or a folder's new name: no Claude call, so no question used.
   const naming = readNaming(user.awaitingWordsFor);
   if (naming || user.awaitingWordsFor?.startsWith("name:")) {
@@ -337,10 +356,13 @@ async function onText(chatId: number, user: BotUser, text: string, deps: Deps, n
   // Before the limit check: checking what's left shouldn't use a question, and works when none are left.
   if (!remaking && asksAboutUsage(text)) return await showUsage(chatId, user, deps);
   const paid = await allow(user, "questions", deps);
-  if (!paid) return await limitReached(chatId, "questions", deps);
+  if (!paid) return await limitReached(chatId, user.id, "questions", deps);
   try {
-    if (remaking) await addWords(chatId, user, text, deps, heard);
-    else await answer(chatId, user, text, deps, name, heard);
+    // On the plan, what it really cost is added to the month (the fair-use guard).
+    await metered(
+      () => (remaking ? addWords(chatId, user, text, deps, heard) : answer(chatId, user, text, deps, name, heard)),
+      (dollars) => (paid === "plan" ? chargePlan(chatId, user.id, dollars + spent, deps) : Promise.resolve()),
+    );
   } catch (error) {
     // Every connection is tried again first (lib/net.ts). If it still breaks, the question is given back.
     const said = await failed(error, remaking ? "remaking a save" : "answering", deps);
@@ -356,11 +378,12 @@ async function onText(chatId: number, user: BotUser, text: string, deps: Deps, n
  */
 async function voiceMessage(chatId: number, user: BotUser, voice: NonNullable<NonNullable<Update["message"]>["voice"]>, deps: Deps, name?: string) {
   // Checked first, so nobody out of questions costs a transcription.
-  if (!(await hasLeft(user, "questions", deps))) return await limitReached(chatId, "questions", deps);
+  if (!(await hasLeft(user, "questions", deps))) return await limitReached(chatId, user.id, "questions", deps);
   await deps.tg.typing(chatId);
-  let heard: { text: string; cut: boolean };
+  let heard: { text: string; cut: boolean } = { text: "", cut: false };
+  let spent = 0;
   try {
-    heard = await deps.media.hearVoice(voice.file_id, voice.duration ?? 0);
+    spent = await costOf(async () => void (heard = await deps.media.hearVoice(voice.file_id, voice.duration ?? 0)));
   } catch (error) {
     if (error instanceof NoTranscription) return void (await deps.tg.sendMessage(chatId, "I can't hear voice messages yet, so type it for now."));
     throw error;
@@ -368,14 +391,14 @@ async function voiceMessage(chatId: number, user: BotUser, voice: NonNullable<No
   if (!heard.text) return void (await deps.tg.sendMessage(chatId, "I couldn't make out any words in that one. Try again, or type it."));
   const quote = heard.text.length > 300 ? `${heard.text.slice(0, 300)}…` : heard.text;
   const echo = `🎙 <i>“${esc(quote)}”</i>${heard.cut ? "\n<i>(I only listened to the first minute.)</i>" : ""}`;
-  await onText(chatId, user, heard.text, deps, name, echo);
+  await onText(chatId, user, heard.text, deps, name, echo, spent);
 }
 
 /** Whether they have one of these left, without using it. */
 async function hasLeft(user: BotUser, kind: PackKind, deps: Deps): Promise<boolean> {
   if (user.id === deps.ownerId || user.usage[kind] < deps.limits[kind]) return true;
   const wallet = await walletOf(user.id, deps);
-  return Boolean(wallet && wallet[kind] > 0);
+  return Boolean(wallet && (wallet[kind] > 0 || planLeft(wallet.plan, kind) > 0));
 }
 
 /** Ask once, at /start or after their next save, whether they want the weekly flashback. Never gets in the way. */
@@ -413,15 +436,21 @@ async function digestCommand(chatId: number, userId: number, arg: string, deps: 
   if (preview) await deps.tg.sendMessage(chatId, `<i>Here's what it would look like this week:</i>\n\n${preview.html}`, preview.buttons);
 }
 
-/** Count one use: their free ones first, then what they bought. False when both are used up. The owner has no limit. */
-/** What a use came out of: nothing (the owner, or a link that doesn't count), a free one, or their wallet. */
-type Paid = "nothing" | "free" | "wallet";
+/** What a use came out of: nothing (the owner, or a link that doesn't count), today's plan, a free one, or their wallet. */
+type Paid = "nothing" | "plan" | "free" | "wallet";
 
-/** Use up a free one, or else one they bought. Null when they have none left. */
+/**
+ * Use one up: today's Knowing Plus first (it doesn't carry over), then a free
+ * one, then one they bought. Null when they have none left. The owner has no limit.
+ */
 async function allow(user: BotUser, kind: PackKind, deps: Deps): Promise<Paid | null> {
   if (user.id === deps.ownerId) return "nothing";
+  const wallet = await walletOf(user.id, deps);
+  if (wallet && usePlan(wallet.plan, kind)) {
+    await deps.store.saveWallet(user.id, wallet);
+    return "plan";
+  }
   if (spend(user, kind, deps.limits[kind])) return "free";
-  const wallet = await deps.store.getWallet(user.id).catch((error) => void console.error("Reading the wallet failed", error));
   if (!wallet || wallet[kind] < 1) return null;
   await deps.store.saveWallet(user.id, { ...wallet, [kind]: wallet[kind] - 1 });
   return "wallet";
@@ -438,6 +467,11 @@ async function giveBack(user: BotUser, kind: PackKind, paid: Paid, deps: Deps): 
       const wallet = await deps.store.getWallet(user.id);
       await deps.store.saveWallet(user.id, { ...wallet, [kind]: wallet[kind] + 1 });
     }
+    if (paid === "plan") {
+      const wallet = await deps.store.getWallet(user.id);
+      refundPlan(wallet.plan, kind);
+      await deps.store.saveWallet(user.id, wallet);
+    }
   } catch (error) {
     console.error("Giving back a use failed", error);
   }
@@ -450,27 +484,96 @@ async function showUsage(chatId: number, user: BotUser, deps: Deps): Promise<voi
   if (user.id === deps.ownerId) {
     return void (await deps.tg.sendMessage(chatId, `You're the owner, so you have no limits. Everyone else starts with ${deps.limits.videos} free videos and ${deps.limits.questions} free questions, given once.`));
   }
-  const buttons = deps.packs.length ? buyButtons(deps.packs) : undefined;
-  await deps.tg.sendMessage(chatId, usageText(user.usage, deps.limits, await walletOf(user.id, deps), deps.packs), buttons);
+  const wallet = await walletOf(user.id, deps);
+  const buttons = shopButtons(deps, planActive(wallet?.plan));
+  await deps.tg.sendMessage(chatId, usageText(user.usage, deps.limits, wallet, deps.packs, deps.plan), buttons.length ? buttons : undefined);
 }
 
-/** /buy: every pack, any time, even before the free ones run out. */
-async function showShop(chatId: number, deps: Deps): Promise<void> {
-  if (!deps.packs.length) return void (await deps.tg.sendMessage(chatId, "Buying extras is turned off right now."));
-  await deps.tg.sendMessage(chatId, "Pick a pack. Each one has videos and questions together. Extras never expire and are used after your free ones run out.", buyButtons(deps.packs));
+/** The refill pack, and Knowing Plus unless they're on it already. */
+function shopButtons(deps: Deps, onPlan: boolean): InlineButton[][] {
+  return [...buyButtons(deps.packs), ...(deps.plan && !onPlan ? [[planButton(deps.plan)]] : [])];
 }
 
-/** Out of free and bought ones: offer the packs. */
-async function limitReached(chatId: number, kind: PackKind, deps: Deps): Promise<void> {
+/** /buy: the refill pack and Knowing Plus, any time, even before the free ones run out. */
+async function showShop(chatId: number, userId: number, deps: Deps): Promise<void> {
+  const onPlan = planActive((await walletOf(userId, deps))?.plan);
+  const buttons = shopButtons(deps, onPlan);
+  if (!buttons.length) return void (await deps.tg.sendMessage(chatId, onPlan ? "You're on Knowing Plus. /plan shows today's numbers. Refills are turned off right now." : "Buying extras is turned off right now."));
+  const pack = deps.packs.length ? `<b>Refill:</b> ${priceList(deps.packs)}, videos and questions together. They never expire and are used after your free ones.` : "";
+  const plan = deps.plan && !onPlan ? `<b>${deps.plan.name}:</b> ${planDeal(deps.plan)}. Cancel any time.` : "";
+  await deps.tg.sendMessage(chatId, [pack, plan].filter(Boolean).join("\n\n"), buttons);
+}
+
+/** Out of everything: say when the plan starts again, or offer the refill and the plan. */
+async function limitReached(chatId: number, userId: number, kind: PackKind, deps: Deps): Promise<void> {
+  const wallet = await walletOf(userId, deps);
+  const plan = wallet?.plan;
+  if (planActive(plan)) {
+    const level = planLevel(plan);
+    const text =
+      level === "paused"
+        ? `${PLAN.name} is paused until it renews on ${shortDate(plan.until)}, since this month's fair use is used up, and you're out of extras.`
+        : `You've used today's ${kind} from ${PLAN.name}. More at midnight UTC (${untilReset()}).`;
+    const buttons = buyButtons(deps.packs);
+    return void (await deps.tg.sendMessage(chatId, buttons.length ? `${text}\n\nNeed more before then? A refill never expires.` : text, buttons.length ? buttons : undefined));
+  }
   const text = limitText(kind, deps.limits[kind]);
-  if (!deps.packs.length) return void (await deps.tg.sendMessage(chatId, text));
-  await deps.tg.sendMessage(chatId, `${text}\n\nGet more to keep going. Each pack has videos and questions, and they never expire.`, buyButtons(deps.packs));
+  const buttons = shopButtons(deps, false);
+  if (!buttons.length) return void (await deps.tg.sendMessage(chatId, text));
+  const plan_ = deps.plan ? ` Or get ${deps.plan.name}: ${planDeal(deps.plan)}.` : "";
+  await deps.tg.sendMessage(chatId, `${text}\n\nGet more to keep going.${deps.packs.length ? " A refill has videos and questions together, and it never expires." : ""}${plan_}`, buttons);
+}
+
+/** /plan: today's numbers and renewal for someone on Knowing Plus; the offer for everyone else. */
+async function showPlan(chatId: number, userId: number, deps: Deps): Promise<void> {
+  if (userId === deps.ownerId) return void (await deps.tg.sendMessage(chatId, `You're the owner, so you have no limits. Everyone else can get ${PLAN.name}: ${planDeal(deps.plan ?? PLAN)}.${deps.plan ? "" : " It's turned off right now."}`));
+  const wallet = await walletOf(userId, deps);
+  if (planActive(wallet?.plan)) return void (await deps.tg.sendMessage(chatId, planStatus(wallet.plan), planButtons(wallet.plan)));
+  await offerPlan(chatId, deps);
+}
+
+/** The plan's terms with a pay button. Subscriptions are sold through a link, made fresh each time. */
+async function offerPlan(chatId: number, deps: Deps): Promise<void> {
+  if (!deps.plan) return void (await deps.tg.sendMessage(chatId, `${PLAN.name} isn't on sale right now.`));
+  let link: string;
+  try {
+    link = await deps.tg.createInvoiceLink(planInvoice(deps.plan), PLAN_PERIOD_SECONDS);
+  } catch (error) {
+    const reason = esc((error instanceof Error ? error.message : String(error)).slice(0, 300));
+    console.error("Making the plan's payment link failed", error);
+    await deps.tg.sendMessage(chatId, "I couldn't open the payment screen, so nothing was charged. I've told the owner. Try again later.");
+    return void (await tellOwner(deps, `Someone asked for ${deps.plan.name}, but Telegram wouldn't make its payment link: ${reason}`));
+  }
+  await deps.tg.sendMessage(chatId, planOfferText(deps.plan), [[{ text: `Subscribe for ${deps.plan.stars} ⭐ a month`, callback_data: "plan:pay", url: link }]]);
+}
+
+/**
+ * Add what a plan use really cost to this month's total, and say so once when
+ * the fair-use guard slows or pauses it, so it never just seems broken. Never throws.
+ */
+async function chargePlan(chatId: number, userId: number, dollars: number, deps: Deps): Promise<void> {
+  try {
+    const wallet = await deps.store.getWallet(userId);
+    const plan = wallet.plan;
+    if (!plan) return;
+    const before = planLevel(plan);
+    plan.cost += dollars;
+    const now = planLevel(plan);
+    await deps.store.saveWallet(userId, wallet);
+    if (now === before) return;
+    await deps.tg.sendMessage(chatId, levelNotice(now, plan)).catch(() => {});
+    if (now === "paused") await tellOwner(deps, `<code>${userId}</code> reached this month's fair use on ${PLAN.name} ($${plan.cost.toFixed(2)} of $${planBudget(plan.stars).toFixed(2)}), so it's paused until ${shortDate(plan.until)}.`);
+  } catch (error) {
+    console.error("Recording a plan's cost failed", error);
+  }
 }
 
 /** Telegram asks right before charging. Say no (and they aren't charged) unless we can record what they bought. */
 async function onPreCheckout(p: NonNullable<Update["pre_checkout_query"]>, deps: Deps): Promise<void> {
   let error = "";
   try {
+    const planStars = readPlanPayload(p.invoice_payload);
+    if (planStars) return await planPreCheckout(p, planStars, deps);
     const pack = readPack(p.invoice_payload);
     const onSale = pack && deps.packs.some((x) => x.videos === pack.videos && x.questions === pack.questions && x.stars === pack.stars);
     if (!pack || !onSale || p.currency !== "XTR" || p.total_amount !== pack.stars) {
@@ -488,11 +591,28 @@ async function onPreCheckout(p: NonNullable<Update["pre_checkout_query"]>, deps:
   await deps.tg.answerPreCheckout(p.id, !error, error || undefined);
 }
 
+/** Knowing Plus: the price on sale now, or the price they're already paying (a renewal). */
+async function planPreCheckout(p: NonNullable<Update["pre_checkout_query"]>, stars: number, deps: Deps): Promise<void> {
+  let error = "";
+  try {
+    const wallet = await deps.store.getWallet(p.from.id); // fails if the wallet column is missing
+    const priced = stars === deps.plan?.stars || stars === wallet.plan?.stars;
+    if (!priced || p.currency !== "XTR" || p.total_amount !== stars) error = "That price has changed. Send /plan for the current one. You weren't charged.";
+    else if (!(await hasAccess(p.from.id, deps))) error = deps.open ? "Send /start first, then try again. You weren't charged." : "Knowing is invite-only for now. You weren't charged.";
+  } catch (e) {
+    error = "Payments aren't working right now, so you weren't charged. Try again later.";
+    const detail = (e instanceof Error ? e.message : String(e)).slice(0, 200);
+    await deps.alert(`A plan payment was stopped because I couldn't read the wallet. ${detail}`).catch(() => {});
+  }
+  await deps.tg.answerPreCheckout(p.id, !error, error || undefined);
+}
+
 /** Stars received: add the pack. Telegram can send the same payment twice, so each one counts once. */
 async function onPaid(chatId: number, userId: number, name: string | undefined, pay: NonNullable<NonNullable<Update["message"]>["successful_payment"]>, deps: Deps): Promise<void> {
   const who = name ? esc(name) : "Someone";
   const refund = `<code>/refund ${userId} ${esc(pay.telegram_payment_charge_id)}</code>`;
   try {
+    if (readPlanPayload(pay.invoice_payload)) return await onPlanPaid(chatId, userId, who, pay, deps);
     const pack = readPack(pay.invoice_payload);
     if (!pack) throw new Error(`unknown payload "${pay.invoice_payload}"`);
     const wallet = await deps.store.getWallet(userId);
@@ -508,6 +628,41 @@ async function onPaid(chatId: number, userId: number, name: string | undefined, 
     await deps.tg.sendMessage(chatId, "Your payment went through, but I couldn't add it to your account. I've told the owner, who will fix it or refund you.");
     await tellOwner(deps, `${who} paid ${pay.total_amount} ⭐, but I couldn't add it to their account (${esc(String(error).slice(0, 200))}). Refund it with ${refund}`);
   }
+}
+
+/**
+ * Knowing Plus paid: the first month, or Telegram renewing it. Either way the
+ * month starts over (its cost too), until the date Telegram gives. Each payment counts once.
+ */
+async function onPlanPaid(chatId: number, userId: number, who: string, pay: NonNullable<NonNullable<Update["message"]>["successful_payment"]>, deps: Deps): Promise<void> {
+  const charge = pay.telegram_payment_charge_id;
+  const wallet = await deps.store.getWallet(userId);
+  if (wallet.paid.some((p) => p.charge === charge)) return;
+  const now = new Date();
+  const ends = pay.subscription_expiration_date ? new Date(pay.subscription_expiration_date * 1_000) : new Date(now.getTime() + PLAN_PERIOD_SECONDS * 1_000);
+  const renewal = Boolean(wallet.plan && !pay.is_first_recurring && (pay.is_recurring || planActive(wallet.plan)));
+  const old = wallet.plan;
+  wallet.plan = {
+    until: ends.toISOString(),
+    first: renewal && old ? old.first : charge,
+    charge,
+    stars: pay.total_amount,
+    day: renewal && old ? old.day : "",
+    videos: renewal && old ? old.videos : 0,
+    questions: renewal && old ? old.questions : 0,
+    cost: 0,
+    canceled: false,
+  };
+  wallet.paid = [...wallet.paid, { charge, videos: 0, questions: 0, stars: pay.total_amount, at: now.toISOString(), plan: true }];
+  await deps.store.saveWallet(userId, wallet);
+  const until = shortDate(wallet.plan.until);
+  await deps.tg.sendMessage(
+    chatId,
+    renewal
+      ? `${PLAN.name} renewed until ${until}. Thanks!`
+      : `Welcome to <b>${PLAN.name}</b>! You get ${PLAN.videos} videos and ${PLAN.questions} questions every day, starting again at midnight UTC. It renews on ${until}; /plan cancels any time. Any problem with a payment, send /paysupport.`,
+  );
+  await tellOwner(deps, `${who} ${renewal ? "renewed" : "started"} ${PLAN.name} for ${pay.total_amount} ⭐ (until ${until}). To refund it: <code>/refund ${userId} ${esc(charge)}</code>`);
 }
 
 /** The owner's /refund <user id> <payment id> and /reply <user id> <message>. */
@@ -530,6 +685,7 @@ async function refundPayment(chatId: number, userId: number, charge: string, dep
   }
   const wallet = await deps.store.getWallet(userId);
   const payment = wallet.paid.find((p) => p.charge === charge);
+  if (payment?.plan || wallet.plan?.charge === charge) return await refundPlanPayment(chatId, userId, charge, wallet, deps);
   if (payment) {
     wallet.videos = Math.max(0, wallet.videos - payment.videos);
     wallet.questions = Math.max(0, wallet.questions - payment.questions);
@@ -540,6 +696,32 @@ async function refundPayment(chatId: number, userId: number, charge: string, dep
   await deps.tg.sendMessage(chatId, payment ? `Refunded, and I took the ${packName(payment)} back off their account (never below 0).` : "Refunded.");
 }
 
+/** A refunded plan payment ends the plan, and its renewal is turned off so it isn't charged again. */
+async function refundPlanPayment(chatId: number, userId: number, charge: string, wallet: Wallet, deps: Deps): Promise<void> {
+  const plan = wallet.plan;
+  let renewal = "";
+  if (plan && !plan.canceled) {
+    renewal = await cancelRenewal(userId, plan, true, deps)
+      .then(() => "")
+      .catch((error) => ` Telegram didn't turn off its renewal (${esc(error instanceof Error ? error.message : String(error))}), so ask them to cancel it in Telegram's settings.`);
+  }
+  wallet.plan = null;
+  wallet.paid = wallet.paid.filter((p) => p.charge !== charge);
+  await deps.store.saveWallet(userId, wallet);
+  await deps.tg.sendMessage(userId, `Your ${PLAN.name} payment was refunded, so the plan has ended.`).catch(() => {});
+  await deps.tg.sendMessage(chatId, `Refunded, and their ${PLAN.name} has ended.${renewal}`);
+}
+
+/** Turn a plan's renewal off or on in Telegram. The subscription is named by its first payment; the latest is tried too. */
+async function cancelRenewal(userId: number, plan: NonNullable<Wallet["plan"]>, canceled: boolean, deps: Deps): Promise<void> {
+  try {
+    await deps.tg.editStarSubscription(userId, plan.first, canceled);
+  } catch (error) {
+    if (plan.charge === plan.first) throw error;
+    await deps.tg.editStarSubscription(userId, plan.charge, canceled);
+  }
+}
+
 /** /support and /paysupport: pass the message to the owner, with refund commands for payment problems. */
 async function askOwner(chatId: number, userId: number, name: string | undefined, body: string, payments: boolean, deps: Deps): Promise<void> {
   if (!body) return void (await deps.tg.sendMessage(chatId, payments ? PAYSUPPORT_HELP : SUPPORT_HELP));
@@ -547,7 +729,7 @@ async function askOwner(chatId: number, userId: number, name: string | undefined
   if (payments) {
     const paid = (await deps.store.getWallet(userId).catch(() => null))?.paid.slice(-3) ?? [];
     recent = paid.length
-      ? `\n\nTheir latest payments:\n${paid.map((p) => `${p.stars} ⭐ for ${packName(p)}: <code>/refund ${userId} ${esc(p.charge)}</code>`).join("\n")}`
+      ? `\n\nTheir latest payments:\n${paid.map((p) => `${p.stars} ⭐ for ${p.plan ? PLAN.name : packName(p)}: <code>/refund ${userId} ${esc(p.charge)}</code>`).join("\n")}`
       : "\n\nNo payments on record.";
   }
   await tellOwner(deps, `<b>${payments ? "Payment problem" : "Support"}</b> from ${name ? esc(name) : "someone"}:\n${esc(body)}${recent}\n\nReply with <code>/reply ${userId} your message</code>`);
@@ -624,6 +806,14 @@ const NOT_USED = "It didn't use up a video.";
  * video they spent on it is given back and they're told to send it again.
  */
 async function watchAndSave(chatId: number, user: BotUser, get: () => Promise<WatchInput>, sourceUrl: string, note: string, paid: Paid, deps: Deps) {
+  // On the plan, what watching really cost is added to the month (the fair-use guard).
+  await metered(
+    () => watchOne(chatId, user, get, sourceUrl, note, paid, deps),
+    (dollars) => (paid === "plan" ? chargePlan(chatId, user.id, dollars, deps) : Promise.resolve()),
+  );
+}
+
+async function watchOne(chatId: number, user: BotUser, get: () => Promise<WatchInput>, sourceUrl: string, note: string, paid: Paid, deps: Deps) {
   const status = await deps.tg.sendMessage(chatId, "Watching…");
   const turns = user.turns;
   const unsaved = async (text: string) => {
@@ -854,19 +1044,19 @@ async function onButton(q: NonNullable<Update["callback_query"]>, deps: Deps) {
         // An empty row keeps their spot, what they've used, what they bought and their invite rewards,
         // so deleting doesn't lock them out or hand out new free ones.
         await deps.store.saveUser({ ...newUser(q.from.id), usage });
-        if (wallet && (wallet.videos || wallet.questions || wallet.paid.length)) await deps.store.saveWallet(q.from.id, wallet);
+        if (wallet && (wallet.videos || wallet.questions || wallet.paid.length || wallet.plan)) await deps.store.saveWallet(q.from.id, wallet);
         if (referral && (referral.by || referral.rewarded)) await deps.store.saveReferral(q.from.id, referral);
       }
       await deps.tg.answerCallback(q.id, id === "yes" ? "Deleted" : undefined);
       await deps.tg.editMessage(chatId, messageId, id === "yes" ? "Deleted. Everything you saved, our chats and everything I remembered about you are gone." : "Cancelled. Nothing was deleted.");
       return;
     }
+    if (kind === "plan") return await onPlanButton(q.id, chatId, messageId, q.from.id, id, deps);
     if (kind === "buy") {
       await deps.tg.answerCallback(q.id);
-      if (!deps.packs.length) return void (await deps.tg.sendMessage(chatId, "Buying extras is turned off right now."));
       const pack = deps.packs.find((p) => String(p.videos) === id && String(p.questions) === n);
       // A button from before bundles (or before prices changed): show what's on sale now.
-      if (!pack) return void (await deps.tg.sendMessage(chatId, "Here's what's on sale now:", buyButtons(deps.packs)));
+      if (!pack) return await showShop(chatId, q.from.id, deps);
       try {
         await deps.tg.sendInvoice(chatId, invoiceFor(pack));
       } catch (error) {
@@ -1289,6 +1479,32 @@ async function collect(userId: number, reply: Answer, collections: Collection[] 
 const COLLECT_BUTTONS = new Set(["cl", "clt", "clnew"]);
 
 /** 📌 Collect under a video: tick or untick its collections, or make a new one. */
+/** plan:get opens the offer; plan:cancel and plan:resume turn renewal off and on. */
+async function onPlanButton(queryId: string, chatId: number, messageId: number, userId: number, action: string, deps: Deps): Promise<void> {
+  if (action !== "cancel" && action !== "resume") {
+    await deps.tg.answerCallback(queryId);
+    return await showPlan(chatId, userId, deps);
+  }
+  const wallet = await deps.store.getWallet(userId);
+  const plan = wallet.plan;
+  if (!planActive(plan)) {
+    await deps.tg.answerCallback(queryId, "That plan has ended.");
+    return await showPlan(chatId, userId, deps);
+  }
+  const cancel = action === "cancel";
+  try {
+    await cancelRenewal(userId, plan, cancel, deps);
+  } catch (error) {
+    console.error("Changing a plan's renewal failed", error);
+    await deps.tg.answerCallback(queryId);
+    return void (await deps.tg.sendMessage(chatId, `Telegram wouldn't change that just now. You can also ${cancel ? "cancel" : "manage"} it in Telegram: Settings, then My Stars.`));
+  }
+  plan.canceled = cancel;
+  await deps.store.saveWallet(userId, wallet);
+  await deps.tg.answerCallback(queryId, cancel ? "Renewal canceled" : "Renewal is back on");
+  await deps.tg.editMessage(chatId, messageId, planStatus(plan), planButtons(plan));
+}
+
 async function onCollectButton(queryId: string, chatId: number, messageId: number, userId: number, data: string, deps: Deps): Promise<void> {
   const [kind, id = "", a = "", b = ""] = data.split(":");
   const save = await deps.store.getSave(userId, id);

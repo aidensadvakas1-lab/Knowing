@@ -85,14 +85,36 @@ export interface Payment {
   questions: number;
   stars: number;
   at: string;
+  /** A Knowing Plus payment (it added no extras). */
+  plan?: boolean;
 }
 
-/** Extras bought with Stars. Used after the free ones, and they never expire. */
+/** Knowing Plus (plan.ts): videos and questions every day, renewed monthly with Telegram Stars. */
+export interface Plan {
+  /** When the paid month ends (ISO). Telegram renews it then unless it's canceled. */
+  until: string;
+  /** The first payment's id, which names the subscription (to cancel or turn renewal back on). */
+  first: string;
+  /** The latest payment's id, to refund it. */
+  charge: string;
+  stars: number;
+  /** The UTC day (YYYY-MM-DD) the counts below are for. */
+  day: string;
+  videos: number;
+  questions: number;
+  /** What this month has really cost so far, in dollars, for the fair-use guard. */
+  cost: number;
+  /** Renewal is off; it still works until `until`. */
+  canceled: boolean;
+}
+
+/** Extras bought with Stars, and the plan if they have one. Extras are used after the free ones and never expire. */
 export interface Wallet {
   videos: number;
   questions: number;
   /** Most recent payments, newest last. */
   paid: Payment[];
+  plan: Plan | null;
 }
 
 /** Everything kept per Telegram user besides their saves. */
@@ -313,6 +335,8 @@ export interface Brain {
 export interface InlineButton {
   text: string;
   callback_data: string;
+  /** Opens a link instead (callback_data is then ignored), like a payment link. */
+  url?: string;
 }
 
 /** A bill for something paid in Telegram Stars. */
@@ -337,4 +361,8 @@ export interface TelegramApi {
   /** Telegram asks right before charging; it has to be answered within 10 seconds. */
   answerPreCheckout(queryId: string, ok: boolean, error?: string): Promise<void>;
   refundStars(userId: number, charge: string): Promise<void>;
+  /** A payment link; with `period` (seconds) it's a subscription that renews on its own. */
+  createInvoiceLink(invoice: Invoice, period?: number): Promise<string>;
+  /** Turn a Stars subscription's renewal off (canceled) or back on. */
+  editStarSubscription(userId: number, charge: string, canceled: boolean): Promise<void>;
 }

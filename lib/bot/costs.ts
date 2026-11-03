@@ -110,3 +110,14 @@ export function packPrice(pack: { videos: number; questions: number }): number {
 export function pricedPacks(): Pack[] {
   return PACK_SIZES.map((size) => ({ ...size, stars: packPrice(size) }));
 }
+
+/**
+ * What a month of Knowing Plus may really cost before it stops (plan.ts), in
+ * dollars: SAFETY of what its Stars pay out. Its use is measured, not guessed
+ * (meter.ts), so one plan can never cost more than it brings in, even used to
+ * the max every day. Only the request already running when it's reached can go
+ * past it, and that's far smaller than the other 15%.
+ */
+export function planBudget(stars: number): number {
+  return stars * PAYOUT_PER_STAR * SAFETY;
+}

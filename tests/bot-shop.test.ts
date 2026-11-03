@@ -31,13 +31,22 @@ describe("shop", () => {
 
 describe("readWallet", () => {
   it("reads an empty or broken wallet as nothing bought", () => {
-    expect(readWallet(undefined)).toEqual({ videos: 0, questions: 0, paid: [] });
-    expect(readWallet({ videos: -3, questions: "x", paid: "no" })).toEqual({ videos: 0, questions: 0, paid: [] });
+    expect(readWallet(undefined)).toEqual({ videos: 0, questions: 0, paid: [], plan: null });
+    expect(readWallet({ videos: -3, questions: "x", paid: "no", plan: { until: "soon" } })).toEqual({ videos: 0, questions: 0, paid: [], plan: null });
   });
 
   it("keeps valid payments and drops broken ones", () => {
     const wallet = readWallet({ videos: 10, questions: 2.7, paid: [{ charge: "c1", videos: 5, questions: 10, stars: 150, at: "2026-11-03" }, { charge: 5, videos: 5 }, { charge: "c2", kind: "hats" }] });
-    expect(wallet).toEqual({ videos: 10, questions: 2, paid: [{ charge: "c1", videos: 5, questions: 10, stars: 150, at: "2026-11-03" }] });
+    expect(wallet).toEqual({ videos: 10, questions: 2, paid: [{ charge: "c1", videos: 5, questions: 10, stars: 150, at: "2026-11-03" }], plan: null });
+  });
+
+  it("keeps Knowing Plus and its payments", () => {
+    const plan = { until: "2026-12-03T00:00:00.000Z", first: "p1", charge: "p2", stars: 500, day: "2026-11-03", videos: 2, questions: 4, cost: 1.25, canceled: true };
+    const wallet = readWallet({ paid: [{ charge: "p1", videos: 0, questions: 0, stars: 500, at: "x", plan: true }], plan });
+    expect(wallet.plan).toEqual(plan);
+    expect(wallet.paid).toEqual([{ charge: "p1", videos: 0, questions: 0, stars: 500, at: "x", plan: true }]);
+    // From before `first` was kept: the latest payment names it.
+    expect(readWallet({ plan: { ...plan, first: undefined, day: "nope", cost: -1 } }).plan).toMatchObject({ first: "p2", day: "", cost: 0 });
   });
 
   it("reads payments from before bundles, and from before pack sizes as the old 10 videos or 20 questions", () => {

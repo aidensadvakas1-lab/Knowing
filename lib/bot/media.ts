@@ -16,6 +16,7 @@ import { isAiConfigured } from "../server";
 import { isTranscriptionConfigured, transcribeAudio } from "../transcribe";
 import { FRAME_COUNT, FRAME_PIXELS, MAX_SECONDS, SCAN_MAX, VOICE_MAX_SECONDS } from "./costs";
 import { isVideoFileLink, LOGIN_WALLED, platformName, sendTheFileNote } from "./platforms";
+import { chargeAudio } from "./meter";
 import { readScreenText } from "./screen";
 import { isTikTok, resolveTikTok } from "./tiktok";
 import { NoTranscription, type Media, type WatchInput } from "./types";
@@ -135,7 +136,7 @@ async function watchVideoBytes(video: Buffer, durationHint: number): Promise<{ f
     const frameTimes = frameFilterTimes(FRAME_COUNT, duration).slice(0, frames.length);
 
     // Hearing and reading the screen run side by side, and either can fail without losing the save.
-    const [transcript, screenText] = await Promise.all([hear(input, dir, notes), readScreen(input, dir, duration, jpegs)]);
+    const [transcript, screenText] = await Promise.all([hear(input, dir, duration, notes), readScreen(input, dir, duration, jpegs)]);
     return { frames, frameTimes, transcript, screenText, notes };
   } finally {
     await rm(dir, { recursive: true, force: true }).catch(() => {});
@@ -143,7 +144,7 @@ async function watchVideoBytes(video: Buffer, durationHint: number): Promise<{ f
 }
 
 /** The speech in a video, or "" when there's no audio or no transcription key. */
-async function hear(input: string, dir: string, notes: string[]): Promise<string> {
+async function hear(input: string, dir: string, duration: number, notes: string[]): Promise<string> {
   if (!isTranscriptionConfigured()) {
     notes.push("I can't hear audio yet (no OPENAI_API_KEY), so I only looked at it.");
     return "";
@@ -151,7 +152,9 @@ async function hear(input: string, dir: string, notes: string[]): Promise<string
   try {
     const audio = join(dir, "audio.m4a");
     await ffmpeg(["-loglevel", "error", "-t", String(MAX_SECONDS), "-i", input, "-vn", "-ac", "1", "-ar", "16000", "-b:a", "32k", audio]);
-    return await transcribeAudio(new Blob([new Uint8Array(await readFile(audio))], { type: "audio/mp4" }), undefined, "audio.m4a");
+    const words = await transcribeAudio(new Blob([new Uint8Array(await readFile(audio))], { type: "audio/mp4" }), undefined, "audio.m4a");
+    chargeAudio(duration);
+    return words;
   } catch (error) {
     // No audio track, or the transcription service failed.
     console.error("Audio failed", error);
@@ -185,6 +188,7 @@ async function hearVoiceBytes(voice: Buffer, durationHint: number): Promise<{ te
     const audio = join(dir, "voice.m4a");
     await ffmpeg(["-loglevel", "error", "-t", String(VOICE_MAX_SECONDS), "-i", input, "-vn", "-ac", "1", "-ar", "16000", "-b:a", "32k", audio]);
     const text = await transcribeAudio(new Blob([new Uint8Array(await readFile(audio))], { type: "audio/mp4" }), undefined, "voice.m4a");
+    chargeAudio(Math.min(duration, VOICE_MAX_SECONDS));
     return { text: text.trim(), cut: duration > VOICE_MAX_SECONDS };
   } finally {
     await rm(dir, { recursive: true, force: true }).catch(() => {});

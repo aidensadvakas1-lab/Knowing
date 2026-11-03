@@ -19,6 +19,7 @@ import { aboutKnowing } from "@/lib/bot/profile";
 import { PACK_SIZES } from "@/lib/bot/shop";
 import { newUser } from "@/lib/bot/store";
 import { COLLECTIONS_KEPT } from "@/lib/bot/collections";
+import { PLAN } from "@/lib/bot/plan";
 import type { Save } from "@/lib/bot/types";
 
 const long = (n: number) => "word ".repeat(Math.ceil(n / 5)).slice(0, n);
@@ -75,7 +76,7 @@ describe("the limits the worst case relies on", () => {
   /** As many filing rules as are kept, as long as they can be. */
   const rules = Array.from({ length: RULES_KEPT }, (_, i) => ({ folder: `${long(36)}${i}`, about: long(120) }));
   /** Everything Knowing knows about itself, for the owner (the longest version). */
-  const about = aboutKnowing({ limits: { videos: 5, questions: 10 }, packs: pricedPacks(), open: true }, true);
+  const about = aboutKnowing({ limits: { videos: 5, questions: 10 }, packs: pricedPacks(), plan: PLAN, open: true }, true);
 
   it("caps the text sent with a video's frames", () => {
     const prompt = buildWatchPrompt({ caption: long(9_000), transcript: long(60_000), screenText: long(9_000), note: long(4_096), frameCount: 20, facts: user.facts, saves });

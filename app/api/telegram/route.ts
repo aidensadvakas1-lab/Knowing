@@ -11,6 +11,7 @@ import { createHash } from "node:crypto";
 import { after } from "next/server";
 import { createBrain } from "@/lib/bot/brain";
 import { pricedPacks } from "@/lib/bot/costs";
+import { PLAN } from "@/lib/bot/plan";
 import { handleUpdate, inviteCode, parseAllowed, secretMatches, type Deps, type Update } from "@/lib/bot/handle";
 import { createMedia } from "@/lib/bot/media";
 import { createEmbedder, SupabaseRetriever } from "@/lib/bot/rag-supabase";
@@ -85,6 +86,8 @@ export async function POST(request: Request): Promise<Response> {
     // Public unless KNOWING_PUBLIC=0. KNOWING_PUBLIC_SPOTS caps how many people can join (unset = no limit).
     open: process.env.KNOWING_PUBLIC?.trim() === "0" ? undefined : { cap: positive(process.env.KNOWING_PUBLIC_SPOTS, 0) },
     packs: packsSetting(process.env.KNOWING_PACK_STARS),
+    // Knowing Plus is on sale with the refill; KNOWING_PLAN=0 stops new sign-ups.
+    plan: process.env.KNOWING_PACK_STARS?.trim() === "0" || process.env.KNOWING_PLAN?.trim() === "0" ? undefined : PLAN,
     limits: {
       videos: positive(process.env.KNOWING_FREE_VIDEOS ?? process.env.KNOWING_DAILY_VIDEOS, FREE_VIDEOS),
       questions: positive(process.env.KNOWING_FREE_QUESTIONS ?? process.env.KNOWING_DAILY_QUESTIONS, FREE_QUESTIONS),

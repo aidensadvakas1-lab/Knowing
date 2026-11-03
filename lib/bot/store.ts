@@ -8,7 +8,7 @@
 import { fetchRetry } from "../net";
 import { readCollections } from "./collections";
 import { readRules } from "./folders";
-import type { BotUser, Collection, DigestState, FilingRule, Payment, Referral, Save, Sitting, Store, Wallet } from "./types";
+import type { BotUser, Collection, DigestState, FilingRule, Payment, Plan, Referral, Save, Sitting, Store, Wallet } from "./types";
 
 /** Recent turns kept per user, so follow-ups make sense. Older chats are kept as searchable memories. */
 export const TURNS_KEPT = 16;
@@ -57,10 +57,33 @@ export function readWallet(raw: unknown): Wallet {
         questions: p.kind === "questions" ? old : count(p.questions),
         stars: count(p.stars),
         at: String(p.at ?? ""),
+        ...(p.plan === true ? { plan: true } : {}),
       };
     })
-    .filter((p) => p.videos || p.questions);
-  return { videos: count(r.videos), questions: count(r.questions), paid: paid.slice(-PAYMENTS_KEPT) };
+    .filter((p) => p.videos || p.questions || p.plan);
+  return { videos: count(r.videos), questions: count(r.questions), paid: paid.slice(-PAYMENTS_KEPT), plan: readPlan(r.plan) };
+}
+
+/** Knowing Plus read from the wallet, or null if there's none (or it's broken). */
+export function readPlan(raw: unknown): Plan | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  const until = String(r.until ?? "");
+  const charge = String(r.charge ?? "");
+  if (!Number.isFinite(Date.parse(until)) || !charge) return null;
+  const count = (v: unknown) => Math.max(0, Math.floor(Number(v) || 0));
+  const cost = Number(r.cost);
+  return {
+    until,
+    first: String(r.first || charge),
+    charge,
+    stars: count(r.stars),
+    day: /^\d{4}-\d{2}-\d{2}$/.test(String(r.day)) ? String(r.day) : "",
+    videos: count(r.videos),
+    questions: count(r.questions),
+    cost: Number.isFinite(cost) && cost > 0 ? cost : 0,
+    canceled: r.canceled === true,
+  };
 }
 
 /** A short id that fits inside Telegram's 64-byte button data. */
