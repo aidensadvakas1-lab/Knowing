@@ -181,14 +181,14 @@ export function usageText(usage: Usage, limits: Deps["limits"], wallet: Wallet |
     lines.push("", `<b>Extras:</b> ${wallet.videos} video${wallet.videos === 1 ? "" : "s"} and ${wallet.questions} question${wallet.questions === 1 ? "" : "s"}, bought or earned with /invite. They never expire and are used after your free ones.`);
   }
   if (packs.length) {
-    lines.push("", `<b>Get more any time</b> with /buy: ${priceList(packs, "videos")}; ${priceList(packs, "questions")}. They never expire.`);
+    lines.push("", `<b>Get more any time</b> with /buy, videos and questions in one pack: ${priceList(packs)}. They never expire.`);
   }
   return lines.join("\n");
 }
 
 /** What the model is told about limits when the owner asks: they have none, and what everyone else gets, so the owner can ask about prices too. */
 function ownerUsage(deps: Deps): string {
-  const packs = deps.packs.length ? `, then can buy packs with /buy: ${priceList(deps.packs, "videos")}; ${priceList(deps.packs, "questions")}` : "; buying more is turned off";
+  const packs = deps.packs.length ? `, then can buy packs of videos and questions together with /buy: ${priceList(deps.packs)}` : "; buying more is turned off";
   return `They're the owner of this bot, so they have no limits and never need to buy anything. Everyone else starts with ${deps.limits.videos} free videos and ${deps.limits.questions} free questions, given once${packs}.`;
 }
 
@@ -457,14 +457,14 @@ async function showUsage(chatId: number, user: BotUser, deps: Deps): Promise<voi
 /** /buy: every pack, any time, even before the free ones run out. */
 async function showShop(chatId: number, deps: Deps): Promise<void> {
   if (!deps.packs.length) return void (await deps.tg.sendMessage(chatId, "Buying extras is turned off right now."));
-  await deps.tg.sendMessage(chatId, "Pick a pack. Extras never expire and are used after your free ones run out.", buyButtons(deps.packs));
+  await deps.tg.sendMessage(chatId, "Pick a pack. Each one has videos and questions together. Extras never expire and are used after your free ones run out.", buyButtons(deps.packs));
 }
 
-/** Out of free and bought ones: offer that kind's packs. */
+/** Out of free and bought ones: offer the packs. */
 async function limitReached(chatId: number, kind: PackKind, deps: Deps): Promise<void> {
   const text = limitText(kind, deps.limits[kind]);
   if (!deps.packs.length) return void (await deps.tg.sendMessage(chatId, text));
-  await deps.tg.sendMessage(chatId, `${text}\n\nGet more to keep going. They never expire.`, buyButtons(deps.packs, kind));
+  await deps.tg.sendMessage(chatId, `${text}\n\nGet more to keep going. Each pack has videos and questions, and they never expire.`, buyButtons(deps.packs));
 }
 
 /** Telegram asks right before charging. Say no (and they aren't charged) unless we can record what they bought. */
@@ -472,7 +472,7 @@ async function onPreCheckout(p: NonNullable<Update["pre_checkout_query"]>, deps:
   let error = "";
   try {
     const pack = readPack(p.invoice_payload);
-    const onSale = pack && deps.packs.some((x) => x.kind === pack.kind && x.count === pack.count && x.stars === pack.stars);
+    const onSale = pack && deps.packs.some((x) => x.videos === pack.videos && x.questions === pack.questions && x.stars === pack.stars);
     if (!pack || !onSale || p.currency !== "XTR" || p.total_amount !== pack.stars) {
       error = "That price has changed. Tap the button again for the current one. You weren't charged.";
     } else if (!(await hasAccess(p.from.id, deps))) {
@@ -497,10 +497,11 @@ async function onPaid(chatId: number, userId: number, name: string | undefined, 
     if (!pack) throw new Error(`unknown payload "${pay.invoice_payload}"`);
     const wallet = await deps.store.getWallet(userId);
     if (wallet.paid.some((p) => p.charge === pay.telegram_payment_charge_id)) return;
-    wallet[pack.kind] += pack.count;
-    wallet.paid = [...wallet.paid, { charge: pay.telegram_payment_charge_id, kind: pack.kind, count: pack.count, stars: pay.total_amount, at: new Date().toISOString() }];
+    wallet.videos += pack.videos;
+    wallet.questions += pack.questions;
+    wallet.paid = [...wallet.paid, { charge: pay.telegram_payment_charge_id, videos: pack.videos, questions: pack.questions, stars: pay.total_amount, at: new Date().toISOString() }];
     await deps.store.saveWallet(userId, wallet);
-    await deps.tg.sendMessage(chatId, `Thanks! ${packName(pack)} added, so you have ${wallet[pack.kind]} extra ${pack.kind}. They never expire and are used after your free ones. Any problem with a payment, send /paysupport.`);
+    await deps.tg.sendMessage(chatId, `Thanks! ${packName(pack)} added, so you have ${packName(wallet) || "nothing"} extra. They never expire and are used after your free ones. Any problem with a payment, send /paysupport.`);
     await tellOwner(deps, `${who} paid ${pay.total_amount} ⭐ for ${packName(pack)}. To refund it: ${refund}`);
   } catch (error) {
     console.error("Recording a payment failed", error);
@@ -530,7 +531,8 @@ async function refundPayment(chatId: number, userId: number, charge: string, dep
   const wallet = await deps.store.getWallet(userId);
   const payment = wallet.paid.find((p) => p.charge === charge);
   if (payment) {
-    wallet[payment.kind] = Math.max(0, wallet[payment.kind] - payment.count);
+    wallet.videos = Math.max(0, wallet.videos - payment.videos);
+    wallet.questions = Math.max(0, wallet.questions - payment.questions);
     wallet.paid = wallet.paid.filter((p) => p !== payment);
     await deps.store.saveWallet(userId, wallet);
   }
@@ -861,11 +863,10 @@ async function onButton(q: NonNullable<Update["callback_query"]>, deps: Deps) {
     }
     if (kind === "buy") {
       await deps.tg.answerCallback(q.id);
-      if (id !== "videos" && id !== "questions") return;
       if (!deps.packs.length) return void (await deps.tg.sendMessage(chatId, "Buying extras is turned off right now."));
-      const pack = deps.packs.find((p) => p.kind === id && p.count === Number(n));
-      // A button from before pack sizes (or prices) changed: show what's on sale now.
-      if (!pack) return void (await deps.tg.sendMessage(chatId, "Here's what's on sale now:", buyButtons(deps.packs, id)));
+      const pack = deps.packs.find((p) => String(p.videos) === id && String(p.questions) === n);
+      // A button from before bundles (or before prices changed): show what's on sale now.
+      if (!pack) return void (await deps.tg.sendMessage(chatId, "Here's what's on sale now:", buyButtons(deps.packs)));
       try {
         await deps.tg.sendInvoice(chatId, invoiceFor(pack));
       } catch (error) {

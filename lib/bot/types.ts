@@ -66,13 +66,13 @@ export interface Usage {
   questions: number;
 }
 
-/** What can be bought with Telegram Stars. */
+/** The two things that are limited: videos watched and questions asked. */
 export type PackKind = "videos" | "questions";
 
-/** A pack on sale: how many of what, for how many Stars. */
+/** A pack on sale: videos and questions together in one purchase, for how many Stars. */
 export interface Pack {
-  kind: PackKind;
-  count: number;
+  videos: number;
+  questions: number;
   stars: number;
 }
 
@@ -80,9 +80,9 @@ export interface Pack {
 export interface Payment {
   /** Telegram's id for the payment, needed to refund it. */
   charge: string;
-  kind: PackKind;
-  /** How many it added. */
-  count: number;
+  /** How many of each it added. */
+  videos: number;
+  questions: number;
   stars: number;
   at: string;
 }

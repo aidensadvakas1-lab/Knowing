@@ -35,7 +35,7 @@ save captions or repeat themselves, and you can talk to it about anything.
 | `/saved` | Lists everything, grouped by folder, each linked to its video |
 | `/digest` | The weekly flashback: off until you turn it on (it's offered once, at `/start` or after the next save). Every Sunday around 17:00 UTC: what you saved that week by folder plus one from about a month ago, or, in a week with no saves, a few older ones (about a week, a month and three months old). No AI, so it's free. It pauses after 3 in a row with no reply, and `/digest off` stops it |
 | `/usage` (or ask "how many questions do I have left?") | Shows the free videos and questions left, any extras you bought, and buttons to buy more. Checking never uses up a question |
-| `/buy` | Every pack on sale, any time, even before the free ones run out |
+| `/buy` | The refill pack (videos and questions together), any time, even before the free ones run out |
 | `/invite` | Your own invite link. When a friend joins with it, saves a video and asks something, you get 3 free videos, for up to 5 friends. (For the owner, `/invite` gives the main link and the spots used) |
 
 If a video is mostly talking and audio isn't available, the card offers **Add what it says**: paste the caption and the save is rewritten to be exact.
@@ -183,17 +183,17 @@ adds. Worst case, 3 videos cost about 50¢ of AI, for a person who's actually us
 
 ### Sell extra videos and questions (Telegram Stars)
 
-People can buy a pack any time with `/buy` (or the buttons under `/usage`), and the message they
-get when they run out offers that kind's packs:
+People can buy the refill pack any time with `/buy` (or the button under `/usage`), and the message
+they get when they run out offers it. It's one purchase with videos and questions together, and
+there's just one, so the choice is easy:
 
 | Pack | Price | Worst case it can cost you | You get paid about |
 |---|---|---|---|
-| 10 videos | 150 ⭐ | $1.62 | $1.95 |
-| 20 videos | 300 ⭐ | $3.24 | $3.90 |
-| 50 videos | 750 ⭐ | $8.10 | $9.75 |
-| 20 questions | 150 ⭐ | $1.63 | $1.95 |
-| 40 questions | 300 ⭐ | $3.27 | $3.90 |
-| 100 questions | 750 ⭐ | $8.16 | $9.75 |
+| 5 videos + 10 questions | 150 ⭐ | $1.63 | $1.95 |
+
+To sell more sizes, add them to `PACK_SIZES` in [`lib/bot/shop.ts`](../lib/bot/shop.ts): each is
+priced the same way (10 + 20 would be 300 ⭐, 25 + 50 would be 750 ⭐). Packs bought before bundles
+still count and can still be refunded.
 
 A Star costs the buyer about 2 cents, so 150 ⭐ is about $3. Prices are worked out in
 [`lib/bot/costs.ts`](../lib/bot/costs.ts) so a pack's worst case uses at most 85% of what it pays,

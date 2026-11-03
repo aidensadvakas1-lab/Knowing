@@ -9,7 +9,7 @@
  * charges about one token per 750 pixels.
  */
 import { PACK_SIZES } from "./shop";
-import type { Pack, PackKind } from "./types";
+import type { Pack } from "./types";
 
 /** Dollars per million tokens, from Anthropic's price list. */
 export const PRICES = {
@@ -96,17 +96,17 @@ export function worstQuestionCost(): number {
   return Math.max(answer, rewrite) + voice + SMALL_CALLS;
 }
 
-/** The most a pack of `count` can cost, in dollars. */
-export function worstPackCost(kind: PackKind, count: number): number {
-  return count * (kind === "videos" ? worstVideoCost() : worstQuestionCost());
+/** The most a bundle can cost, in dollars: every video and every question at its worst. */
+export function worstPackCost(pack: { videos: number; questions: number }): number {
+  return pack.videos * worstVideoCost() + pack.questions * worstQuestionCost();
 }
 
-/** Stars a pack sells for: enough that its worst case uses at most SAFETY of the payout, rounded up to a multiple of 50. */
-export function packPrice(kind: PackKind, count: number): number {
-  return Math.ceil(worstPackCost(kind, count) / (PAYOUT_PER_STAR * SAFETY) / 50) * 50;
+/** Stars a bundle sells for: enough that its worst case uses at most SAFETY of the payout, rounded up to a multiple of 50. */
+export function packPrice(pack: { videos: number; questions: number }): number {
+  return Math.ceil(worstPackCost(pack) / (PAYOUT_PER_STAR * SAFETY) / 50) * 50;
 }
 
-/** Every pack on sale with its price, videos first, smallest first. */
+/** Every bundle on sale with its price, smallest first. */
 export function pricedPacks(): Pack[] {
-  return (["videos", "questions"] as const).flatMap((kind) => PACK_SIZES[kind].map((count) => ({ kind, count, stars: packPrice(kind, count) })));
+  return PACK_SIZES.map((size) => ({ ...size, stars: packPrice(size) }));
 }

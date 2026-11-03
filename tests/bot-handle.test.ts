@@ -9,10 +9,8 @@ import { NoTranscription, type Answer, type Brain, type InlineButton, type Media
 
 /** Packs on sale in these tests. */
 const PACKS: Pack[] = [
-  { kind: "videos", count: 10, stars: 150 },
-  { kind: "videos", count: 20, stars: 300 },
-  { kind: "questions", count: 20, stars: 150 },
-  { kind: "questions", count: 40, stars: 300 },
+  { videos: 5, questions: 10, stars: 150 },
+  { videos: 10, questions: 20, stars: 300 },
 ];
 /** 7 is the owner (no limits); 8 is another allowed user, who has them. */
 const FRIEND = 8;
@@ -275,49 +273,46 @@ describe("inviting friends", () => {
   });
 });
 
-const paid = (charge: string, from = 99, payload = "pack:videos:10:150", stars = 150): Update => ({
+const paid = (charge: string, from = 99, payload = "bundle:5:10:150", stars = 150): Update => ({
   message: { message_id: 2, chat: { id: from }, from: { id: from, first_name: "Sam" }, successful_payment: { currency: "XTR", total_amount: stars, invoice_payload: payload, telegram_payment_charge_id: charge } },
 });
-const checkout = (payload = "pack:videos:10:150", amount = 150, from = 99): Update => ({ pre_checkout_query: { id: "pc", from: { id: from }, currency: "XTR", total_amount: amount, invoice_payload: payload } });
+const checkout = (payload = "bundle:5:10:150", amount = 150, from = 99): Update => ({ pre_checkout_query: { id: "pc", from: { id: from }, currency: "XTR", total_amount: amount, invoice_payload: payload } });
 
 describe("buying extras with Stars", () => {
-  it("offers that kind's packs when someone runs out, and sends a Stars invoice for the one tapped", async () => {
+  it("offers the bundles when someone runs out, and sends a Stars invoice for the one tapped", async () => {
     const { deps, sent } = setup({ limits: { videos: 1, questions: 1 } });
     await handleUpdate(text("https://vm.tiktok.com/one/", FRIEND), deps);
     await handleUpdate(text("https://vm.tiktok.com/two/", FRIEND), deps);
-    expect(sent.at(-1)?.html).toBe("You're out of videos (your free one is used up), so I didn't save this one.\n\nGet more to keep going. They never expire.");
-    expect(sent.at(-1)?.buttons).toEqual([[{ text: "10 more videos, 150 ⭐", callback_data: "buy:videos:10" }], [{ text: "20 more videos, 300 ⭐", callback_data: "buy:videos:20" }]]);
-    await handleUpdate(tap("buy:videos:20", 100, FRIEND), deps);
-    expect(deps.tg.sendInvoice).toHaveBeenCalledWith(FRIEND, expect.objectContaining({ title: "20 more videos", payload: "pack:videos:20:300", stars: 300 }));
+    expect(sent.at(-1)?.html).toBe("You're out of videos (your free one is used up), so I didn't save this one.\n\nGet more to keep going. Each pack has videos and questions, and they never expire.");
+    expect(sent.at(-1)?.buttons).toEqual([[{ text: "5 videos + 10 questions, 150 ⭐", callback_data: "buy:5:10" }], [{ text: "10 videos + 20 questions, 300 ⭐", callback_data: "buy:10:20" }]]);
+    await handleUpdate(tap("buy:10:20", 100, FRIEND), deps);
+    expect(deps.tg.sendInvoice).toHaveBeenCalledWith(FRIEND, expect.objectContaining({ title: "10 videos + 20 questions", payload: "bundle:10:20:300", stars: 300 }));
     await handleUpdate(text("q1", FRIEND), deps);
     await handleUpdate(text("q2", FRIEND), deps);
-    expect(datas(sent.at(-1)?.buttons)).toEqual(["buy:questions:20", "buy:questions:40"]);
+    expect(datas(sent.at(-1)?.buttons)).toEqual(["buy:5:10", "buy:10:20"]);
   });
 
   it("sells any pack with /buy, before the free ones run out", async () => {
     const { deps, sent } = setup();
     await handleUpdate(text("/buy", FRIEND), deps);
     expect(sent.at(-1)?.html).toContain("Pick a pack.");
-    expect(sent.at(-1)?.buttons).toEqual([
-      [{ text: "10 videos, 150 ⭐", callback_data: "buy:videos:10" }, { text: "20 questions, 150 ⭐", callback_data: "buy:questions:20" }],
-      [{ text: "20 videos, 300 ⭐", callback_data: "buy:videos:20" }, { text: "40 questions, 300 ⭐", callback_data: "buy:questions:40" }],
-    ]);
-    await handleUpdate(tap("buy:questions:40", 100, FRIEND), deps);
-    expect(deps.tg.sendInvoice).toHaveBeenCalledWith(FRIEND, expect.objectContaining({ title: "40 more questions", stars: 300 }));
+    expect(datas(sent.at(-1)?.buttons)).toEqual(["buy:5:10", "buy:10:20"]);
+    await handleUpdate(tap("buy:5:10", 100, FRIEND), deps);
+    expect(deps.tg.sendInvoice).toHaveBeenCalledWith(FRIEND, expect.objectContaining({ title: "5 videos + 10 questions", stars: 150 }));
   });
 
   it("shows the packs on sale now when an old buy button is tapped", async () => {
     const { deps, sent } = setup();
-    await handleUpdate(tap("buy:videos", 100, FRIEND), deps);
+    await handleUpdate(tap("buy:videos:10", 100, FRIEND), deps); // from before bundles
     expect(deps.tg.sendInvoice).not.toHaveBeenCalled();
-    expect(datas(sent.at(-1)?.buttons)).toEqual(["buy:videos:10", "buy:videos:20"]);
+    expect(datas(sent.at(-1)?.buttons)).toEqual(["buy:5:10", "buy:10:20"]);
   });
 
   it("says so when Telegram won't make the payment screen, instead of doing nothing", async () => {
     const { deps, sent } = setup({ limits: { videos: 1, questions: 1 } });
     await handleUpdate(text("/start join-abc123", 99), deps);
     vi.mocked(deps.tg.sendInvoice).mockRejectedValueOnce(new Error("sendInvoice: Bad Request: STARS_INVOICE_INVALID"));
-    await handleUpdate(tap("buy:questions:20", 100, 99), deps);
+    await handleUpdate(tap("buy:5:10", 100, 99), deps);
     expect(sent.find((m) => m.chatId === 99 && m.html.includes("payment screen"))?.html).toContain("nothing was charged");
     expect(sent.at(-1)).toMatchObject({ chatId: 7, html: expect.stringContaining("STARS_INVOICE_INVALID") });
   });
@@ -342,11 +337,11 @@ describe("buying extras with Stars", () => {
     await handleUpdate(text("/start join-abc123", 99), deps);
     await handleUpdate(checkout(), deps);
     expect(deps.tg.answerPreCheckout).toHaveBeenLastCalledWith("pc", true, undefined);
-    for (const [payload, amount] of [["pack:videos:10:100", 100], ["pack:videos:100", 100], ["pack:videos:15:150", 150], ["pack:videos:10:150", 100]] as const) {
+    for (const [payload, amount] of [["bundle:5:10:100", 100], ["pack:videos:10:150", 150], ["bundle:6:10:150", 150], ["bundle:5:10:150", 100]] as const) {
       await handleUpdate(checkout(payload, amount), deps);
       expect(deps.tg.answerPreCheckout, payload).toHaveBeenLastCalledWith("pc", false, expect.stringContaining("price has changed"));
     }
-    await handleUpdate(checkout("pack:videos:10:150", 150, 55), deps);
+    await handleUpdate(checkout("bundle:5:10:150", 150, 55), deps);
     expect(deps.tg.answerPreCheckout).toHaveBeenLastCalledWith("pc", false, expect.stringContaining("invite-only"));
   });
 
@@ -364,16 +359,16 @@ describe("buying extras with Stars", () => {
     await handleUpdate(text("/start join-abc123", 99), deps);
     await handleUpdate(paid("ch1"), deps);
     await handleUpdate(paid("ch1"), deps); // Telegram sent it twice
-    expect((await store.getWallet(99)).videos).toBe(10);
+    expect(await store.getWallet(99)).toMatchObject({ videos: 5, questions: 10 });
     expect((await store.getWallet(99)).paid).toHaveLength(1);
-    expect(sent.filter((m) => m.chatId === 99).at(-1)?.html).toContain("10 more videos added, so you have 10 extra videos");
-    expect(sent.filter((m) => m.chatId === 7).at(-1)?.html).toBe("Sam paid 150 ⭐ for 10 more videos. To refund it: <code>/refund 99 ch1</code>");
+    expect(sent.filter((m) => m.chatId === 99).at(-1)?.html).toContain("5 videos + 10 questions added, so you have 5 videos + 10 questions extra");
+    expect(sent.filter((m) => m.chatId === 7).at(-1)?.html).toBe("Sam paid 150 ⭐ for 5 videos + 10 questions. To refund it: <code>/refund 99 ch1</code>");
     await handleUpdate(text("https://vm.tiktok.com/free/", 99), deps);
     await handleUpdate(text("https://vm.tiktok.com/extra/", 99), deps);
     expect(media.fromLink).toHaveBeenCalledTimes(2);
-    expect((await store.getWallet(99)).videos).toBe(9);
-    await handleUpdate(paid("ch2", 99, "pack:videos:20:300", 300), deps);
-    expect((await store.getWallet(99)).videos).toBe(29);
+    expect((await store.getWallet(99)).videos).toBe(4);
+    await handleUpdate(paid("ch2", 99, "bundle:10:20:300", 300), deps);
+    expect(await store.getWallet(99)).toMatchObject({ videos: 14, questions: 30 });
   });
 
   it("refunds with the owner's /refund and takes the pack back off", async () => {
@@ -410,7 +405,7 @@ describe("buying extras with Stars", () => {
     await handleUpdate(text("/start join-abc123", 99), deps);
     await handleUpdate(paid("ch1"), deps);
     await handleUpdate(tap("wipe:yes", 100, 99), deps);
-    expect((await store.getWallet(99)).videos).toBe(10);
+    expect(await store.getWallet(99)).toMatchObject({ videos: 5, questions: 10 });
   });
 });
 
@@ -421,7 +416,7 @@ describe("usage", () => {
 
   it("shows what's left of the free ones, what they bought, and the packs", () => {
     expect(usageText(usage, limits, null, PACKS)).toBe(
-      "<b>Free to start</b> (given once, they don't refill):\nVideos: 3 of 5 left\nQuestions: 3 of 10 left\n\n<b>Get more any time</b> with /buy: 10 videos for 150 ⭐, 20 for 300 ⭐; 20 questions for 150 ⭐, 40 for 300 ⭐. They never expire.",
+      "<b>Free to start</b> (given once, they don't refill):\nVideos: 3 of 5 left\nQuestions: 3 of 10 left\n\n<b>Get more any time</b> with /buy, videos and questions in one pack: 5 videos + 10 questions for 150 ⭐, 10 + 20 for 300 ⭐. They never expire.",
     );
     expect(usageText(usage, limits, { videos: 1, questions: 20, paid: [] }, PACKS)).toContain("<b>Extras:</b> 1 video and 20 questions, bought or earned with /invite. They never expire");
     expect(usageText(usage, limits, null, [])).not.toContain("⭐");
@@ -442,7 +437,7 @@ describe("usage", () => {
     await handleUpdate(text("what was that drill?", FRIEND), deps);
     await handleUpdate(text("/usage", FRIEND), deps);
     expect(sent.at(-1)?.html).toContain("Questions: 0 of 1 left");
-    expect(datas(sent.at(-1)?.buttons)).toContain("buy:questions:20");
+    expect(datas(sent.at(-1)?.buttons)).toContain("buy:5:10");
     await handleUpdate(text("how many questions do I have left?", FRIEND), deps);
     expect(sent.at(-1)?.html).toContain("Questions: 0 of 1 left");
     expect(brain.answer).toHaveBeenCalledTimes(1);
@@ -1223,8 +1218,8 @@ describe("what Knowing knows about itself", () => {
     const input = vi.mocked(brain.answer).mock.calls[0]![0];
     expect(input.usage).toContain("no limits");
     expect(input.usage).toContain("50 free videos and 50 free questions");
-    expect(input.usage).toContain("10 videos for 150 ⭐");
-    expect(input.about).toContain("10 videos for 150 ⭐");
+    expect(input.usage).toContain("5 videos + 10 questions for 150 ⭐");
+    expect(input.about).toContain("5 videos + 10 questions for 150 ⭐");
     expect(input.about).toContain("/refund");
     await handleUpdate(text("and what can you do?", FRIEND), deps);
     const friend = vi.mocked(brain.answer).mock.calls[1]![0];
