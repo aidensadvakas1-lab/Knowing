@@ -4,25 +4,34 @@
  *
  * - A link (shared from TikTok) or a video: watch it, save it, and react in
  *   a sentence or two (how it connects to their other saves). No coaching.
- * - Any other text: answer from their saves and what they've told us.
+ * - Any other text, or a voice message: answer from their saves and what they've told us.
  * - Buttons: Show steps, Start now, Add what it says, Fix something, Keep both / Replace.
- * - /start, /help, /saved, /memory, /usage, /delete, and /invite for the owner.
+ * - /start and /help: a short welcome with a tap-through guide. /folders, /saved, /digest,
+ *   /memory, /usage, /buy, /delete, and /invite for the owner.
+ * - The weekly flashback (digest.ts) is off until they turn it on. It's offered once,
+ *   at /start or after their next save.
  * - Asking "how many questions do I have left?" gets the same answer as /usage, for free.
  * - An invite link lets people in without editing settings, up to a set number of spots.
- * - When the free daily amount runs out, extras can be bought with Telegram Stars (shop.ts).
+ *   Everyone also has their own link (/invite), and earns free videos once a friend who
+ *   joined with it saves a video and asks something (referral.ts).
+ * - Free videos and questions are given once. Packs of extras can be bought with
+ *   Telegram Stars any time (/buy), priced so even their worst case leaves a profit (costs.ts).
  *   /terms, /support and /paysupport, plus /refund and /reply for the owner.
- * - Daily limits per user, and an alert to the owner when something breaks.
+ * - The owner has no limits. An alert goes to the owner when something breaks.
  * - Shares close together make a sitting, wrapped up later in wrapup.ts.
  */
 import { createHash, timingSafeEqual } from "node:crypto";
-import { answerText, escapeHtml as esc, reactionButtons, reactionText, saveButtons, saveCard, savedList, stepButtons, stepText } from "./format";
-import { WELCOME } from "./profile";
-import { buyButton, invoiceFor, PACKS, packName, PAYSUPPORT_HELP, readPack, SUPPORT_HELP, TERMS } from "./shop";
+import { flashback, OFF_TEXT, OFFER_BUTTONS, OFFER_TEXT, ON_TEXT } from "./digest";
+import { answerText, escapeHtml as esc, folderList, folderView, reactionButtons, reactionText, saveButtons, saveCard, savedList, stepButtons, stepText } from "./format";
+import { isVideoFile, LOGIN_WALLED, platformName } from "./platforms";
+import { GUIDE, guideButtons, WELCOME } from "./profile";
+import { buyButtons, invoiceFor, packName, PAYSUPPORT_HELP, priceList, readPack, SUPPORT_HELP, TERMS } from "./shop";
 import { relevantSaves, sharedVideoTurns } from "./prompts";
+import { hasStarted, readReferral, REFERRAL_MAX, REFERRAL_QUESTIONS, REFERRAL_REWARD, REFERRAL_VIDEOS, referralCode } from "./referral";
 import { groupHits, searchQuery, type Retriever } from "./rag";
 import { FACTS_KEPT, newSaveId, newUser, TURNS_KEPT } from "./store";
 import { findUrl } from "./tiktok";
-import type { Brain, BotUser, ChatMemory, InlineButton, Media, PackKind, Save, Store, TelegramApi, Usage, Wallet, WatchInput } from "./types";
+import { NoTranscription, type Brain, type BotUser, type ChatMemory, type InlineButton, type Media, type Pack, type PackKind, type Save, type Store, type TelegramApi, type Usage, type Wallet, type WatchInput } from "./types";
 
 export interface Deps {
   tg: TelegramApi;
@@ -35,12 +44,22 @@ export interface Deps {
   isAllowed(userId: number): boolean;
   /** Who gets join notices and may use /invite. 0 if nobody. */
   ownerId: number;
-  /** The invite link: whoever opens it can join, until `spots` people have joined that way. */
-  invite: { code: string; spots: number; link(): Promise<string> };
-  /** Most videos and questions per user per day, so one person can't run up the API bill. */
+  /**
+   * The invite link: whoever opens it can join, until `spots` people have joined
+   * that way (with it or with someone's own link). `key` signs everyone's own
+   * links; `link(start)` makes a link with that code, the owner's by default.
+   */
+  invite: { code: string; spots: number; key: string; link(start?: string): Promise<string> };
+  /**
+   * Public mode: anyone who messages the bot (t.me/<bot>) is let in, no invite
+   * needed. `cap` is the most people who can join that way (0 = no limit).
+   * Missing means invite-only.
+   */
+  open?: { cap: number };
+  /** Free videos and questions per person, given once (they don't refill), so nobody can run up the API bill. */
   limits: { videos: number; questions: number };
-  /** Price in Telegram Stars of one pack of extras (shop.ts). 0 turns buying off. */
-  packStars: number;
+  /** The packs of extras on sale and their prices in Stars (costs.ts pricedPacks). Empty turns buying off. */
+  packs: Pack[];
   /** Tells the owner something broke. */
   alert(text: string): Promise<void>;
 }
@@ -54,7 +73,13 @@ export interface Update {
     text?: string;
     caption?: string;
     video?: { file_id: string; duration?: number; file_size?: number };
-    document?: { file_id: string; mime_type?: string; file_size?: number };
+    /** GIFs and silent clips. Telegram also sends these as a document. */
+    animation?: { file_id: string; duration?: number; file_size?: number };
+    /** Round video messages. */
+    video_note?: { file_id: string; duration?: number; file_size?: number };
+    document?: { file_id: string; mime_type?: string; file_name?: string; file_size?: number };
+    /** A voice message: a question asked out loud. */
+    voice?: { file_id: string; duration?: number; file_size?: number };
     successful_payment?: { currency: string; total_amount: number; invoice_payload: string; telegram_payment_charge_id: string };
   };
   /** Telegram checks with us right before charging Stars. */
@@ -115,47 +140,42 @@ async function failed(error: unknown, where: string, deps: Deps): Promise<string
 
 const today = () => new Date().toISOString().slice(0, 10);
 
-/** Count one use, or return false when today's limit is reached. */
+/** Count one free use, or return false when their free ones (given once, never refilled) are used up. */
 export function spend(user: BotUser, kind: "videos" | "questions", limit: number): boolean {
-  if (user.usage.day !== today()) user.usage = { day: today(), videos: 0, questions: 0 };
   if (user.usage[kind] >= limit) return false;
+  if (!user.usage.day) user.usage.day = today();
   user.usage[kind] += 1;
   return true;
 }
 
-/** When the limits reset (midnight UTC), in words: "in about 6 hours". */
-export function resetsIn(now = Date.now()): string {
-  const minutes = Math.ceil((86_400_000 - (now % 86_400_000)) / 60_000);
-  if (minutes < 60) return "in under an hour";
-  const hours = Math.round(minutes / 60);
-  return `in about ${hours} hour${hours === 1 ? "" : "s"}`;
+export function limitText(kind: "videos" | "questions", n: number): string {
+  const free = n === 1 ? "your free one is" : `your ${n} free ones are`;
+  return kind === "videos" ? `You're out of videos (${free} used up), so I didn't save this one.` : `You're out of questions (${free} used up).`;
 }
 
-export const limitText = (kind: "videos" | "questions", n: number, now = Date.now()) =>
-  kind === "videos"
-    ? `That's ${n} videos today, the daily limit, so I didn't save this one. Send it again ${resetsIn(now)}.`
-    : `That's ${n} questions today, the daily limit. You can ask more ${resetsIn(now)}.`;
-
 /**
- * What /usage says: free videos and questions left today, when they reset,
- * and what they bought. Also given to the model, so a question about it in
- * other words gets the same numbers.
+ * What /usage says: free videos and questions left, what they bought, and the
+ * packs on sale. Also given to the model, so a question about it in other
+ * words gets the same numbers.
  */
-export function usageText(usage: Usage, limits: Deps["limits"], wallet: Wallet | null, packStars: number, now = Date.now()): string {
-  const fresh = usage.day !== new Date(now).toISOString().slice(0, 10);
-  const left = (kind: PackKind) => Math.max(0, limits[kind] - (fresh ? 0 : usage[kind]));
+export function usageText(usage: Usage, limits: Deps["limits"], wallet: Wallet | null, packs: Pack[]): string {
+  const left = (kind: PackKind) => Math.max(0, limits[kind] - usage[kind]);
   const lines = [
-    `<b>Free today</b>, back to full ${resetsIn(now)}:`,
+    `<b>Free to start</b> (given once, they don't refill):`,
     `Videos: ${left("videos")} of ${limits.videos} left`,
     `Questions: ${left("questions")} of ${limits.questions} left`,
   ];
   if (wallet && (wallet.videos || wallet.questions)) {
-    lines.push("", `<b>Extras you bought:</b> ${wallet.videos} video${wallet.videos === 1 ? "" : "s"} and ${wallet.questions} question${wallet.questions === 1 ? "" : "s"}. They never expire and kick in when your free ones run out.`);
-  } else if (packStars) {
-    lines.push("", `When your free ones run out, you can get ${packName("videos")} or ${packName("questions")} for ${packStars} ⭐ each.`);
+    lines.push("", `<b>Extras:</b> ${wallet.videos} video${wallet.videos === 1 ? "" : "s"} and ${wallet.questions} question${wallet.questions === 1 ? "" : "s"}, bought or earned with /invite. They never expire and are used after your free ones.`);
+  }
+  if (packs.length) {
+    lines.push("", `<b>Get more any time</b> with /buy: ${priceList(packs, "videos")}; ${priceList(packs, "questions")}. They never expire.`);
   }
   return lines.join("\n");
 }
+
+/** What the model is told about limits when the owner asks: they have none. */
+const OWNER_USAGE = "They're the owner of this bot, so they have no limits and never need to buy anything.";
 
 /**
  * "How many questions do I have left?", "what's my limit": answered with
@@ -190,22 +210,36 @@ export async function handleUpdate(update: Update, deps: Deps): Promise<void> {
     if (!(await hasAccess(userId, deps))) {
       const code = text.startsWith("/start ") ? text.slice(7).trim() : "";
       const invited = code !== "" && deps.invite.code !== "" && secretMatches(code, deps.invite.code);
-      if (!invited) return void (await deps.tg.sendMessage(chatId, privateText(userId)));
-      if (!(await join(chatId, userId, msg.from.first_name, deps))) return;
+      const inviter = invited || !code ? 0 : await inviterFrom(code, userId, deps);
+      if (!deps.open && !invited && !inviter) return void (await deps.tg.sendMessage(chatId, privateText(userId)));
+      if (!(await join(chatId, userId, msg.from.first_name, deps, inviter))) return;
     }
     if (text.startsWith("/invite") && userId === deps.ownerId) {
       const used = await spotsUsed(deps);
+      if (deps.open) {
+        const cap = deps.open.cap ? ` of ${deps.open.cap} spots` : "";
+        const joined = cap ? `${used}${cap} used` : `${people(used)} joined`;
+        await deps.tg.sendMessage(chatId, `Knowing is <b>public</b>. Anyone can start it with this link:\n${await deps.invite.link("")}\n\n${joined} so far. I'll message you each time someone new starts.`);
+        return;
+      }
       await deps.tg.sendMessage(chatId, `Your invite link:\n${await deps.invite.link()}\n\n${used} of ${deps.invite.spots} spots used. Anyone who opens the link can join until the spots run out. I'll message you each time someone joins.`);
       return;
     }
+    if (text.startsWith("/invite")) return await showReferral(chatId, userId, deps);
     if (userId === deps.ownerId && /^\/(refund|reply)\b/.test(text)) return await ownerCommand(chatId, text, deps);
     if (text.startsWith("/terms")) return void (await deps.tg.sendMessage(chatId, TERMS));
     const support = /^\/(pay)?support\b/.exec(text);
     if (support) return await askOwner(chatId, userId, msg.from.first_name, text.slice(support[0].length).trim(), Boolean(support[1]), deps);
     if (text === "/start" || text.startsWith("/start ") || text.startsWith("/help")) {
-      await deps.tg.sendMessage(chatId, WELCOME);
+      await deps.tg.sendMessage(chatId, WELCOME, guideButtons());
+      if (text.startsWith("/start")) await offerFlashback(chatId, userId, deps);
       return;
     }
+    if (text.startsWith("/folders") || text.startsWith("/tags")) {
+      const list = folderList(await deps.store.listSaves(userId, ALL_SAVES));
+      return void (await deps.tg.sendMessage(chatId, list.html, list.buttons));
+    }
+    if (text.startsWith("/digest")) return await digestCommand(chatId, userId, text.slice(7).trim().toLowerCase(), deps);
     const user = await deps.store.getUser(userId);
     if (text.startsWith("/memory")) {
       await deps.tg.sendMessage(chatId, memoryText(user), memoryButtons(user));
@@ -216,6 +250,7 @@ export async function handleUpdate(update: Update, deps: Deps): Promise<void> {
       return;
     }
     if (text.startsWith("/usage") || text.startsWith("/limits")) return await showUsage(chatId, user, deps);
+    if (text.startsWith("/buy")) return await showShop(chatId, deps);
     if (text.startsWith("/delete")) {
       const count = (await deps.store.listSaves(userId)).length;
       await deps.tg.sendMessage(chatId, `This deletes your ${count} save${count === 1 ? "" : "s"}, our chats and everything I remember about you. It can't be undone.`, [
@@ -225,7 +260,8 @@ export async function handleUpdate(update: Update, deps: Deps): Promise<void> {
       return;
     }
 
-    const video = msg.video ?? (msg.document?.mime_type?.startsWith("video/") ? msg.document : undefined);
+    // Any kind of video: a normal one, a GIF, a round video message, or a file of any video format.
+    const video = msg.video ?? msg.animation ?? msg.video_note ?? (isVideoFile(msg.document) ? msg.document : undefined);
     if (video) {
       if ((video.file_size ?? 0) > 20 * 1024 * 1024) {
         await deps.tg.sendMessage(chatId, "That video is over 20 MB, which is Telegram's limit for bots. Share the TikTok link instead.");
@@ -236,23 +272,104 @@ export async function handleUpdate(update: Update, deps: Deps): Promise<void> {
       return await watchAndSave(chatId, user, () => deps.media.fromTelegramFile(video.file_id, duration), "", text, deps);
     }
 
+    if (msg.voice) return await voiceMessage(chatId, user, msg.voice, deps, msg.from.first_name);
+
     const url = findUrl(text);
-    if (url && !(await allow(user, "videos", deps))) return await limitReached(chatId, "videos", deps);
+    // Links from apps that won't let the bot in only get told how to send the video, so they don't use one up.
+    const walled = Boolean(url && LOGIN_WALLED.has(platformName(url)));
+    if (url && !walled && !(await allow(user, "videos", deps))) return await limitReached(chatId, "videos", deps);
     if (url) return await watchAndSave(chatId, user, () => deps.media.fromLink(url), url, text.replace(url, "").trim(), deps);
 
     if (!text) return;
-    if (user.awaitingWordsFor) return await addWords(chatId, user, text, deps);
-    // Before the limit check: checking what's left shouldn't use a question, and works when none are left.
-    if (asksAboutUsage(text)) return await showUsage(chatId, user, deps);
-    if (!(await allow(user, "questions", deps))) return await limitReached(chatId, "questions", deps);
-    await answer(chatId, user, text, deps, msg.from.first_name);
+    await onText(chatId, user, text, deps, msg.from.first_name);
   } catch (error) {
     await deps.tg.sendMessage(chatId, await failed(error, "handling a message", deps)).catch(() => {});
   }
 }
 
-/** Count one use: today's free amount first, then what they bought. False when both are used up. */
+/** Enough to list every save in /folders and the flashback. */
+const ALL_SAVES = 1_000;
+
+/** A typed message, or a voice message's words: a question, or the words Fix / Add what it says asked for. `heard` shows what a voice message said. */
+async function onText(chatId: number, user: BotUser, text: string, deps: Deps, name?: string, heard = "") {
+  // Remaking a save is a Claude call like an answer, so it uses a question.
+  if (user.awaitingWordsFor) {
+    if (!(await allow(user, "questions", deps))) return await limitReached(chatId, "questions", deps);
+    return await addWords(chatId, user, text, deps, heard);
+  }
+  // Before the limit check: checking what's left shouldn't use a question, and works when none are left.
+  if (asksAboutUsage(text)) return await showUsage(chatId, user, deps);
+  if (!(await allow(user, "questions", deps))) return await limitReached(chatId, "questions", deps);
+  await answer(chatId, user, text, deps, name, heard);
+}
+
+/**
+ * A voice message: hear it (the first minute only, costs.ts VOICE_MAX_SECONDS),
+ * then treat the words like a typed message. It uses a question like one. The
+ * reply starts with what was heard, so a mishearing is easy to spot.
+ */
+async function voiceMessage(chatId: number, user: BotUser, voice: NonNullable<NonNullable<Update["message"]>["voice"]>, deps: Deps, name?: string) {
+  // Checked first, so nobody out of questions costs a transcription.
+  if (!(await hasLeft(user, "questions", deps))) return await limitReached(chatId, "questions", deps);
+  await deps.tg.typing(chatId);
+  let heard: { text: string; cut: boolean };
+  try {
+    heard = await deps.media.hearVoice(voice.file_id, voice.duration ?? 0);
+  } catch (error) {
+    if (error instanceof NoTranscription) return void (await deps.tg.sendMessage(chatId, "I can't hear voice messages yet, so type it for now."));
+    throw error;
+  }
+  if (!heard.text) return void (await deps.tg.sendMessage(chatId, "I couldn't make out any words in that one. Try again, or type it."));
+  const quote = heard.text.length > 300 ? `${heard.text.slice(0, 300)}…` : heard.text;
+  const echo = `🎙 <i>“${esc(quote)}”</i>${heard.cut ? "\n<i>(I only listened to the first minute.)</i>" : ""}`;
+  await onText(chatId, user, heard.text, deps, name, echo);
+}
+
+/** Whether they have one of these left, without using it. */
+async function hasLeft(user: BotUser, kind: PackKind, deps: Deps): Promise<boolean> {
+  if (user.id === deps.ownerId || user.usage[kind] < deps.limits[kind]) return true;
+  const wallet = await walletOf(user.id, deps);
+  return Boolean(wallet && wallet[kind] > 0);
+}
+
+/** Ask once, at /start or after their next save, whether they want the weekly flashback. Never gets in the way. */
+async function offerFlashback(chatId: number, userId: number, deps: Deps): Promise<void> {
+  try {
+    const digest = await deps.store.getDigest(userId);
+    if (digest.offered || digest.on) return;
+    // Marked first, so if this can't be saved they aren't asked again and again.
+    await deps.store.saveDigest(userId, { ...digest, offered: true });
+    await deps.tg.sendMessage(chatId, OFFER_TEXT, OFFER_BUTTONS);
+  } catch (error) {
+    console.error("Offering the weekly flashback failed", error);
+  }
+}
+
+/** /digest shows the setting and a preview; /digest on and /digest off change it. */
+async function digestCommand(chatId: number, userId: number, arg: string, deps: Deps): Promise<void> {
+  let digest;
+  try {
+    digest = await deps.store.getDigest(userId);
+  } catch (error) {
+    const detail = (error instanceof Error ? error.message : String(error)).slice(0, 200);
+    await deps.alert(`Weekly flashback settings couldn't be read. If you haven't, run docs/supabase.sql again in Supabase. ${detail}`).catch(() => {});
+    return void (await deps.tg.sendMessage(chatId, "Weekly flashbacks aren't set up yet. I've told the owner."));
+  }
+  if (arg === "on" || arg === "off") {
+    await deps.store.saveDigest(userId, { ...digest, on: arg === "on", offered: true, quiet: 0 });
+    return void (await deps.tg.sendMessage(chatId, arg === "on" ? ON_TEXT : OFF_TEXT));
+  }
+  const status = digest.on
+    ? "Your weekly flashback is <b>on</b>. It comes Sunday evenings (around 17:00 UTC)."
+    : "Your weekly flashback is <b>off</b>. Turn it on and every Sunday I'll send what you saved that week, or a few older videos worth another look.";
+  await deps.tg.sendMessage(chatId, status, [[digest.on ? { text: "Turn it off", callback_data: "digest:off" } : { text: "Turn it on", callback_data: "digest:on" }]]);
+  const preview = flashback(await deps.store.listSaves(userId, ALL_SAVES));
+  if (preview) await deps.tg.sendMessage(chatId, `<i>Here's what it would look like this week:</i>\n\n${preview.html}`, preview.buttons);
+}
+
+/** Count one use: their free ones first, then what they bought. False when both are used up. The owner has no limit. */
 async function allow(user: BotUser, kind: PackKind, deps: Deps): Promise<boolean> {
+  if (user.id === deps.ownerId) return true;
   if (spend(user, kind, deps.limits[kind])) return true;
   const wallet = await deps.store.getWallet(user.id).catch((error) => void console.error("Reading the wallet failed", error));
   if (!wallet || wallet[kind] < 1) return false;
@@ -264,14 +381,24 @@ async function allow(user: BotUser, kind: PackKind, deps: Deps): Promise<boolean
 const walletOf = (userId: number, deps: Deps) => deps.store.getWallet(userId).catch((error) => (console.error("Reading the wallet failed", error), null));
 
 async function showUsage(chatId: number, user: BotUser, deps: Deps): Promise<void> {
-  await deps.tg.sendMessage(chatId, usageText(user.usage, deps.limits, await walletOf(user.id, deps), deps.packStars));
+  if (user.id === deps.ownerId) {
+    return void (await deps.tg.sendMessage(chatId, `You're the owner, so you have no limits. Everyone else starts with ${deps.limits.videos} free videos and ${deps.limits.questions} free questions, given once.`));
+  }
+  const buttons = deps.packs.length ? buyButtons(deps.packs) : undefined;
+  await deps.tg.sendMessage(chatId, usageText(user.usage, deps.limits, await walletOf(user.id, deps), deps.packs), buttons);
 }
 
-/** Out of free and bought ones: say when it resets, and offer a pack. */
+/** /buy: every pack, any time, even before the free ones run out. */
+async function showShop(chatId: number, deps: Deps): Promise<void> {
+  if (!deps.packs.length) return void (await deps.tg.sendMessage(chatId, "Buying extras is turned off right now."));
+  await deps.tg.sendMessage(chatId, "Pick a pack. Extras never expire and are used after your free ones run out.", buyButtons(deps.packs));
+}
+
+/** Out of free and bought ones: offer that kind's packs. */
 async function limitReached(chatId: number, kind: PackKind, deps: Deps): Promise<void> {
   const text = limitText(kind, deps.limits[kind]);
-  if (!deps.packStars) return void (await deps.tg.sendMessage(chatId, text));
-  await deps.tg.sendMessage(chatId, `${text}\n\nOr get ${packName(kind)} now. They never expire.`, buyButton(kind, deps.packStars));
+  if (!deps.packs.length) return void (await deps.tg.sendMessage(chatId, text));
+  await deps.tg.sendMessage(chatId, `${text}\n\nGet more to keep going. They never expire.`, buyButtons(deps.packs, kind));
 }
 
 /** Telegram asks right before charging. Say no (and they aren't charged) unless we can record what they bought. */
@@ -279,10 +406,11 @@ async function onPreCheckout(p: NonNullable<Update["pre_checkout_query"]>, deps:
   let error = "";
   try {
     const pack = readPack(p.invoice_payload);
-    if (!pack || p.currency !== "XTR" || !deps.packStars || p.total_amount !== deps.packStars || pack.stars !== deps.packStars) {
+    const onSale = pack && deps.packs.some((x) => x.kind === pack.kind && x.count === pack.count && x.stars === pack.stars);
+    if (!pack || !onSale || p.currency !== "XTR" || p.total_amount !== pack.stars) {
       error = "That price has changed. Tap the button again for the current one. You weren't charged.";
     } else if (!(await hasAccess(p.from.id, deps))) {
-      error = "Knowing is invite-only for now. You weren't charged.";
+      error = deps.open ? "Send /start first, then try again. You weren't charged." : "Knowing is invite-only for now. You weren't charged.";
     } else {
       await deps.store.getWallet(p.from.id); // fails if the wallet column is missing
     }
@@ -303,11 +431,11 @@ async function onPaid(chatId: number, userId: number, name: string | undefined, 
     if (!pack) throw new Error(`unknown payload "${pay.invoice_payload}"`);
     const wallet = await deps.store.getWallet(userId);
     if (wallet.paid.some((p) => p.charge === pay.telegram_payment_charge_id)) return;
-    wallet[pack.kind] += PACKS[pack.kind];
-    wallet.paid = [...wallet.paid, { charge: pay.telegram_payment_charge_id, kind: pack.kind, stars: pay.total_amount, at: new Date().toISOString() }];
+    wallet[pack.kind] += pack.count;
+    wallet.paid = [...wallet.paid, { charge: pay.telegram_payment_charge_id, kind: pack.kind, count: pack.count, stars: pay.total_amount, at: new Date().toISOString() }];
     await deps.store.saveWallet(userId, wallet);
-    await deps.tg.sendMessage(chatId, `Thanks! ${packName(pack.kind)} added, so you have ${wallet[pack.kind]} extra ${pack.kind}. They never expire and kick in when your free ones run out. Any problem with a payment, send /paysupport.`);
-    await tellOwner(deps, `${who} paid ${pay.total_amount} ⭐ for ${packName(pack.kind)}. To refund it: ${refund}`);
+    await deps.tg.sendMessage(chatId, `Thanks! ${packName(pack)} added, so you have ${wallet[pack.kind]} extra ${pack.kind}. They never expire and are used after your free ones. Any problem with a payment, send /paysupport.`);
+    await tellOwner(deps, `${who} paid ${pay.total_amount} ⭐ for ${packName(pack)}. To refund it: ${refund}`);
   } catch (error) {
     console.error("Recording a payment failed", error);
     await deps.tg.sendMessage(chatId, "Your payment went through, but I couldn't add it to your account. I've told the owner, who will fix it or refund you.");
@@ -336,12 +464,12 @@ async function refundPayment(chatId: number, userId: number, charge: string, dep
   const wallet = await deps.store.getWallet(userId);
   const payment = wallet.paid.find((p) => p.charge === charge);
   if (payment) {
-    wallet[payment.kind] = Math.max(0, wallet[payment.kind] - PACKS[payment.kind]);
+    wallet[payment.kind] = Math.max(0, wallet[payment.kind] - payment.count);
     wallet.paid = wallet.paid.filter((p) => p !== payment);
     await deps.store.saveWallet(userId, wallet);
   }
   await deps.tg.sendMessage(userId, `Your payment${payment ? ` of ${payment.stars} ⭐` : ""} was refunded.`).catch(() => {});
-  await deps.tg.sendMessage(chatId, payment ? `Refunded, and I took the ${packName(payment.kind)} back off their account (never below 0).` : "Refunded.");
+  await deps.tg.sendMessage(chatId, payment ? `Refunded, and I took the ${packName(payment)} back off their account (never below 0).` : "Refunded.");
 }
 
 /** /support and /paysupport: pass the message to the owner, with refund commands for payment problems. */
@@ -351,7 +479,7 @@ async function askOwner(chatId: number, userId: number, name: string | undefined
   if (payments) {
     const paid = (await deps.store.getWallet(userId).catch(() => null))?.paid.slice(-3) ?? [];
     recent = paid.length
-      ? `\n\nTheir latest payments:\n${paid.map((p) => `${p.stars} ⭐ for ${packName(p.kind)}: <code>/refund ${userId} ${esc(p.charge)}</code>`).join("\n")}`
+      ? `\n\nTheir latest payments:\n${paid.map((p) => `${p.stars} ⭐ for ${packName(p)}: <code>/refund ${userId} ${esc(p.charge)}</code>`).join("\n")}`
       : "\n\nNo payments on record.";
   }
   await tellOwner(deps, `<b>${payments ? "Payment problem" : "Support"}</b> from ${name ? esc(name) : "someone"}:\n${esc(body)}${recent}\n\nReply with <code>/reply ${userId} your message</code>`);
@@ -362,7 +490,9 @@ async function askOwner(chatId: number, userId: number, name: string | undefined
 const privateText = (id: number) => `Knowing is invite-only for now. Ask the person who told you about it for an invite link.\n\nYour Telegram id: <code>${id}</code>`;
 const FULL = "Knowing is full right now, so I can't let you in yet. I've let the owner know.";
 
-/** Let in through settings, or already joined with the invite link. */
+const people = (n: number) => `${n} ${n === 1 ? "person" : "people"}`;
+
+/** Let in through settings, or already joined (with an invite link, or in public mode). */
 async function hasAccess(userId: number, deps: Deps): Promise<boolean> {
   return deps.isAllowed(userId) || (await deps.store.hasUser(userId));
 }
@@ -377,17 +507,33 @@ async function tellOwner(deps: Deps, html: string): Promise<void> {
   if (deps.ownerId) await deps.tg.sendMessage(deps.ownerId, html).catch((error) => console.error("Owner notice failed", error));
 }
 
-/** Someone opened the invite link: let them in if a spot is free. Tells the owner either way. */
-async function join(chatId: number, userId: number, name: string | undefined, deps: Deps): Promise<boolean> {
+/**
+ * Someone opened the invite link, or a friend's own link (`inviter`): let them
+ * in if a spot is free. Tells the owner either way, and the friend who invited them.
+ */
+async function join(chatId: number, userId: number, name: string | undefined, deps: Deps, inviter = 0): Promise<boolean> {
   const used = await spotsUsed(deps);
   const who = name ? esc(name) : "Someone";
-  if (used >= deps.invite.spots) {
+  const whose = inviter ? "a friend's invite link" : deps.open ? "the public link" : "your invite link";
+  // Public mode only stops at its own cap, if there is one; invite-only stops at the invite spots.
+  const spots = deps.open ? deps.open.cap : deps.invite.spots;
+  if (spots && used >= spots) {
     await deps.tg.sendMessage(chatId, FULL);
-    await tellOwner(deps, `${who} tried to join with your invite link, but all ${deps.invite.spots} spots are taken. To make room, raise KNOWING_INVITE_SPOTS in Vercel.`);
+    await tellOwner(deps, `${who} tried to join with ${whose}, but all ${spots} spots are taken. To make room, raise ${deps.open ? "KNOWING_PUBLIC_SPOTS" : "KNOWING_INVITE_SPOTS"} in Vercel.`);
     return false;
   }
   await deps.store.saveUser(newUser(userId));
-  await tellOwner(deps, `${who} joined Knowing with your invite link. ${used + 1} of ${deps.invite.spots} spots used.`);
+  if (inviter) {
+    try {
+      await deps.store.saveReferral(userId, { by: inviter, name: (name ?? "").slice(0, 64), credited: false, rewarded: 0 });
+      await deps.tg.sendMessage(inviter, `${who} joined Knowing with your link. Once they save a video and ask me something, you get ${REFERRAL_REWARD} free videos.`).catch(() => {});
+    } catch (error) {
+      const detail = (error instanceof Error ? error.message : String(error)).slice(0, 200);
+      await deps.alert(`Couldn't record who invited a new user. If you haven't, run docs/supabase.sql again in Supabase. ${detail}`).catch(() => {});
+    }
+  }
+  const count = spots ? `${used + 1} of ${spots} spots used.` : `${people(used + 1)} so far.`;
+  await tellOwner(deps, `${who} joined Knowing with ${whose}${inviter ? ` (<code>${inviter}</code>)` : ""}. ${count}`);
   return true;
 }
 
@@ -445,16 +591,19 @@ async function saveWatched(chatId: number, status: number, user: BotUser, input:
   await reindex(save, deps);
   const decide = watched.relation === "alternative" || watched.relation === "duplicate" ? saves.find((s) => s.id === watched.relatedId) : null;
   await deps.tg.editMessage(chatId, status, reactionText(watched.reply, save, input.notes), reactionButtons(save, decide, watched.relation === "alternative" ? "alternative" : "duplicate"));
+  // People who started before the flashback existed are asked once, here.
+  await offerFlashback(chatId, user.id, deps);
+  await rewardInviter(user, "videos", deps);
 }
 
 /** The message after Add what it says or Fix something: remake that save with it. */
-async function addWords(chatId: number, user: BotUser, text: string, deps: Deps) {
+async function addWords(chatId: number, user: BotUser, text: string, deps: Deps, heard = "") {
   const pending = user.awaitingWordsFor ?? "";
   const fixing = pending.startsWith("fix:");
   user.awaitingWordsFor = null;
   await deps.store.saveUser(user);
   const save = await deps.store.getSave(user.id, fixing ? pending.slice(4) : pending);
-  if (!save) return answer(chatId, user, text, deps);
+  if (!save) return answer(chatId, user, text, deps, "", heard);
   await deps.tg.typing(chatId);
   const draft = await deps.brain.rewrite(save, text, fixing ? "fix" : "words");
   const updated: Save = fixing
@@ -462,14 +611,14 @@ async function addWords(chatId: number, user: BotUser, text: string, deps: Deps)
     : { ...save, ...draft, words: text.slice(0, 8_000), needsWords: false };
   await deps.store.updateSave(updated);
   await reindex(updated, deps);
-  await deps.tg.sendMessage(chatId, `${fixing ? "Fixed." : "Updated with what it says."}\n\n${saveCard(updated)}`, saveButtons(updated));
+  await deps.tg.sendMessage(chatId, `${heard ? `${heard}\n\n` : ""}${fixing ? "Fixed." : "Updated with what it says."}\n\n${saveCard(updated)}`, saveButtons(updated));
 }
 
-async function answer(chatId: number, user: BotUser, question: string, deps: Deps, name = "") {
+async function answer(chatId: number, user: BotUser, question: string, deps: Deps, name = "", heard = "") {
   await deps.tg.typing(chatId);
   const saves = await deps.store.listSaves(user.id);
   const [retrieved, memories, wallet] = await Promise.all([retrieve(user, question, saves, deps), recall(user, question, deps), walletOf(user.id, deps)]);
-  const usage = usageText(user.usage, deps.limits, wallet, deps.packStars).replace(/<\/?b>/g, "");
+  const usage = user.id === deps.ownerId ? OWNER_USAGE : usageText(user.usage, deps.limits, wallet, deps.packs).replace(/<\/?b>/g, "");
   const reply = await deps.brain.answer({ user, question: question.slice(0, 4_000), saves, retrieved, name, memories, usage });
   const find = (ids: string[]) => ids.map((id) => saves.find((s) => s.id === id)).filter((s): s is Save => Boolean(s));
   const used = find(reply.sources);
@@ -482,10 +631,59 @@ async function answer(chatId: number, user: BotUser, question: string, deps: Dep
   const buttons: InlineButton[][] = [];
   const runnable = used.find((s) => (s.type === "drill" || s.type === "plan") && s.steps.length);
   if (runnable) buttons.push([{ text: `Start: ${runnable.title.slice(0, 40)}`, callback_data: `open:${runnable.id}` }]);
-  await deps.tg.sendMessage(chatId, answerText(reply.text, used, find(reply.about)), buttons);
+  await deps.tg.sendMessage(chatId, `${heard ? `${heard}\n\n` : ""}${answerText(reply.text, used, find(reply.about))}`, buttons);
   // Every chat is kept and searchable, so something said weeks ago can still come back.
   const memory: ChatMemory = { said: question.slice(0, 4_000), answered: reply.text.slice(0, 4_000), at: new Date().toISOString() };
   await deps.retriever.remember(user.id, memory).catch((error) => console.error("Remembering the chat failed", error));
+  await rewardInviter(user, "questions", deps);
+}
+
+/** Whose own invite link this code is, if it's real and they're still in. 0 otherwise. */
+async function inviterFrom(code: string, userId: number, deps: Deps): Promise<number> {
+  const id = readReferral(deps.invite.key, code);
+  return id && id !== userId && (await hasAccess(id, deps)) ? id : 0;
+}
+
+/** /invite for everyone but the owner: their own link, and what it earns them. */
+async function showReferral(chatId: number, userId: number, deps: Deps): Promise<void> {
+  const link = await deps.invite.link(referralCode(deps.invite.key, userId));
+  const earned = (await deps.store.getReferral(userId).catch(() => null))?.rewarded ?? 0;
+  const how = `When a friend joins with it, saves a video and asks me something, you get ${REFERRAL_REWARD} free videos`;
+  const text =
+    earned >= REFERRAL_MAX
+      ? `Your invite link:\n${link}\n\nYou've earned free videos for ${REFERRAL_MAX} friends, the most there is. Friends can still join with it.`
+      : `Your invite link:\n${link}\n\n${how}. That works for up to ${REFERRAL_MAX} friends${earned ? ` (${earned} so far)` : ""}.${deps.open ? "" : " Spots are limited while Knowing is invite-only."}`;
+  await deps.tg.sendMessage(chatId, text);
+}
+
+/**
+ * Once someone who joined with a friend's link has saved a video and asked
+ * something, give that friend their free videos (once, for up to REFERRAL_MAX
+ * friends). Checked only on their first few saves and first few questions, so
+ * it costs a database read for a handful of messages, not every one, and still
+ * works for someone who saves ten videos before asking anything.
+ */
+async function rewardInviter(user: BotUser, kind: PackKind, deps: Deps): Promise<void> {
+  const needed = kind === "videos" ? REFERRAL_VIDEOS : REFERRAL_QUESTIONS;
+  if (!hasStarted(user.usage) || user.usage[kind] > needed + 2) return;
+  try {
+    const mine = await deps.store.getReferral(user.id);
+    if (!mine.by || mine.credited) return;
+    // Marked first, so a friend is counted once even if two messages land at the same time.
+    await deps.store.saveReferral(user.id, { ...mine, credited: true });
+    const theirs = await deps.store.getReferral(mine.by);
+    if (theirs.rewarded >= REFERRAL_MAX) return;
+    await deps.store.saveReferral(mine.by, { ...theirs, rewarded: theirs.rewarded + 1 });
+    const wallet = await deps.store.getWallet(mine.by);
+    await deps.store.saveWallet(mine.by, { ...wallet, videos: wallet.videos + REFERRAL_REWARD });
+    const who = mine.name ? esc(mine.name) : "A friend you invited";
+    const left = REFERRAL_MAX - theirs.rewarded - 1;
+    await deps.tg
+      .sendMessage(mine.by, `🎉 ${who} is using Knowing now, thanks to you, so you got <b>${REFERRAL_REWARD} free videos</b>. They never expire.${left ? ` You can earn this for ${left} more friend${left === 1 ? "" : "s"}.` : ""}`)
+      .catch(() => {});
+  } catch (error) {
+    console.error("Rewarding an invite failed", error);
+  }
 }
 
 async function onButton(q: NonNullable<Update["callback_query"]>, deps: Deps) {
@@ -494,16 +692,46 @@ async function onButton(q: NonNullable<Update["callback_query"]>, deps: Deps) {
   const data = q.data ?? "";
   if (!chatId || !messageId) return deps.tg.answerCallback(q.id);
   try {
-    if (!(await hasAccess(q.from.id, deps))) return await deps.tg.answerCallback(q.id, "Knowing is invite-only for now.");
+    if (!(await hasAccess(q.from.id, deps))) return await deps.tg.answerCallback(q.id, deps.open ? "Send /start first." : "Knowing is invite-only for now.");
     const [kind, id = "", n = "0"] = data.split(":");
+    if (kind === "guide") {
+      await deps.tg.answerCallback(q.id);
+      const page = GUIDE.find((g) => g.id === id);
+      await deps.tg.editMessage(chatId, messageId, page ? page.text(deps.limits) : WELCOME, page ? [[{ text: "« Back", callback_data: "guide:" }]] : guideButtons());
+      return;
+    }
+    if (kind === "folders" || kind === "folder") {
+      await deps.tg.answerCallback(q.id);
+      const saves = await deps.store.listSaves(q.from.id, ALL_SAVES);
+      const view = kind === "folder" ? folderView(saves, id) : null;
+      // A folder that's gone (its videos were moved or deleted) shows the list instead.
+      const page = view ?? folderList(saves);
+      // From a flashback, open the folders as a new message so the flashback stays.
+      if (kind === "folders" && id === "new") await deps.tg.sendMessage(chatId, page.html, page.buttons);
+      else await deps.tg.editMessage(chatId, messageId, page.html, page.buttons);
+      return;
+    }
+    if (kind === "digest") {
+      const digest = await deps.store.getDigest(q.from.id);
+      const on = id === "on";
+      await deps.store.saveDigest(q.from.id, { ...digest, on, offered: true, quiet: on ? 0 : digest.quiet });
+      await deps.tg.answerCallback(q.id, on ? "Turned on" : id === "no" ? undefined : "Turned off");
+      // From a flashback: keep it, and confirm in a new message.
+      if (id === "stop") return void (await deps.tg.sendMessage(chatId, OFF_TEXT));
+      await deps.tg.editMessage(chatId, messageId, on ? ON_TEXT : id === "no" ? "No problem. /digest turns it on any time." : OFF_TEXT);
+      return;
+    }
     if (kind === "wipe") {
       if (id === "yes") {
         const { usage } = await deps.store.getUser(q.from.id);
         const wallet = await deps.store.getWallet(q.from.id).catch(() => null);
+        const referral = await deps.store.getReferral(q.from.id).catch(() => null);
         await deps.store.deleteUser(q.from.id);
-        // An empty row keeps their spot, today's limits and what they bought, so deleting doesn't lock them out or reset the limits.
+        // An empty row keeps their spot, what they've used, what they bought and their invite rewards,
+        // so deleting doesn't lock them out or hand out new free ones.
         await deps.store.saveUser({ ...newUser(q.from.id), usage });
         if (wallet && (wallet.videos || wallet.questions || wallet.paid.length)) await deps.store.saveWallet(q.from.id, wallet);
+        if (referral && (referral.by || referral.rewarded)) await deps.store.saveReferral(q.from.id, referral);
       }
       await deps.tg.answerCallback(q.id, id === "yes" ? "Deleted" : undefined);
       await deps.tg.editMessage(chatId, messageId, id === "yes" ? "Deleted. Everything you saved, our chats and everything I remembered about you are gone." : "Cancelled. Nothing was deleted.");
@@ -512,15 +740,18 @@ async function onButton(q: NonNullable<Update["callback_query"]>, deps: Deps) {
     if (kind === "buy") {
       await deps.tg.answerCallback(q.id);
       if (id !== "videos" && id !== "questions") return;
-      if (!deps.packStars) return void (await deps.tg.sendMessage(chatId, "Buying extras is turned off right now."));
+      if (!deps.packs.length) return void (await deps.tg.sendMessage(chatId, "Buying extras is turned off right now."));
+      const pack = deps.packs.find((p) => p.kind === id && p.count === Number(n));
+      // A button from before pack sizes (or prices) changed: show what's on sale now.
+      if (!pack) return void (await deps.tg.sendMessage(chatId, "Here's what's on sale now:", buyButtons(deps.packs, id)));
       try {
-        await deps.tg.sendInvoice(chatId, invoiceFor(id, deps.packStars));
+        await deps.tg.sendInvoice(chatId, invoiceFor(pack));
       } catch (error) {
         // Without this, a refused invoice looks like a dead button.
         const reason = esc((error instanceof Error ? error.message : String(error)).slice(0, 300));
         console.error("Sending an invoice failed", error);
         await deps.tg.sendMessage(chatId, "I couldn't open the payment screen, so nothing was charged. I've told the owner. Try again later.");
-        await tellOwner(deps, `Someone tapped ${esc(packName(id))}, but Telegram wouldn't make the payment screen: ${reason}`);
+        await tellOwner(deps, `Someone tapped ${esc(packName(pack))}, but Telegram wouldn't make the payment screen: ${reason}`);
       }
       return;
     }

@@ -2,6 +2,7 @@
  * Telegram message text (HTML parse mode) and buttons for saves, drill
  * steps and answers.
  */
+import { folderKey, folders } from "./folders";
 import { SAVE_TYPE_LABEL, type InlineButton, type Save } from "./types";
 
 export const escapeHtml = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -96,14 +97,9 @@ export function stepButtons(s: Save, i: number): InlineButton[][] {
 /** Everything saved, grouped by topic. */
 export function savedList(saves: Save[]): string {
   if (!saves.length) return "Nothing saved yet. In TikTok, tap Share, then Telegram, then me.";
-  const groups = new Map<string, Save[]>();
-  for (const s of saves) {
-    const topic = (s.topic.split(",")[0] ?? "").trim() || "Other";
-    groups.set(topic, [...(groups.get(topic) ?? []), s]);
-  }
   const out: string[] = [`<b>Your saves</b> (${saves.length})`];
-  for (const [topic, list] of groups) {
-    out.push("", `<b>${escapeHtml(topic)}</b>`, ...list.slice(0, 15).map((s) => `• ${linkedTitle(s)} <i>(${SAVE_TYPE_LABEL[s.type]})</i>`));
+  for (const { name, saves: list } of folders(saves)) {
+    out.push("", `<b>${escapeHtml(name)}</b>`, ...list.slice(0, 15).map((s) => `• ${linkedTitle(s)} <i>(${SAVE_TYPE_LABEL[s.type]})</i>`));
   }
   return out.join("\n");
 }
@@ -123,4 +119,46 @@ export function answerText(text: string, sources: Save[], related: Save[] = []):
   if (sources.length) parts.push(`<i>From your save${sources.length > 1 ? "s" : ""}: ${sources.map(linkedTitle).join(", ")}</i>`);
   if (others.length) parts.push(["<b>Videos related to this topic:</b>", ...others.map((s) => `• ${linkedTitle(s)}`)].join("\n"));
   return parts.join("\n\n");
+}
+
+/** Most folders shown as buttons. */
+const FOLDERS_SHOWN = 40;
+/** Most videos listed in one folder. */
+const LISTED = 30;
+
+/** "Nov 2", in UTC like every other date the bot keeps. */
+export const shortDate = (iso: string) => new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
+
+/** /folders: one button per folder, two to a row. */
+export function folderList(saves: Save[]): { html: string; buttons: InlineButton[][] } {
+  if (!saves.length) return { html: "No folders yet. Send me a video and I'll file it for you.", buttons: [] };
+  const all = folders(saves);
+  const shown = all.slice(0, FOLDERS_SHOWN);
+  const buttons: InlineButton[][] = [];
+  for (let i = 0; i < shown.length; i += 2) {
+    buttons.push(shown.slice(i, i + 2).map((f) => ({ text: `${f.name} (${f.saves.length})`, callback_data: `folder:${folderKey(f.name)}` })));
+  }
+  const more = all.length > shown.length ? `\n\n${all.length - shown.length} smaller folders aren't shown. /saved lists everything.` : "";
+  return {
+    html: `📂 <b>Your folders</b>\n${saves.length} video${saves.length === 1 ? "" : "s"} in ${all.length} folder${all.length === 1 ? "" : "s"}, filed for you as you save them. Tap one to open it.${more}`,
+    buttons,
+  };
+}
+
+/** One folder: its videos, newest first, each linked, with number buttons that open the notes. */
+export function folderView(saves: Save[], key: string): { html: string; buttons: InlineButton[][] } | null {
+  const folder = folders(saves).find((f) => folderKey(f.name) === key);
+  if (!folder) return null;
+  const listed = folder.saves.slice(0, LISTED);
+  const n = folder.saves.length;
+  const lines = [`📂 <b>${escapeHtml(folder.name)}</b> · ${n} video${n === 1 ? "" : "s"}`, ""];
+  lines.push(...listed.map((s, i) => `${i + 1}. ${linkedTitle(s)} <i>(${SAVE_TYPE_LABEL[s.type]}, ${shortDate(s.createdAt)})</i>`));
+  if (n > listed.length) lines.push(`…and ${n - listed.length} older ones. Ask me about them any time.`);
+  lines.push("", "Tap a number for its notes, or just ask me about any of them.");
+  const buttons: InlineButton[][] = [];
+  for (let i = 0; i < listed.length; i += 6) {
+    buttons.push(listed.slice(i, i + 6).map((s, j) => ({ text: String(i + j + 1), callback_data: `show:${s.id}` })));
+  }
+  buttons.push([{ text: "« All folders", callback_data: "folders:" }]);
+  return { html: lines.join("\n"), buttons };
 }

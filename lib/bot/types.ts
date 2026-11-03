@@ -52,27 +52,36 @@ export interface Turn {
   content: string;
 }
 
-/** What a user has used today, for the daily limits. Resets each UTC day. */
+/** Free videos and questions used. They're given once, so the counts never reset. */
 export interface Usage {
-  /** YYYY-MM-DD (UTC) the counts are for. */
+  /** YYYY-MM-DD (UTC) of their first use. */
   day: string;
   videos: number;
   questions: number;
 }
 
-/** What can be bought with Telegram Stars when the free daily amount runs out. */
+/** What can be bought with Telegram Stars. */
 export type PackKind = "videos" | "questions";
+
+/** A pack on sale: how many of what, for how many Stars. */
+export interface Pack {
+  kind: PackKind;
+  count: number;
+  stars: number;
+}
 
 /** One Star payment, kept for refunds and so a payment is never counted twice. */
 export interface Payment {
   /** Telegram's id for the payment, needed to refund it. */
   charge: string;
   kind: PackKind;
+  /** How many it added. */
+  count: number;
   stars: number;
   at: string;
 }
 
-/** Extras bought with Stars. Used after the free daily amount, and they never expire. */
+/** Extras bought with Stars. Used after the free ones, and they never expire. */
 export interface Wallet {
   videos: number;
   questions: number;
@@ -94,6 +103,29 @@ export interface BotUser {
   usage: Usage;
   /** Set while a scroll session is waiting for its wrap-up. Only touchSitting and closeSitting write it. */
   sitting: Sitting | null;
+}
+
+/** Their weekly flashback setting. Off until they turn it on. */
+export interface DigestState {
+  on: boolean;
+  /** True once they've been asked whether they want it, so it's asked once. */
+  offered: boolean;
+  /** When the last one went out (ISO), or "". */
+  sent: string;
+  /** Flashbacks sent in a row with no message from them since. At 3 they pause until they're back. */
+  quiet: number;
+}
+
+/** Who invited them, and how many friends they've earned free videos for (referral.ts). */
+export interface Referral {
+  /** Who invited them, or 0. */
+  by: number;
+  /** Their first name when they joined, for the message to whoever invited them. */
+  name: string;
+  /** True once whoever invited them got their reward, so it's given once. */
+  credited: boolean;
+  /** Friends they invited who earned them free videos. */
+  rewarded: number;
 }
 
 /** One scroll session: videos shared close together. Which videos is worked out from the saves' times. */
@@ -132,6 +164,16 @@ export interface Store {
   touchSitting(userId: number, at: string): Promise<void>;
   /** End their sitting, unless they've shared again since `last`. True if this call ended it. */
   closeSitting(userId: number, last: string): Promise<boolean>;
+  /** Their flashback setting. Throws if the digest column is missing (docs/supabase.sql not run again). */
+  getDigest(userId: number): Promise<DigestState>;
+  /** Writes only the flashback setting, creating the row if needed. */
+  saveDigest(userId: number, digest: DigestState): Promise<void>;
+  /** Everyone with the flashback on, and when they last messaged the bot (ISO). */
+  listDigestUsers(): Promise<Array<{ id: number; digest: DigestState; active: string }>>;
+  /** Their invite record. Throws if the referral column is missing (docs/supabase.sql not run again). */
+  getReferral(userId: number): Promise<Referral>;
+  /** Writes only the invite record, creating the row if needed. */
+  saveReferral(userId: number, referral: Referral): Promise<void>;
 }
 
 /** What we could get out of a video: frames to look at, speech, and the caption. */
@@ -152,6 +194,19 @@ export interface Media {
   fromLink(url: string): Promise<WatchInput>;
   /** A video sent straight to the bot. */
   fromTelegramFile(fileId: string, durationSec: number): Promise<WatchInput>;
+  /**
+   * A voice message's words. Only the first VOICE_MAX_SECONDS are heard (`cut`
+   * says so). Throws NoTranscription when speech-to-text isn't set up.
+   */
+  hearVoice(fileId: string, durationSec: number): Promise<{ text: string; cut: boolean }>;
+}
+
+/** Speech-to-text isn't set up (no OPENAI_API_KEY). */
+export class NoTranscription extends Error {
+  constructor() {
+    super("No speech-to-text key");
+    this.name = "NoTranscription";
+  }
 }
 
 /** The parsed reply to a question. */

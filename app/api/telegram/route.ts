@@ -7,8 +7,10 @@
  *
  * Setup is in docs/TELEGRAM.md.
  */
+import { createHash } from "node:crypto";
 import { after } from "next/server";
 import { createBrain } from "@/lib/bot/brain";
+import { pricedPacks } from "@/lib/bot/costs";
 import { handleUpdate, inviteCode, parseAllowed, secretMatches, type Deps, type Update } from "@/lib/bot/handle";
 import { createMedia } from "@/lib/bot/media";
 import { createEmbedder, SupabaseRetriever } from "@/lib/bot/rag-supabase";
@@ -22,15 +24,15 @@ export const dynamic = "force-dynamic";
 // Vercel's Hobby plan allows up to 300 seconds with Fluid compute, which new projects have on.
 export const maxDuration = 120;
 
-/** Defaults for the daily limits per user; override with KNOWING_DAILY_VIDEOS / KNOWING_DAILY_QUESTIONS. */
-const DAILY_VIDEOS = 5;
-const DAILY_QUESTIONS = 10;
+/**
+ * Free videos and questions per person, given once (they don't refill). Override with
+ * KNOWING_FREE_VIDEOS / KNOWING_FREE_QUESTIONS (the older KNOWING_DAILY_* names still work).
+ */
+const FREE_VIDEOS = 5;
+const FREE_QUESTIONS = 10;
 
 /** How many people can join with the invite link; override with KNOWING_INVITE_SPOTS. */
-const INVITE_SPOTS = 10;
-
-/** Telegram Stars for one pack of extras (10 videos or 20 questions); KNOWING_PACK_STARS overrides, 0 turns buying off. */
-const PACK_STARS = 100;
+const INVITE_SPOTS = 20;
 
 /** At most one alert per few minutes per server instance, so a broken key doesn't flood the owner. */
 const ALERT_GAP_MS = 5 * 60_000;
@@ -41,10 +43,8 @@ const positive = (raw: string | undefined, fallback: number) => {
   return Number.isInteger(n) && n > 0 ? n : fallback;
 };
 
-const starsSetting = (raw: string | undefined) => {
-  const n = Number(raw);
-  return raw?.trim() && Number.isInteger(n) && n >= 0 && n <= 10_000 ? n : PACK_STARS;
-};
+/** Pack prices come from their worst case (costs.ts), so none can sell at a loss. KNOWING_PACK_STARS=0 turns buying off. */
+const packsSetting = (raw: string | undefined) => (raw?.trim() === "0" ? [] : pricedPacks());
 
 const REQUIRED = ["TELEGRAM_BOT_TOKEN", "TELEGRAM_WEBHOOK_SECRET", "SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "ANTHROPIC_API_KEY"] as const;
 
@@ -75,9 +75,20 @@ export async function POST(request: Request): Promise<Response> {
     retriever: new SupabaseRetriever(process.env.SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!, createEmbedder()),
     isAllowed: (id) => allowed.has(id),
     ownerId: owner,
-    invite: { code, spots: positive(process.env.KNOWING_INVITE_SPOTS, INVITE_SPOTS), link: async () => `https://t.me/${await tg.username()}?start=${code}` },
-    packStars: starsSetting(process.env.KNOWING_PACK_STARS),
-    limits: { videos: positive(process.env.KNOWING_DAILY_VIDEOS, DAILY_VIDEOS), questions: positive(process.env.KNOWING_DAILY_QUESTIONS, DAILY_QUESTIONS) },
+    invite: {
+      code,
+      spots: positive(process.env.KNOWING_INVITE_SPOTS, INVITE_SPOTS),
+      // Signs everyone's own /invite link, so nobody can make one up for someone else.
+      key: createHash("sha256").update(`knowing-referral:${process.env.TELEGRAM_WEBHOOK_SECRET}`).digest("base64url"),
+      link: async (start = code) => `https://t.me/${await tg.username()}${start ? `?start=${start}` : ""}`,
+    },
+    // Public unless KNOWING_PUBLIC=0. KNOWING_PUBLIC_SPOTS caps how many people can join (unset = no limit).
+    open: process.env.KNOWING_PUBLIC?.trim() === "0" ? undefined : { cap: positive(process.env.KNOWING_PUBLIC_SPOTS, 0) },
+    packs: packsSetting(process.env.KNOWING_PACK_STARS),
+    limits: {
+      videos: positive(process.env.KNOWING_FREE_VIDEOS ?? process.env.KNOWING_DAILY_VIDEOS, FREE_VIDEOS),
+      questions: positive(process.env.KNOWING_FREE_QUESTIONS ?? process.env.KNOWING_DAILY_QUESTIONS, FREE_QUESTIONS),
+    },
     async alert(text) {
       if (!owner || Date.now() - lastAlert < ALERT_GAP_MS) return;
       lastAlert = Date.now();

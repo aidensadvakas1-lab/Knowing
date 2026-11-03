@@ -13,16 +13,13 @@ import ffmpegPath from "ffmpeg-static";
 import { fetchSource } from "../fetch-source";
 import { isAiConfigured } from "../server";
 import { isTranscriptionConfigured, transcribeAudio } from "../transcribe";
+import { FRAME_COUNT, FRAME_PIXELS, MAX_SECONDS, SCAN_MAX, VOICE_MAX_SECONDS } from "./costs";
+import { isVideoFileLink, LOGIN_WALLED, platformName, sendTheFileNote } from "./platforms";
 import { readScreenText } from "./screen";
 import { isTikTok, resolveTikTok } from "./tiktok";
-import type { Media, WatchInput } from "./types";
+import { NoTranscription, type Media, type WatchInput } from "./types";
 
-/** Frames shown to Claude per video. Setups change every few seconds, so 8 missed whole placements. */
-export const FRAME_COUNT = 20;
-/** Longest side of each frame, in pixels. Big enough to tell a wall from a ceiling. */
-const FRAME_SIDE = 960;
-/** Most frames read for on-screen text. About one a second for a one-minute video. */
-export const SCAN_MAX = 60;
+export { FRAME_COUNT, MAX_SECONDS, SCAN_MAX };
 /** Never read more often than this per second; a caption stays up longer than half a second. */
 const SCAN_FPS = 2;
 /** Biggest video we'll download. TikToks are usually 2 to 20 MB. */
@@ -66,8 +63,12 @@ export function parseDuration(ffmpegOutput: string): number {
   return m ? Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]) : 0;
 }
 
-/** Shrinks the longest side to FRAME_SIDE. It has commas inside, so never split a filter string on them. */
-const SCALE = `scale='if(gt(iw,ih),min(${FRAME_SIDE},iw),-2)':'if(gt(iw,ih),-2,min(${FRAME_SIDE},ih))'`;
+/**
+ * Shrinks each frame to at most FRAME_PIXELS, keeping its shape: 540 by 960 for
+ * an upright video, big enough to tell a wall from a ceiling. It has commas
+ * inside, so never split a filter string on them.
+ */
+export const SCALE = `scale='trunc(min(iw,sqrt(${FRAME_PIXELS}*iw/ih))/2)*2':-2`;
 
 /** The ffmpeg filter that spreads `count` frames across `durationSec` and shrinks them. */
 export function frameFilter(count: number, durationSec: number): string {
@@ -91,6 +92,11 @@ export function scanFilter(durationSec: number): string {
   return `fps=${rate.toFixed(3)},mpdecimate,${SCALE}`;
 }
 
+/** When each frame left the filter, from ffmpeg's showinfo lines ("pts_time:12.5"), in seconds. */
+export function shownTimes(ffmpegOutput: string): number[] {
+  return [...ffmpegOutput.matchAll(/\bpts_time:\s*(-?\d+(?:\.\d+)?)/g)].map((m) => Math.max(0, Number(m[1])));
+}
+
 async function probeDuration(file: string): Promise<number> {
   try {
     await ffmpeg(["-i", file]);
@@ -112,11 +118,14 @@ async function watchVideoBytes(video: Buffer, durationHint: number): Promise<{ f
   try {
     const input = join(dir, "in.mp4");
     await writeFile(input, video);
-    const duration = durationHint || (await probeDuration(input));
+    const full = durationHint || (await probeDuration(input));
+    // Past MAX_SECONDS nothing is watched, heard or read, so a long video costs no more than a short one.
+    const duration = Math.min(full, MAX_SECONDS);
+    if (full > MAX_SECONDS) notes.push(`It's over ${MAX_SECONDS / 60} minutes long, so I watched the first ${MAX_SECONDS / 60}.`);
 
     let frames: string[] = [];
     try {
-      await ffmpeg(["-loglevel", "error", "-i", input, "-vf", frameFilter(FRAME_COUNT, duration), "-frames:v", String(FRAME_COUNT), "-q:v", "5", join(dir, "f%02d.jpg")]);
+      await ffmpeg(["-loglevel", "error", "-t", String(MAX_SECONDS), "-i", input, "-vf", frameFilter(FRAME_COUNT, duration), "-frames:v", String(FRAME_COUNT), "-q:v", "5", join(dir, "f%02d.jpg")]);
       frames = await jpegs("f");
     } catch (error) {
       console.error("Frame extraction failed", error);
@@ -140,7 +149,7 @@ async function hear(input: string, dir: string, notes: string[]): Promise<string
   }
   try {
     const audio = join(dir, "audio.m4a");
-    await ffmpeg(["-loglevel", "error", "-i", input, "-vn", "-ac", "1", "-ar", "16000", "-b:a", "32k", audio]);
+    await ffmpeg(["-loglevel", "error", "-t", String(MAX_SECONDS), "-i", input, "-vn", "-ac", "1", "-ar", "16000", "-b:a", "32k", audio]);
     return await transcribeAudio(new Blob([new Uint8Array(await readFile(audio))], { type: "audio/mp4" }), undefined, "audio.m4a");
   } catch (error) {
     // No audio track, or the transcription service failed.
@@ -153,11 +162,31 @@ async function hear(input: string, dir: string, notes: string[]): Promise<string
 async function readScreen(input: string, dir: string, duration: number, jpegs: (prefix: string) => Promise<string[]>): Promise<string> {
   if (!isAiConfigured()) return "";
   try {
-    await ffmpeg(["-loglevel", "error", "-i", input, "-vf", scanFilter(duration), "-fps_mode", "vfr", "-frames:v", String(SCAN_MAX), "-q:v", "5", join(dir, "s%02d.jpg")]);
-    return await readScreenText(await jpegs("s"));
+    // showinfo logs when each kept frame was taken (mpdecimate drops still ones, so they aren't evenly spaced).
+    const log = await ffmpeg(["-nostats", "-loglevel", "info", "-t", String(MAX_SECONDS), "-i", input, "-vf", `${scanFilter(duration)},showinfo`, "-fps_mode", "vfr", "-frames:v", String(SCAN_MAX), "-q:v", "5", join(dir, "s%02d.jpg")]);
+    const frames = await jpegs("s");
+    const times = shownTimes(log).slice(0, frames.length);
+    return await readScreenText(frames, times.length === frames.length ? times : []);
   } catch (error) {
     console.error("Reading the screen failed", error);
     return "";
+  }
+}
+
+/** The words in a voice message, from its first VOICE_MAX_SECONDS only, so a long one costs no more than a short one. */
+async function hearVoiceBytes(voice: Buffer, durationHint: number): Promise<{ text: string; cut: boolean }> {
+  if (!isTranscriptionConfigured()) throw new NoTranscription();
+  const dir = await mkdtemp(join(tmpdir(), "knowing-voice-"));
+  try {
+    const input = join(dir, "voice.ogg");
+    await writeFile(input, voice);
+    const duration = durationHint || (await probeDuration(input));
+    const audio = join(dir, "voice.m4a");
+    await ffmpeg(["-loglevel", "error", "-t", String(VOICE_MAX_SECONDS), "-i", input, "-vn", "-ac", "1", "-ar", "16000", "-b:a", "32k", audio]);
+    const text = await transcribeAudio(new Blob([new Uint8Array(await readFile(audio))], { type: "audio/mp4" }), undefined, "voice.m4a");
+    return { text: text.trim(), cut: duration > VOICE_MAX_SECONDS };
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
   }
 }
 
@@ -206,15 +235,28 @@ export function createMedia(fileUrl: (fileId: string) => Promise<string>): Media
           };
         }
       }
-      // YouTube transcripts and articles: text only.
+      // A link straight to a video file: watch it like one sent to the bot.
+      if (isVideoFileLink(url)) return { ...(await watchVideoBytes(await downloadBytes(url, MAX_VIDEO_BYTES), 0)), caption: "" };
+      const platform = platformName(url);
+      // Instagram, X, Facebook and the like don't let the bot download their videos, and show it a
+      // login wall, so their page text would be junk. Say how to get it watched instead.
+      if (LOGIN_WALLED.has(platform)) return { frames: [], transcript: "", caption: "", notes: [sendTheFileNote(platform)] };
+      // YouTube transcripts, Reddit posts and articles: text only.
       const fetched = await fetchSource(url);
-      return { frames: [], transcript: fetched.text, caption: fetched.title, notes: fetched.warning ? [fetched.warning] : [] };
+      const notes = fetched.warning ? [fetched.warning] : [];
+      if (platform && !fetched.text) notes.splice(0, notes.length, sendTheFileNote(platform));
+      return { frames: [], transcript: fetched.text, caption: fetched.title, notes };
     },
 
     async fromTelegramFile(fileId: string, durationSec: number): Promise<WatchInput> {
       const bytes = await downloadBytes(await fileUrl(fileId), 20 * 1024 * 1024);
       const watched = await watchVideoBytes(bytes, durationSec);
       return { ...watched, caption: "" };
+    },
+
+    async hearVoice(fileId: string, durationSec: number): Promise<{ text: string; cut: boolean }> {
+      if (!isTranscriptionConfigured()) throw new NoTranscription();
+      return hearVoiceBytes(await downloadBytes(await fileUrl(fileId), 20 * 1024 * 1024), durationSec);
     },
   };
 }

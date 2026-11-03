@@ -49,6 +49,12 @@ alter table bot_users add column if not exists sitting jsonb;
 -- save of the user row can't undo a payment.
 alter table bot_users add column if not exists wallet jsonb not null default '{}';
 
+-- The weekly flashback setting ({on, offered, sent, quiet}). Off until they turn it on.
+alter table bot_users add column if not exists digest jsonb not null default '{}';
+
+-- Who invited them and how many friends earned them free videos ({by, name, credited, rewarded}).
+alter table bot_users add column if not exists referral jsonb not null default '{}';
+
 -- Retrieval (RAG): each save is split into chunks with an embedding (meaning)
 -- and a full-text index (exact words). match_chunks merges both rankings.
 create extension if not exists vector;
