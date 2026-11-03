@@ -18,7 +18,7 @@ const FRIEND = 8;
 
 interface Sent { chatId: number; html: string; buttons?: InlineButton[][]; id: number }
 
-function setup(opts: { answer?: Partial<Answer>; draft?: Partial<SaveDraft>; watch?: (saves: Save[]) => Partial<WatchResult>; limits?: Deps["limits"]; spots?: number; packs?: Pack[]; heard?: { text: string; cut: boolean }; newcomers?: boolean } = {}) {
+function setup(opts: { answer?: Partial<Answer>; draft?: Partial<SaveDraft>; watch?: (saves: Save[]) => Partial<WatchResult>; limits?: Deps["limits"]; spots?: number; packs?: Pack[]; heard?: { text: string; cut: boolean }; newcomers?: boolean; open?: { cap: number } } = {}) {
   const sent: Sent[] = [];
   const edits: Sent[] = [];
   let nextId = 100;
@@ -48,7 +48,7 @@ function setup(opts: { answer?: Partial<Answer>; draft?: Partial<SaveDraft>; wat
   if (!opts.newcomers) for (const id of [7, FRIEND]) store.digests.set(id, { on: false, offered: true, sent: "", quiet: 0 });
   const retriever = new MemoryRetriever();
   const alerts: string[] = [];
-  const deps: Deps = { tg, store, brain, media, retriever, isAllowed: (id) => id === 7 || id === FRIEND, ownerId: 7, invite: { code: "join-abc123", spots: opts.spots ?? 10, key: "test-key", link: async (start = "join-abc123") => `https://t.me/KnowingTestBot?start=${start}` }, limits: opts.limits ?? { videos: 50, questions: 50 }, packs: opts.packs ?? PACKS, alert: async (t) => void alerts.push(t) };
+  const deps: Deps = { tg, store, brain, media, retriever, isAllowed: (id) => id === 7 || id === FRIEND, ownerId: 7, invite: { code: "join-abc123", spots: opts.spots ?? 10, key: "test-key", link: async (start = "join-abc123") => `https://t.me/KnowingTestBot${start ? `?start=${start}` : ""}` }, limits: opts.limits ?? { videos: 50, questions: 50 }, packs: opts.packs ?? PACKS, alert: async (t) => void alerts.push(t), open: opts.open };
   return { deps, sent, edits, store, brain, media, retriever, alerts };
 }
 
@@ -144,6 +144,48 @@ describe("links the bot can't open", () => {
     await handleUpdate(text("https://www.instagram.com/reel/def/", FRIEND), deps);
     expect(sent.at(-1)?.html).not.toContain("out of videos");
     expect(store.saves.filter((s) => s.userId === FRIEND)).toHaveLength(0);
+  });
+});
+
+describe("public mode", () => {
+  it("lets anyone in with any first message, no invite needed, and tells the owner", async () => {
+    const { deps, sent, store, brain } = setup({ open: { cap: 0 } });
+    await handleUpdate(text("what can you do?", 99, "Sam"), deps);
+    expect(await store.hasUser(99)).toBe(true);
+    expect(brain.answer).toHaveBeenCalledTimes(1);
+    expect(sent.find((m) => m.chatId === 7)?.html).toBe("Sam joined Knowing with the public link. 1 person so far.");
+    expect(sent.some((m) => m.chatId === 99 && m.html.includes("invite-only"))).toBe(false);
+  });
+
+  it("still records who invited them, so the referral reward works", async () => {
+    const { deps, store } = setup({ open: { cap: 0 } });
+    await handleUpdate(text(`/start ${referralCode("test-key", FRIEND)}`, 99), deps);
+    expect((await store.getReferral(99)).by).toBe(FRIEND);
+  });
+
+  it("stops at its cap when one is set", async () => {
+    const { deps, sent, store } = setup({ open: { cap: 1 }, spots: 100 });
+    await handleUpdate(text("hi", 98), deps);
+    await handleUpdate(text("hi", 99, "Alex"), deps);
+    expect(await store.hasUser(98)).toBe(true);
+    expect(await store.hasUser(99)).toBe(false);
+    expect(sent.filter((m) => m.chatId === 7).at(-1)?.html).toContain("raise KNOWING_PUBLIC_SPOTS");
+  });
+
+  it("ignores the invite spots, which only apply when it's invite-only", async () => {
+    const { deps, store } = setup({ open: { cap: 0 }, spots: 1 });
+    await handleUpdate(text("hi", 98), deps);
+    await handleUpdate(text("hi", 99), deps);
+    expect(await store.hasUser(99)).toBe(true);
+  });
+
+  it("gives the owner the plain public link with /invite", async () => {
+    const { deps, sent } = setup({ open: { cap: 0 } });
+    await handleUpdate(text("hi", 99), deps);
+    await handleUpdate(text("/invite"), deps);
+    expect(sent.at(-1)?.html).toContain("Knowing is <b>public</b>. Anyone can start it with this link:\nhttps://t.me/KnowingTestBot\n\n1 person joined so far.");
+    await handleUpdate(text("/invite", 99), deps);
+    expect(sent.at(-1)?.html).not.toContain("invite-only");
   });
 });
 

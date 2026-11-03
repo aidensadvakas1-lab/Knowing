@@ -113,7 +113,9 @@ Add these in Vercel under **Project Settings → Environment Variables**, then r
 | `KNOWING_FREE_VIDEOS` | Optional. Free videos per person, given once (default 5). The older `KNOWING_DAILY_VIDEOS` still works |
 | `KNOWING_FREE_QUESTIONS` | Optional. Free questions per person, given once (default 10). The older `KNOWING_DAILY_QUESTIONS` still works |
 | `KNOWING_OWNER_ID` | Optional. Who gets error alerts, join notices and `/invite`, and has no limits (default: the first id in `TELEGRAM_ALLOWED_USERS`) |
-| `KNOWING_INVITE_SPOTS` | Optional. How many people can join with the invite link (default 20) |
+| `KNOWING_PUBLIC` | Optional. The bot is public by default: anyone who opens t.me/<your bot> can use it. Set `0` to make it invite-only |
+| `KNOWING_PUBLIC_SPOTS` | Optional. The most people who can join while it's public (default: no limit) |
+| `KNOWING_INVITE_SPOTS` | Optional. How many people can join with the invite link when it's invite-only (default 20) |
 | `KNOWING_INVITE_CODE` | Optional. Your own code for the invite link, 6 to 64 letters, numbers, `_` or `-`. Change it to stop an old link working |
 | `KNOWING_PACK_STARS` | Optional. `0` turns buying off. Any other value is ignored: prices come from each pack's worst case |
 | `KNOWING_CRON_SECRET` | For wrap-ups (step 7). Another random string you make up, different from the webhook secret |
@@ -133,13 +135,23 @@ what Telegram sends the bot (like payments).
 
 ### 6. Let yourself in
 
-Send your bot any message. Because you're not on the list yet, it replies with your Telegram id.
-Put that number in `TELEGRAM_ALLOWED_USERS` in Vercel, redeploy, and send `/start`.
+Put your Telegram id in `TELEGRAM_ALLOWED_USERS` in Vercel and redeploy, so you're the owner (no
+limits, error alerts, join notices). To find your id, set `KNOWING_PUBLIC=0`, send the bot any
+message, and it replies with it.
 
-The bot only answers people on that list or people who joined with your invite link, so a stranger
-who finds it can't spend your credits.
+### Public or invite-only
 
-### Invite people (no settings needed)
+**Public (the default).** Anyone can use the bot with its plain link, `https://t.me/<your bot>`.
+`/invite` shows that link and how many people have joined. Each new person gets the free videos and
+questions once, then buys packs. The bot messages you each time someone new starts. Set
+`KNOWING_PUBLIC_SPOTS` to stop new people joining after that many (they're told it's full, and you're
+told). Your prepaid AI balance is the hard stop on spending: keep auto-reload off.
+
+**Invite-only.** Set `KNOWING_PUBLIC=0` and redeploy. Then the bot only answers people on
+`TELEGRAM_ALLOWED_USERS` or people who joined with an invite link, so a stranger who finds it can't
+spend your credits. People who already joined stay in either way.
+
+### Invite people (when it's invite-only)
 
 Send your bot `/invite`. It replies with your invite link and how many spots are used. Share the
 link: anyone who opens it and taps Start is in, until the spots run out (20 by default, set
@@ -153,7 +165,7 @@ people who already joined stay in.
 ### Friends inviting friends
 
 Everyone else who sends `/invite` gets their own link. A friend who joins with it uses up a spot
-like anyone else, so the total stays capped. The person who invited them gets 3 free videos (added
+like anyone else, if there's a cap. The person who invited them gets 3 free videos (added
 to their extras) only after the friend has saved a video **and** asked a question, so a fake
 account that only taps the link earns nothing. That works for up to 5 friends per person, and
 `/delete` doesn't reset it. Both of you get a message when they join, and when the reward lands.

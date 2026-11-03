@@ -50,6 +50,12 @@ export interface Deps {
    * links; `link(start)` makes a link with that code, the owner's by default.
    */
   invite: { code: string; spots: number; key: string; link(start?: string): Promise<string> };
+  /**
+   * Public mode: anyone who messages the bot (t.me/<bot>) is let in, no invite
+   * needed. `cap` is the most people who can join that way (0 = no limit).
+   * Missing means invite-only.
+   */
+  open?: { cap: number };
   /** Free videos and questions per person, given once (they don't refill), so nobody can run up the API bill. */
   limits: { videos: number; questions: number };
   /** The packs of extras on sale and their prices in Stars (costs.ts pricedPacks). Empty turns buying off. */
@@ -205,11 +211,17 @@ export async function handleUpdate(update: Update, deps: Deps): Promise<void> {
       const code = text.startsWith("/start ") ? text.slice(7).trim() : "";
       const invited = code !== "" && deps.invite.code !== "" && secretMatches(code, deps.invite.code);
       const inviter = invited || !code ? 0 : await inviterFrom(code, userId, deps);
-      if (!invited && !inviter) return void (await deps.tg.sendMessage(chatId, privateText(userId)));
+      if (!deps.open && !invited && !inviter) return void (await deps.tg.sendMessage(chatId, privateText(userId)));
       if (!(await join(chatId, userId, msg.from.first_name, deps, inviter))) return;
     }
     if (text.startsWith("/invite") && userId === deps.ownerId) {
       const used = await spotsUsed(deps);
+      if (deps.open) {
+        const cap = deps.open.cap ? ` of ${deps.open.cap} spots` : "";
+        const joined = cap ? `${used}${cap} used` : `${people(used)} joined`;
+        await deps.tg.sendMessage(chatId, `Knowing is <b>public</b>. Anyone can start it with this link:\n${await deps.invite.link("")}\n\n${joined} so far. I'll message you each time someone new starts.`);
+        return;
+      }
       await deps.tg.sendMessage(chatId, `Your invite link:\n${await deps.invite.link()}\n\n${used} of ${deps.invite.spots} spots used. Anyone who opens the link can join until the spots run out. I'll message you each time someone joins.`);
       return;
     }
@@ -398,7 +410,7 @@ async function onPreCheckout(p: NonNullable<Update["pre_checkout_query"]>, deps:
     if (!pack || !onSale || p.currency !== "XTR" || p.total_amount !== pack.stars) {
       error = "That price has changed. Tap the button again for the current one. You weren't charged.";
     } else if (!(await hasAccess(p.from.id, deps))) {
-      error = "Knowing is invite-only for now. You weren't charged.";
+      error = deps.open ? "Send /start first, then try again. You weren't charged." : "Knowing is invite-only for now. You weren't charged.";
     } else {
       await deps.store.getWallet(p.from.id); // fails if the wallet column is missing
     }
@@ -478,7 +490,9 @@ async function askOwner(chatId: number, userId: number, name: string | undefined
 const privateText = (id: number) => `Knowing is invite-only for now. Ask the person who told you about it for an invite link.\n\nYour Telegram id: <code>${id}</code>`;
 const FULL = "Knowing is full right now, so I can't let you in yet. I've let the owner know.";
 
-/** Let in through settings, or already joined with the invite link. */
+const people = (n: number) => `${n} ${n === 1 ? "person" : "people"}`;
+
+/** Let in through settings, or already joined (with an invite link, or in public mode). */
 async function hasAccess(userId: number, deps: Deps): Promise<boolean> {
   return deps.isAllowed(userId) || (await deps.store.hasUser(userId));
 }
@@ -500,10 +514,12 @@ async function tellOwner(deps: Deps, html: string): Promise<void> {
 async function join(chatId: number, userId: number, name: string | undefined, deps: Deps, inviter = 0): Promise<boolean> {
   const used = await spotsUsed(deps);
   const who = name ? esc(name) : "Someone";
-  const whose = inviter ? "a friend's invite link" : "your invite link";
-  if (used >= deps.invite.spots) {
+  const whose = inviter ? "a friend's invite link" : deps.open ? "the public link" : "your invite link";
+  // Public mode only stops at its own cap, if there is one; invite-only stops at the invite spots.
+  const spots = deps.open ? deps.open.cap : deps.invite.spots;
+  if (spots && used >= spots) {
     await deps.tg.sendMessage(chatId, FULL);
-    await tellOwner(deps, `${who} tried to join with ${whose}, but all ${deps.invite.spots} spots are taken. To make room, raise KNOWING_INVITE_SPOTS in Vercel.`);
+    await tellOwner(deps, `${who} tried to join with ${whose}, but all ${spots} spots are taken. To make room, raise ${deps.open ? "KNOWING_PUBLIC_SPOTS" : "KNOWING_INVITE_SPOTS"} in Vercel.`);
     return false;
   }
   await deps.store.saveUser(newUser(userId));
@@ -516,7 +532,8 @@ async function join(chatId: number, userId: number, name: string | undefined, de
       await deps.alert(`Couldn't record who invited a new user. If you haven't, run docs/supabase.sql again in Supabase. ${detail}`).catch(() => {});
     }
   }
-  await tellOwner(deps, `${who} joined Knowing with ${whose}${inviter ? ` (<code>${inviter}</code>)` : ""}. ${used + 1} of ${deps.invite.spots} spots used.`);
+  const count = spots ? `${used + 1} of ${spots} spots used.` : `${people(used + 1)} so far.`;
+  await tellOwner(deps, `${who} joined Knowing with ${whose}${inviter ? ` (<code>${inviter}</code>)` : ""}. ${count}`);
   return true;
 }
 
@@ -635,7 +652,7 @@ async function showReferral(chatId: number, userId: number, deps: Deps): Promise
   const text =
     earned >= REFERRAL_MAX
       ? `Your invite link:\n${link}\n\nYou've earned free videos for ${REFERRAL_MAX} friends, the most there is. Friends can still join with it.`
-      : `Your invite link:\n${link}\n\n${how}. That works for up to ${REFERRAL_MAX} friends${earned ? ` (${earned} so far)` : ""}. Spots are limited while Knowing is invite-only.`;
+      : `Your invite link:\n${link}\n\n${how}. That works for up to ${REFERRAL_MAX} friends${earned ? ` (${earned} so far)` : ""}.${deps.open ? "" : " Spots are limited while Knowing is invite-only."}`;
   await deps.tg.sendMessage(chatId, text);
 }
 
@@ -675,7 +692,7 @@ async function onButton(q: NonNullable<Update["callback_query"]>, deps: Deps) {
   const data = q.data ?? "";
   if (!chatId || !messageId) return deps.tg.answerCallback(q.id);
   try {
-    if (!(await hasAccess(q.from.id, deps))) return await deps.tg.answerCallback(q.id, "Knowing is invite-only for now.");
+    if (!(await hasAccess(q.from.id, deps))) return await deps.tg.answerCallback(q.id, deps.open ? "Send /start first." : "Knowing is invite-only for now.");
     const [kind, id = "", n = "0"] = data.split(":");
     if (kind === "guide") {
       await deps.tg.answerCallback(q.id);

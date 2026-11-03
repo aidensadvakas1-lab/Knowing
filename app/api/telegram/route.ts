@@ -80,8 +80,10 @@ export async function POST(request: Request): Promise<Response> {
       spots: positive(process.env.KNOWING_INVITE_SPOTS, INVITE_SPOTS),
       // Signs everyone's own /invite link, so nobody can make one up for someone else.
       key: createHash("sha256").update(`knowing-referral:${process.env.TELEGRAM_WEBHOOK_SECRET}`).digest("base64url"),
-      link: async (start = code) => `https://t.me/${await tg.username()}?start=${start}`,
+      link: async (start = code) => `https://t.me/${await tg.username()}${start ? `?start=${start}` : ""}`,
     },
+    // Public unless KNOWING_PUBLIC=0. KNOWING_PUBLIC_SPOTS caps how many people can join (unset = no limit).
+    open: process.env.KNOWING_PUBLIC?.trim() === "0" ? undefined : { cap: positive(process.env.KNOWING_PUBLIC_SPOTS, 0) },
     packs: packsSetting(process.env.KNOWING_PACK_STARS),
     limits: {
       videos: positive(process.env.KNOWING_FREE_VIDEOS ?? process.env.KNOWING_DAILY_VIDEOS, FREE_VIDEOS),
