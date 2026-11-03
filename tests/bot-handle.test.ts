@@ -39,7 +39,7 @@ function setup(opts: { answer?: Partial<Answer>; draft?: Partial<SaveDraft>; wat
   const brain: Brain = {
     watch: vi.fn(async ({ saves }: { saves: Save[] }) => ({ draft, reply: "A split dodge drill for your weak hand.", relation: "none" as const, relatedId: "", ...opts.watch?.(saves) })),
     rewrite: vi.fn(async (s: Save) => ({ ...s, steps: ["Exact step"] })),
-    answer: vi.fn(async ({ saves }: { saves: Save[] }) => ({ text: "Do the split dodge.", sources: saves.map((s) => s.id), about: [], remember: [], moves: [], renames: [], rules: [], ...opts.answer })),
+    answer: vi.fn(async ({ saves }: { saves: Save[] }) => ({ text: "Do the split dodge.", sources: saves.map((s) => s.id), about: [], remember: [], moves: [], renames: [], rules: [], collects: [], uncollects: [], ...opts.answer })),
     wrapUp: vi.fn(async ({ kept }: { kept: Save[] }) => `From that scroll you kept **${kept.length}**.`),
   };
   const media: Media = {
@@ -492,7 +492,7 @@ describe("handleUpdate", () => {
     expect(edits[0]?.html).toContain("A split dodge drill for your weak hand.");
     expect(edits[0]?.html).toContain("Saved: Split dodge drill");
     expect(edits[0]?.html).not.toContain("1. Jog");
-    expect(datas(edits[0]?.buttons)).toEqual([expect.stringMatching(/^show:/), expect.stringMatching(/^open:/), expect.stringMatching(/^mv:.+:r$/), expect.stringMatching(/^fix:/)]);
+    expect(datas(edits[0]?.buttons)).toEqual([expect.stringMatching(/^show:/), expect.stringMatching(/^open:/), expect.stringMatching(/^mv:.+:r$/), expect.stringMatching(/^cl:.+:r$/), expect.stringMatching(/^fix:/)]);
     expect(edits[0]?.buttons?.flat().find((b) => b.callback_data.startsWith("mv:"))?.text).toBe("📂 Lacrosse");
     expect(store.saves[0]?.sourceUrl).toBe("https://vm.tiktok.com/ZMabc/");
   });
@@ -553,7 +553,7 @@ describe("handleUpdate", () => {
   it("lists the video under related, not From your save, when the answer came from its own knowledge", async () => {
     const { deps, sent, brain } = setup();
     await handleUpdate(text("https://vm.tiktok.com/ZMabc/"), deps);
-    vi.mocked(brain.answer).mockImplementationOnce(async ({ saves }) => ({ text: "Your video shows the drill. Here's a warm-up:", sources: [], about: saves.map((s) => s.id), remember: [], moves: [], renames: [], rules: [] }));
+    vi.mocked(brain.answer).mockImplementationOnce(async ({ saves }) => ({ text: "Your video shows the drill. Here's a warm-up:", sources: [], about: saves.map((s) => s.id), remember: [], moves: [], renames: [], rules: [], collects: [], uncollects: [] }));
     await handleUpdate(text("how do I warm up for it?"), deps);
     const reply = sent.at(-1)!.html;
     expect(reply).toContain('<b>Videos related to this topic:</b>\n• <a href="https://vm.tiktok.com/ZMabc/">Split dodge drill</a>');
@@ -924,7 +924,7 @@ describe("folders", () => {
     await handleUpdate(text("/folders"), deps);
     const list = sent.at(-1)!;
     expect(list.html).toContain("3 videos in 2 folders");
-    expect(list.buttons?.flat().map((b) => b.text)).toEqual(["Cooking (2)", "Gym (1)"]);
+    expect(list.buttons?.flat().map((b) => b.text)).toEqual(["Cooking (2)", "Gym (1)", "📌 Your collections"]);
     await handleUpdate(tap(list.buttons![0]![0]!.callback_data, list.id), deps);
     expect(edits.at(-1)?.html).toContain("📂 <b>Cooking</b> · 2 videos");
     expect(edits.at(-1)?.html).toContain("Video 3");
@@ -1017,6 +1017,8 @@ describe("organizing folders", () => {
       moves: [{ folder: "Dinner ideas", ids: [pasta.id, steak.id] }],
       renames: [{ from: "gym", to: "Workouts" }, { from: "Nope", to: "X" }],
       rules: [{ folder: "dinner IDEAS", about: "anything I could cook tonight" }],
+      collects: [],
+      uncollects: [],
     }));
     await handleUpdate(text("put my food videos in Dinner ideas, rename gym to Workouts", FRIEND), deps);
     const reply = sent.at(-1)!;
@@ -1033,7 +1035,7 @@ describe("organizing folders", () => {
   it("applies chat moves to their own videos and keeps the rules with a renamed folder", async () => {
     const { deps, store, pasta, steak } = await saved();
     await store.saveFiling(7, [{ folder: "Gym", about: "lifting" }]);
-    vi.mocked(deps.brain.answer).mockImplementationOnce(async () => ({ text: "Done.", sources: [], about: [], remember: [], moves: [{ folder: "dinner ideas", ids: [pasta.id, steak.id] }], renames: [{ from: "Gym", to: "Workouts" }], rules: [] }));
+    vi.mocked(deps.brain.answer).mockImplementationOnce(async () => ({ text: "Done.", sources: [], about: [], remember: [], moves: [{ folder: "dinner ideas", ids: [pasta.id, steak.id] }], renames: [{ from: "Gym", to: "Workouts" }], rules: [], collects: [], uncollects: [] }));
     await handleUpdate(text("tidy up"), deps);
     expect((await store.getSave(7, steak.id))?.folder).toBe("dinner ideas");
     expect(store.saves.find((s) => s.title === "Video 2")?.folder).toBe("Workouts");
@@ -1105,6 +1107,98 @@ describe("organizing folders", () => {
   });
 });
 
+describe("collections", () => {
+  /** Saves two videos. */
+  async function saved(opts: Parameters<typeof setup>[0] = {}) {
+    let n = 0;
+    const env = setup({ watch: () => ({ draft: { title: `Video ${++n}`, topic: n === 1 ? "Cooking, Pasta" : "Travel, Japan", type: "tip", summary: "", steps: [], details: "", needsWords: false } }), ...opts });
+    await handleUpdate(text("https://vm.tiktok.com/pasta/"), env.deps);
+    await handleUpdate(text("https://vm.tiktok.com/ramen/"), env.deps);
+    const [pasta, ramen] = [...env.store.saves].reverse();
+    return { ...env, pasta: pasta!, ramen: ramen! };
+  }
+  const key = (name: string) => folderKey(name);
+
+  it("adds a video with 📌 Collect: a new collection from a typed name, then a tap ticks it in or out", async () => {
+    const { deps, store, sent, rebuttons, brain, pasta } = await saved({ limits: { videos: 50, questions: 0 } });
+    await handleUpdate(tap(`cl:${pasta.id}:r`), deps);
+    expect(rebuttons.at(-1)!.buttons!.flat().map((b) => b.text)).toEqual(["➕ New collection", "« Back"]);
+    await handleUpdate(tap(`clnew:${pasta.id}`), deps);
+    expect(sent.at(-1)?.html).toContain("What should the new collection");
+    await handleUpdate(text("Date night"), deps);
+    expect(brain.answer).not.toHaveBeenCalled();
+    expect(sent.at(-1)?.html).toBe("📌 Added <b>Video 1</b> to <b>Date night</b>.");
+    expect(datas(sent.at(-1)?.buttons)).toEqual([`col:${key("Date night")}:new`]);
+    expect(await store.getCollections(7)).toEqual([{ name: "Date night", ids: [pasta.id] }]);
+    // It stays in its folder.
+    expect((await store.getSave(7, pasta.id))?.folder).toBe("Cooking");
+
+    await handleUpdate(tap(`cl:${pasta.id}:c`), deps);
+    expect(rebuttons.at(-1)!.buttons![0]![0]).toEqual({ text: "✓ Date night", callback_data: `clt:${pasta.id}:${key("Date night")}:c` });
+    await handleUpdate(tap(`clt:${pasta.id}:${key("Date night")}:c`), deps);
+    expect(deps.tg.answerCallback).toHaveBeenLastCalledWith("cb", "Taken out of Date night");
+    expect(rebuttons.at(-1)!.buttons![0]![0]!.text).toBe("Date night");
+    await handleUpdate(tap(`clt:${pasta.id}:${key("Date night")}:c`), deps);
+    expect(deps.tg.answerCallback).toHaveBeenLastCalledWith("cb", "Added to Date night");
+    // « Back puts the video's own buttons back.
+    await handleUpdate(tap(`mvback:${pasta.id}:c`), deps);
+    expect(datas(rebuttons.at(-1)?.buttons)).toContain(`cl:${pasta.id}:c`);
+  });
+
+  it("lists collections in /collections, opens one, renames it and deletes it without losing videos", async () => {
+    const { deps, store, sent, edits, pasta, ramen } = await saved();
+    await handleUpdate(text("/collections"), deps);
+    expect(sent.at(-1)?.html).toContain("None yet");
+    expect(datas(sent.at(-1)?.buttons)).toEqual(["colnew:"]);
+    await handleUpdate(tap("colnew:"), deps);
+    await handleUpdate(text("Watch later"), deps);
+    expect(sent.at(-1)?.html).toContain("Made <b>Watch later</b>");
+    await store.saveCollections(7, [{ name: "Watch later", ids: [pasta.id, ramen.id] }]);
+
+    await handleUpdate(text("/collections"), deps);
+    expect(sent.at(-1)?.buttons?.[0]?.[0]).toEqual({ text: "Watch later (2)", callback_data: `col:${key("Watch later")}` });
+    await handleUpdate(tap(`col:${key("Watch later")}`), deps);
+    expect(edits.at(-1)?.html).toContain("📌 <b>Watch later</b> · 2 videos");
+    expect(edits.at(-1)?.html).toContain("(📂 Travel,");
+    expect(datas(edits.at(-1)?.buttons)).toEqual([`show:${ramen.id}`, `show:${pasta.id}`, `crn:${key("Watch later")}`, `cdl:${key("Watch later")}`, "cols:"]);
+
+    await handleUpdate(tap(`crn:${key("Watch later")}`), deps);
+    await handleUpdate(text("Weekend"), deps);
+    expect(sent.at(-1)?.html).toContain("Renamed <b>Watch later</b> to <b>Weekend</b>");
+    await handleUpdate(tap(`cdl:${key("Weekend")}`), deps);
+    expect(edits.at(-1)?.html).toContain("Its videos stay saved");
+    await handleUpdate(tap(`cdlok:${key("Weekend")}`), deps);
+    expect(await store.getCollections(7)).toEqual([]);
+    expect(store.saves).toHaveLength(2);
+  });
+
+  it("adds and takes out videos when asked in chat, and tells Claude what's in each", async () => {
+    const { deps, store, sent, brain, pasta, ramen } = await saved();
+    await store.saveCollections(7, [{ name: "Japan", ids: [pasta.id, ramen.id] }]);
+    vi.mocked(brain.answer).mockImplementationOnce(async () => ({ text: "Done.", sources: [], about: [], remember: [], moves: [], renames: [], rules: [], collects: [{ collection: "date NIGHT", ids: [pasta.id] }], uncollects: [{ collection: "japan", ids: [pasta.id] }, { collection: "Nope", ids: [ramen.id] }] }));
+    await handleUpdate(text("add the pasta to date night and take it out of japan"), deps);
+    expect(vi.mocked(brain.answer).mock.calls.at(-1)?.[0].collections).toEqual([{ name: "Japan", ids: [pasta.id, ramen.id] }]);
+    expect(sent.at(-1)?.html).toContain("📌 Added 1 video to <b>date NIGHT</b>.");
+    expect(sent.at(-1)?.html).toContain("📌 Took 1 video out of <b>Japan</b>.");
+    expect(sent.at(-1)?.html).toContain("I couldn't find a collection called <b>Nope</b>");
+    expect(await store.getCollections(7)).toEqual([{ name: "Japan", ids: [ramen.id] }, { name: "date NIGHT", ids: [pasta.id] }]);
+    expect(datas(sent.at(-1)?.buttons)).toContain(`col:${key("Japan")}:new`);
+  });
+
+  it("says it isn't set up yet, and tells the owner, before the SQL is run", async () => {
+    const { deps, store, sent, alerts, pasta } = await saved();
+    vi.spyOn(store, "getCollections").mockRejectedValue(new Error("Supabase GET bot_users: 400 column bot_users.collections does not exist"));
+    await handleUpdate(text("/collections"), deps);
+    expect(sent.at(-1)?.html).toBe("Organizing isn't set up yet. I've told the owner.");
+    await handleUpdate(tap(`cl:${pasta.id}:r`), deps);
+    expect(deps.tg.answerCallback).toHaveBeenLastCalledWith("cb", "Organizing isn't set up yet. I've told the owner.");
+    expect(alerts.at(-1)).toContain("supabase.sql");
+    // Answers still work.
+    await handleUpdate(text("hi"), deps);
+    expect(sent.at(-1)?.html).toContain("Do the split dodge.");
+  });
+});
+
 describe("what Knowing knows about itself", () => {
   it("explains every command with /commands, and the owner's own only to the owner", async () => {
     const { deps, sent } = setup();
@@ -1118,7 +1212,7 @@ describe("what Knowing knows about itself", () => {
   });
 
   it("lists every command the bot handles, and puts the main ones in Telegram's menu", () => {
-    const handled = ["help", "commands", "folders", "saved", "digest", "memory", "usage", "buy", "invite", "support", "paysupport", "terms", "delete"];
+    const handled = ["help", "commands", "folders", "collections", "saved", "digest", "memory", "usage", "buy", "invite", "support", "paysupport", "terms", "delete"];
     expect(ALL_COMMANDS.map((c) => c.command).sort()).toEqual([...handled].sort());
     expect(COMMANDS.map((c) => c.command)).toContain("commands");
   });

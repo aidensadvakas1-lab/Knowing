@@ -51,9 +51,9 @@ export function createBrain(): Brain {
       return cleanDraft(await watchJson([{ type: "text", text: prompt }], REWRITE_MAX_TOKENS), save.title);
     },
 
-    async answer({ user, question, saves, retrieved, name, memories, usage, rules, about }) {
+    async answer({ user, question, saves, retrieved, name, memories, usage, rules, collections, about }) {
       const history = recentHistory(user.turns);
-      const system = buildAskSystem(user, saves, retrieved, today(), { name, memories, usage, rules, about });
+      const system = buildAskSystem(user, saves, retrieved, today(), { name, memories, usage, rules, collections, about });
       const ask = (model: string) =>
         getAnthropic().messages.create({
           model,

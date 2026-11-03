@@ -141,6 +141,13 @@ export interface FilingRule {
   about: string;
 }
 
+/** A list they made themselves, like Date night. A video can be in many, and stays in its folder too. */
+export interface Collection {
+  name: string;
+  /** The saves in it, oldest added first. */
+  ids: string[];
+}
+
 /** One scroll session: videos shared close together. Which videos is worked out from the saves' times. */
 export interface Sitting {
   /** When the latest video in it was saved (ISO). */
@@ -189,6 +196,10 @@ export interface Store {
   getFiling(userId: number): Promise<FilingRule[]>;
   /** Writes only the filing rules, creating the row if needed. Throws if the column is missing. */
   saveFiling(userId: number, rules: FilingRule[]): Promise<void>;
+  /** Their collections. Throws if the collections column is missing (docs/supabase.sql not run again). */
+  getCollections(userId: number): Promise<Collection[]>;
+  /** Writes only the collections, creating the row if needed. Throws if the column is missing. */
+  saveCollections(userId: number, collections: Collection[]): Promise<void>;
   /** Their invite record. Throws if the referral column is missing (docs/supabase.sql not run again). */
   getReferral(userId: number): Promise<Referral>;
   /** Writes only the invite record, creating the row if needed. */
@@ -243,6 +254,10 @@ export interface Answer {
   renames: Array<{ from: string; to: string }>;
   /** Filing rules they asked for. */
   rules: FilingRule[];
+  /** Videos they asked to add to a collection (a new one or one they have). */
+  collects: Array<{ collection: string; ids: string[] }>;
+  /** Videos they asked to take out of a collection. */
+  uncollects: Array<{ collection: string; ids: string[] }>;
 }
 
 /** How a new save relates to what's already saved. */
@@ -272,6 +287,8 @@ export interface AskInput {
   usage?: string;
   /** Their filing rules, so the answer knows them and can change them. */
   rules?: FilingRule[];
+  /** Their collections, so the answer knows what's in them and can add to them. */
+  collections?: Collection[];
   /** Everything Knowing is and does (profile.ts aboutKnowing), so questions about the bot get real answers. */
   about?: string;
 }

@@ -30,8 +30,9 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { NetworkError, networkCode } from "../net";
 import { flashback, OFF_TEXT, OFFER_BUTTONS, OFFER_TEXT, ON_TEXT } from "./digest";
+import { addTo, collectionKey, dropCollection, findCollection, hasRoomFor, matchCollection, removeFrom, renameCollection, swapVideo } from "./collections";
 import { addRules, cleanFolderName, dropRules, findFolder, folderKey, folders, matchFolder, renameRules, topicFolder, UNSORTED, type Folder } from "./folders";
-import { answerText, buttonsFor, deleteButtons, escapeHtml as esc, folderList, folderView, mergeButtons, moveButtons, reactionButtons, reactionText, saveButtons, saveCard, savedList, stepButtons, stepText, type ButtonsAt } from "./format";
+import { answerText, buttonsFor, collectButtons, collectionList, collectionView, deleteButtons, escapeHtml as esc, folderList, folderView, mergeButtons, moveButtons, reactionButtons, reactionText, saveButtons, saveCard, savedList, stepButtons, stepText, type ButtonsAt } from "./format";
 import { isVideoFile, LOGIN_WALLED, platformName } from "./platforms";
 import { aboutKnowing, commandsText, GUIDE, guideButtons, WELCOME, type Setup } from "./profile";
 import { buyButtons, invoiceFor, packName, PAYSUPPORT_HELP, priceList, readPack, SUPPORT_HELP, TERMS } from "./shop";
@@ -40,7 +41,7 @@ import { hasStarted, readReferral, REFERRAL_MAX, REFERRAL_QUESTIONS, REFERRAL_RE
 import { groupHits, searchQuery, type Retriever } from "./rag";
 import { FACTS_KEPT, newSaveId, newUser, TURNS_KEPT } from "./store";
 import { findUrl } from "./tiktok";
-import { NoTranscription, type Answer, type Brain, type BotUser, type ChatMemory, type FilingRule, type InlineButton, type Media, type Pack, type PackKind, type Save, type Store, type TelegramApi, type Usage, type Wallet, type WatchInput } from "./types";
+import { NoTranscription, type Answer, type Brain, type BotUser, type ChatMemory, type Collection, type FilingRule, type InlineButton, type Media, type Pack, type PackKind, type Save, type Store, type TelegramApi, type Usage, type Wallet, type WatchInput } from "./types";
 
 export interface Deps {
   tg: TelegramApi;
@@ -257,6 +258,12 @@ export async function handleUpdate(update: Update, deps: Deps): Promise<void> {
     }
     if (text.startsWith("/folders") || text.startsWith("/tags")) {
       const list = folderList(await deps.store.listSaves(userId, ALL_SAVES));
+      return void (await deps.tg.sendMessage(chatId, list.html, list.buttons));
+    }
+    if (text.startsWith("/collections") || text.startsWith("/lists")) {
+      const collections = await collectionsOf(userId, deps);
+      if (!collections) return void (await deps.tg.sendMessage(chatId, NOT_SET_UP));
+      const list = collectionList(collections, await deps.store.listSaves(userId, ALL_SAVES));
       return void (await deps.tg.sendMessage(chatId, list.html, list.buttons));
     }
     if (text.startsWith("/digest")) return await digestCommand(chatId, userId, text.slice(7).trim().toLowerCase(), deps);
@@ -699,11 +706,11 @@ async function addWords(chatId: number, user: BotUser, text: string, deps: Deps,
 async function answer(chatId: number, user: BotUser, question: string, deps: Deps, name = "", heard = "") {
   await deps.tg.typing(chatId);
   const saves = await deps.store.listSaves(user.id);
-  const [retrieved, memories, wallet, rules] = await Promise.all([retrieve(user, question, saves, deps), recall(user, question, deps), walletOf(user.id, deps), rulesOf(user.id, deps)]);
+  const [retrieved, memories, wallet, rules, collections] = await Promise.all([retrieve(user, question, saves, deps), recall(user, question, deps), walletOf(user.id, deps), rulesOf(user.id, deps), deps.store.getCollections(user.id).catch((error) => (console.error("Reading collections failed", error), null))]);
   const owner = user.id === deps.ownerId;
   const usage = owner ? ownerUsage(deps) : usageText(user.usage, deps.limits, wallet, deps.packs).replace(/<\/?b>/g, "");
   const about = aboutKnowing(setupOf(deps), owner);
-  const reply = await deps.brain.answer({ user, question: question.slice(0, 4_000), saves, retrieved, name, memories, usage, rules, about });
+  const reply = await deps.brain.answer({ user, question: question.slice(0, 4_000), saves, retrieved, name, memories, usage, rules, collections: collections ?? [], about });
   const find = (ids: string[]) => ids.map((id) => saves.find((s) => s.id === id)).filter((s): s is Save => Boolean(s));
   const used = find(reply.sources);
 
@@ -717,6 +724,9 @@ async function answer(chatId: number, user: BotUser, question: string, deps: Dep
   if (runnable) buttons.push([{ text: `Start: ${runnable.title.slice(0, 40)}`, callback_data: `open:${runnable.id}` }]);
   const organized = await organize(user.id, reply, saves, rules, deps);
   if (organized.open) buttons.push([{ text: `📂 Open ${organized.open.slice(0, 30)}`, callback_data: `folder:${folderKey(organized.open)}:new` }]);
+  const collected = await collect(user.id, reply, collections, deps);
+  organized.lines.push(...collected.lines);
+  if (collected.open) buttons.push([openCollectionButton(collected.open)]);
   const receipt = organized.lines.length ? `\n\n${organized.lines.join("\n")}` : "";
   await deps.tg.sendMessage(chatId, `${heard ? `${heard}\n\n` : ""}${answerText(reply.text, used, find(reply.about))}${receipt}`, buttons);
   // Every chat is kept and searchable, so something said weeks ago can still come back.
@@ -807,6 +817,20 @@ async function onButton(q: NonNullable<Update["callback_query"]>, deps: Deps) {
       else await deps.tg.editMessage(chatId, messageId, page.html, page.buttons);
       return;
     }
+    if (kind === "cols" || kind === "col") {
+      await deps.tg.answerCallback(q.id);
+      const collections = await collectionsOf(q.from.id, deps);
+      if (!collections) return void (await deps.tg.sendMessage(chatId, NOT_SET_UP));
+      const saves = await deps.store.listSaves(q.from.id, ALL_SAVES);
+      // A collection that's gone shows the list instead.
+      const page = (kind === "col" ? collectionView(collections, saves, id) : null) ?? collectionList(collections, saves);
+      // From an answer, open it as a new message so the answer stays.
+      if (n === "new") await deps.tg.sendMessage(chatId, page.html, page.buttons);
+      else await deps.tg.editMessage(chatId, messageId, page.html, page.buttons);
+      return;
+    }
+    if (COLLECT_BUTTONS.has(kind)) return await onCollectButton(q.id, chatId, messageId, q.from.id, data, deps);
+    if (COLLECTION_BUTTONS.has(kind)) return await onCollectionButton(q.id, chatId, messageId, q.from.id, kind, id, deps);
     if (FOLDER_BUTTONS.has(kind)) return await onFolderButton(q.id, chatId, messageId, q.from.id, kind, id, n, deps);
     if (MOVE_BUTTONS.has(kind)) return await onMoveButton(q.id, chatId, messageId, q.from.id, data, deps);
     if (kind === "digest") {
@@ -866,6 +890,8 @@ async function onButton(q: NonNullable<Update["callback_query"]>, deps: Deps) {
       if (kind === "repl" && n) {
         await deps.store.deleteSave(q.from.id, n);
         await deps.retriever.remove(q.from.id, n).catch((error) => console.error("Unindex failed", error));
+        // The new one takes the old one's place in their collections.
+        await updateCollections(q.from.id, (all) => swapVideo(all, n, id), deps);
       }
       await deps.tg.answerCallback(q.id, kind === "repl" ? "Replaced" : "Kept both");
       const save = await deps.store.getSave(q.from.id, id);
@@ -923,10 +949,14 @@ const NAMING_MS = 15 * 60_000;
 const videos = (n: number) => `${n} video${n === 1 ? "" : "s"}`;
 const sameName = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 
-/** What a typed folder name is for: a new folder for a video, or a folder's new name. */
+/**
+ * What a typed name is for: a new folder for a video (move), a folder's new
+ * name (rename), a new collection for a video (collect), a new empty
+ * collection (newcol) or a collection's new name (crename).
+ */
 interface Naming {
-  kind: "move" | "rename";
-  /** The save's id, or the folder's key. */
+  kind: "move" | "rename" | "collect" | "newcol" | "crename";
+  /** The save's id, or the folder's or collection's key ("-" for none). */
   target: string;
 }
 
@@ -935,7 +965,7 @@ export const namingFor = (kind: Naming["kind"], target: string, now = Date.now()
 
 /** The folder name the next message is for, if one was asked for in the last NAMING_MS. */
 export function readNaming(pending: string | null, now = Date.now()): Naming | null {
-  const m = /^name:(move|rename):([^:]+):([0-9a-z]+)$/.exec(pending ?? "");
+  const m = /^name:(move|rename|collect|newcol|crename):([^:]+):([0-9a-z]+)$/.exec(pending ?? "");
   if (!m) return null;
   return now - parseInt(m[3] ?? "", 36) <= NAMING_MS ? { kind: m[1] as Naming["kind"], target: m[2] ?? "" } : null;
 }
@@ -1000,6 +1030,7 @@ const openButton = (folder: string): InlineButton[] => [{ text: `📂 Open ${fol
 
 /** The message after "New folder" or "Rename": its name. */
 async function nameFolder(chatId: number, userId: number, naming: Naming, name: string, deps: Deps, heard = ""): Promise<void> {
+  if (naming.kind === "collect" || naming.kind === "newcol" || naming.kind === "crename") return await nameCollection(chatId, userId, naming, name, deps, heard);
   const saves = await deps.store.listSaves(userId, ALL_SAVES);
   const pre = heard ? `${heard}\n\n` : "";
   if (naming.kind === "move") {
@@ -1166,6 +1197,163 @@ async function onFolderButton(queryId: string, chatId: number, messageId: number
   await updateRules(userId, (rules) => dropRules(rules, folder.name), deps);
   await deps.tg.answerCallback(queryId, "Rule stopped");
   return show(folderView(saves, key, await rulesOf(userId, deps)));
+}
+
+// Collections: lists people make themselves. A video can be in many, and stays in its folder.
+
+/** Their collections, or null (and the owner is told) when the column is missing. */
+async function collectionsOf(userId: number, deps: Deps): Promise<Collection[] | null> {
+  try {
+    return await deps.store.getCollections(userId);
+  } catch (error) {
+    await notSetUp(error, deps);
+    return null;
+  }
+}
+
+/** Change their collections. The new ones, or null (and the owner is told) if they can't be saved. */
+async function updateCollections(userId: number, change: (all: Collection[]) => Collection[], deps: Deps): Promise<Collection[] | null> {
+  try {
+    const all = await deps.store.getCollections(userId);
+    const next = change(all);
+    if (JSON.stringify(next) !== JSON.stringify(all)) await deps.store.saveCollections(userId, next);
+    return next;
+  } catch (error) {
+    await notSetUp(error, deps);
+    return null;
+  }
+}
+
+/** Opens a collection as a new message. */
+const openCollectionButton = (name: string): InlineButton => ({ text: `📌 Open ${name.slice(0, 30)}`, callback_data: `col:${collectionKey(name)}:new` });
+
+const FULL_COLLECTIONS = "You have the most collections there can be (30). Delete one in /collections to make room.";
+
+/** The message after "New collection" or a collection's "Rename": its name. */
+async function nameCollection(chatId: number, userId: number, naming: Naming, name: string, deps: Deps, heard = ""): Promise<void> {
+  const pre = heard ? `${heard}\n\n` : "";
+  const all = await collectionsOf(userId, deps);
+  if (!all) return void (await deps.tg.sendMessage(chatId, NOT_SET_UP));
+  const named = matchCollection(name, all);
+  if (naming.kind === "crename") {
+    const from = findCollection(all, naming.target);
+    if (!from) return void (await deps.tg.sendMessage(chatId, "That collection is gone, so there's nothing to rename."));
+    if (!(await updateCollections(userId, (c) => renameCollection(c, from.name, named), deps))) return void (await deps.tg.sendMessage(chatId, NOT_SET_UP));
+    return void (await deps.tg.sendMessage(chatId, `${pre}✏️ Renamed <b>${esc(from.name)}</b> to <b>${esc(named)}</b>.`, [[openCollectionButton(named)]]));
+  }
+  if (!hasRoomFor(all, named)) return void (await deps.tg.sendMessage(chatId, FULL_COLLECTIONS));
+  const save = naming.kind === "collect" ? await deps.store.getSave(userId, naming.target) : null;
+  if (naming.kind === "collect" && !save) return void (await deps.tg.sendMessage(chatId, "That video is gone, so there's nothing to add."));
+  if (!(await updateCollections(userId, (c) => addTo(c, named, save ? [save.id] : []), deps))) return void (await deps.tg.sendMessage(chatId, NOT_SET_UP));
+  const said = save ? `📌 Added <b>${esc(save.title)}</b> to <b>${esc(named)}</b>.` : `📌 Made <b>${esc(named)}</b>. Tap 📌 Collect under any video to add it.`;
+  await deps.tg.sendMessage(chatId, `${pre}${said}`, [[openCollectionButton(named)]]);
+}
+
+/** What they asked for in chat: videos added to or taken out of collections (COLLECT and UNCOLLECT lines). */
+async function collect(userId: number, reply: Answer, collections: Collection[] | null, deps: Deps): Promise<{ lines: string[]; open: string }> {
+  if (!reply.collects.length && !reply.uncollects.length) return { lines: [], open: "" };
+  if (!collections) return { lines: [`⚠️ <i>I couldn't change your collections: ${NOT_SET_UP}</i>`], open: "" };
+  const lines: string[] = [];
+  let next = collections;
+  let open = "";
+  for (const add of reply.collects) {
+    const name = matchCollection(add.collection, next);
+    if (!hasRoomFor(next, name)) {
+      lines.push(`⚠️ <i>${FULL_COLLECTIONS}</i>`);
+      continue;
+    }
+    next = addTo(next, name, add.ids);
+    lines.push(`📌 Added ${videos(add.ids.length)} to <b>${esc(name)}</b>.`);
+    open = name;
+  }
+  for (const out of reply.uncollects) {
+    const found = next.find((c) => sameName(c.name, out.collection));
+    if (!found) {
+      lines.push(`I couldn't find a collection called <b>${esc(out.collection)}</b>, so nothing was taken out.`);
+      continue;
+    }
+    next = removeFrom(next, found.name, out.ids);
+    lines.push(`📌 Took ${videos(out.ids.length)} out of <b>${esc(found.name)}</b>.`);
+    open = found.name;
+  }
+  try {
+    if (next !== collections) await deps.store.saveCollections(userId, next);
+  } catch (error) {
+    await notSetUp(error, deps);
+    return { lines: [`⚠️ <i>I couldn't change your collections: ${NOT_SET_UP}</i>`], open: "" };
+  }
+  return { lines, open };
+}
+
+const COLLECT_BUTTONS = new Set(["cl", "clt", "clnew"]);
+
+/** 📌 Collect under a video: tick or untick its collections, or make a new one. */
+async function onCollectButton(queryId: string, chatId: number, messageId: number, userId: number, data: string, deps: Deps): Promise<void> {
+  const [kind, id = "", a = "", b = ""] = data.split(":");
+  const save = await deps.store.getSave(userId, id);
+  if (!save) return deps.tg.answerCallback(queryId, "That video is gone.");
+  if (kind === "clnew") {
+    const user = await deps.store.getUser(userId);
+    user.awaitingWordsFor = namingFor("collect", save.id);
+    await deps.store.saveUser(user);
+    await deps.tg.answerCallback(queryId);
+    return void (await deps.tg.sendMessage(chatId, `What should the new collection for <b>${esc(save.title)}</b> be called? Type its name, like <i>Date night</i> or <i>Watch later</i>.`));
+  }
+  const all = await collectionsOf(userId, deps);
+  if (!all) return deps.tg.answerCallback(queryId, NOT_SET_UP);
+  if (kind === "cl") {
+    await deps.tg.editButtons(chatId, messageId, collectButtons(save, all, buttonsAt(a)));
+    return deps.tg.answerCallback(queryId, all.length ? "Tap a collection to add or take it out" : "Make your first collection");
+  }
+  // clt: add it to that collection, or take it out if it's in it.
+  const target = findCollection(all, a);
+  if (!target) {
+    await deps.tg.editButtons(chatId, messageId, collectButtons(save, all, buttonsAt(b)));
+    return deps.tg.answerCallback(queryId, "That collection is gone.");
+  }
+  const inIt = target.ids.includes(save.id);
+  const next = await updateCollections(userId, (c) => (inIt ? removeFrom(c, target.name, [save.id]) : addTo(c, target.name, [save.id])), deps);
+  if (!next) return deps.tg.answerCallback(queryId, NOT_SET_UP);
+  await deps.tg.editButtons(chatId, messageId, collectButtons(save, next, buttonsAt(b)));
+  return deps.tg.answerCallback(queryId, inIt ? `Taken out of ${target.name}` : `Added to ${target.name}`);
+}
+
+const COLLECTION_BUTTONS = new Set(["colnew", "crn", "cdl", "cdlok"]);
+
+/** New collection, Rename and Delete, in /collections. */
+async function onCollectionButton(queryId: string, chatId: number, messageId: number, userId: number, kind: string, key: string, deps: Deps): Promise<void> {
+  const all = await collectionsOf(userId, deps);
+  if (!all) return deps.tg.answerCallback(queryId, NOT_SET_UP);
+  const ask = async (naming: Naming, question: string) => {
+    const user = await deps.store.getUser(userId);
+    user.awaitingWordsFor = namingFor(naming.kind, naming.target);
+    await deps.store.saveUser(user);
+    await deps.tg.answerCallback(queryId);
+    await deps.tg.sendMessage(chatId, question);
+  };
+  if (kind === "colnew") {
+    if (!hasRoomFor(all, "")) return deps.tg.answerCallback(queryId, FULL_COLLECTIONS);
+    return ask({ kind: "newcol", target: "-" }, "What should the new collection be called? Type its name, like <i>Date night</i> or <i>Watch later</i>.");
+  }
+  const collection = findCollection(all, key);
+  const saves = await deps.store.listSaves(userId, ALL_SAVES);
+  if (!collection) {
+    await deps.tg.answerCallback(queryId, "That collection is gone.");
+    const list = collectionList(all, saves);
+    return deps.tg.editMessage(chatId, messageId, list.html, list.buttons);
+  }
+  if (kind === "crn") return ask({ kind: "crename", target: key }, `What should <b>${esc(collection.name)}</b> be called? Type the new name.`);
+  if (kind === "cdl") {
+    await deps.tg.answerCallback(queryId);
+    return deps.tg.editMessage(chatId, messageId, `Delete the <b>${esc(collection.name)}</b> collection? Its videos stay saved in their folders.`, [
+      [{ text: "Delete the collection", callback_data: `cdlok:${key}` }, { text: "Cancel", callback_data: `col:${key}` }],
+    ]);
+  }
+  const next = await updateCollections(userId, (c) => dropCollection(c, collection.name), deps);
+  if (!next) return deps.tg.answerCallback(queryId, NOT_SET_UP);
+  await deps.tg.answerCallback(queryId, "Collection deleted");
+  const list = collectionList(next, saves);
+  return deps.tg.editMessage(chatId, messageId, list.html, list.buttons);
 }
 
 /** Search failures never block saving: the save is still kept and found by words. */

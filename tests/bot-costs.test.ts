@@ -17,6 +17,7 @@ import { RULES_KEPT } from "@/lib/bot/folders";
 import { aboutKnowing } from "@/lib/bot/profile";
 import { PACK_SIZES } from "@/lib/bot/shop";
 import { newUser } from "@/lib/bot/store";
+import { COLLECTIONS_KEPT } from "@/lib/bot/collections";
 import type { Save } from "@/lib/bot/types";
 
 const long = (n: number) => "word ".repeat(Math.ceil(n / 5)).slice(0, n);
@@ -100,6 +101,15 @@ describe("the limits the worst case relies on", () => {
     const system = buildAskSystem(user, saves, retrieved, "2026-11-02", { name: long(200), memories, usage: long(600), rules, about });
     expect(about.length).toBeLessThan(6_000);
     expect(system.length).toBeLessThanOrEqual(ASK_SYSTEM_CHARS);
+    expect(system).toContain("THEIR SAVES THAT MATCH THIS QUESTION:\n[id s0]");
+  });
+
+  it("still fits the best match when they have every collection there can be, each full", () => {
+    const retrieved = saves.slice(0, 6).map((save) => ({ save, passages: [long(2_000), long(2_000)] }));
+    const collections = Array.from({ length: COLLECTIONS_KEPT }, (_, i) => ({ name: `${long(36)}${i}`, ids: saves.map((s) => s.id) }));
+    const system = buildAskSystem(user, saves, retrieved, "2026-11-02", { name: long(200), memories, usage: long(600), rules, collections, about });
+    expect(system.length).toBeLessThanOrEqual(ASK_SYSTEM_CHARS);
+    expect(system).toContain("THEIR COLLECTIONS");
     expect(system).toContain("THEIR SAVES THAT MATCH THIS QUESTION:\n[id s0]");
   });
 
