@@ -6,7 +6,7 @@
  * deep it runs, because the meter follows the work through AsyncLocalStorage.
  */
 import { AsyncLocalStorage } from "node:async_hooks";
-import { MAX_SECONDS, PRICES, TRANSCRIBE_PER_MINUTE } from "./costs";
+import { MAX_SECONDS, priceOf, TRANSCRIBE_PER_MINUTE } from "./costs";
 
 const meters = new AsyncLocalStorage<{ dollars: number }>();
 
@@ -26,9 +26,10 @@ interface ClaudeUsage {
   cache_read_input_tokens?: number | null;
 }
 
-/** One Claude call, at the prices costs.ts plans for (Haiku for reading the screen, Sonnet for the rest). */
+/** One Claude call, at its model's price (costs.ts priceOf). */
 export function chargeClaude(model: string, usage: ClaudeUsage | null | undefined): void {
-  const price = /haiku/i.test(model) ? PRICES.haiku : PRICES.sonnet;
+  const prompt = (usage?.input_tokens ?? 0) + (usage?.cache_creation_input_tokens ?? 0) + (usage?.cache_read_input_tokens ?? 0);
+  const price = priceOf(model, prompt);
   const input = (usage?.input_tokens ?? 0) + (usage?.cache_creation_input_tokens ?? 0) * 1.25 + (usage?.cache_read_input_tokens ?? 0) * 0.1;
   charge((input * price.input + (usage?.output_tokens ?? 0) * price.output) / 1_000_000);
 }

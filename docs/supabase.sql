@@ -170,3 +170,77 @@ language sql stable as $$
   order by f.score desc
   limit p_k;
 $$;
+
+-- Using up a video or question happens in one step inside the database, so many
+-- messages at once (forwarding 20 videos together) can't use more than someone has.
+-- Order: today's Knowing Plus, then a free one, then a bought one.
+-- Returns 'plan', 'free', 'wallet', or null when there's none left.
+create or replace function bot_spend(p_id bigint, p_kind text, p_free int, p_plan_daily int, p_day text)
+returns text
+language plpgsql as $$
+declare
+  u bot_users%rowtype;
+  p jsonb;
+  used int;
+begin
+  if p_kind not in ('videos', 'questions') then return null; end if;
+  select * into u from bot_users where id = p_id for update;
+  if not found then return null; end if;
+  p := u.wallet -> 'plan';
+  if p_plan_daily > 0 and jsonb_typeof(p) = 'object' then
+    if coalesce(p ->> 'day', '') <> p_day then
+      p := p || jsonb_build_object('day', p_day, 'videos', 0, 'questions', 0);
+    end if;
+    used := coalesce(floor((p ->> p_kind)::numeric), 0)::int;
+    if used < p_plan_daily then
+      update bot_users set wallet = jsonb_set(u.wallet, '{plan}', p || jsonb_build_object(p_kind, used + 1)) where id = p_id;
+      return 'plan';
+    end if;
+  end if;
+  used := coalesce(floor((u.usage ->> p_kind)::numeric), 0)::int;
+  if used < p_free then
+    update bot_users set usage = u.usage || jsonb_build_object(p_kind, used + 1, 'day', coalesce(nullif(u.usage ->> 'day', ''), p_day)) where id = p_id;
+    return 'free';
+  end if;
+  used := coalesce(floor((u.wallet ->> p_kind)::numeric), 0)::int;
+  if used > 0 then
+    update bot_users set wallet = u.wallet || jsonb_build_object(p_kind, used - 1) where id = p_id;
+    return 'wallet';
+  end if;
+  return null;
+end $$;
+
+-- Gives back a use that got them nothing (a video that couldn't be saved).
+create or replace function bot_give_back(p_id bigint, p_kind text, p_from text, p_day text)
+returns void
+language plpgsql as $$
+begin
+  if p_kind not in ('videos', 'questions') then return; end if;
+  if p_from = 'free' then
+    update bot_users set usage = usage || jsonb_build_object(p_kind, greatest(0, coalesce(floor((usage ->> p_kind)::numeric), 0)::int - 1)) where id = p_id;
+  elsif p_from = 'wallet' then
+    update bot_users set wallet = wallet || jsonb_build_object(p_kind, coalesce(floor((wallet ->> p_kind)::numeric), 0)::int + 1) where id = p_id;
+  elsif p_from = 'plan' then
+    update bot_users
+      set wallet = jsonb_set(wallet, '{plan}', (wallet -> 'plan') || jsonb_build_object(p_kind, greatest(0, coalesce(floor((wallet -> 'plan' ->> p_kind)::numeric), 0)::int - 1)))
+      where id = p_id and jsonb_typeof(wallet -> 'plan') = 'object' and wallet -> 'plan' ->> 'day' = p_day;
+  end if;
+end $$;
+
+-- Adds what a Knowing Plus use really cost to the month, in one step. Returns the new total (null with no plan).
+create or replace function bot_plan_cost(p_id bigint, p_dollars numeric)
+returns numeric
+language plpgsql as $$
+declare
+  total numeric;
+begin
+  update bot_users
+    set wallet = jsonb_set(wallet, '{plan,cost}', to_jsonb(coalesce((wallet -> 'plan' ->> 'cost')::numeric, 0) + greatest(p_dollars, 0)))
+    where id = p_id and jsonb_typeof(wallet -> 'plan') = 'object'
+    returning (wallet -> 'plan' ->> 'cost')::numeric into total;
+  return total;
+end $$;
+
+-- Only the bot's server key may call them.
+revoke execute on function bot_spend(bigint, text, int, int, text), bot_give_back(bigint, text, text, text), bot_plan_cost(bigint, numeric) from public, anon, authenticated;
+grant execute on function bot_spend(bigint, text, int, int, text), bot_give_back(bigint, text, text, text), bot_plan_cost(bigint, numeric) to service_role;

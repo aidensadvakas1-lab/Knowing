@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   ASK_SYSTEM_CHARS,
   HISTORY_CHARS,
@@ -121,5 +121,31 @@ describe("the limits the worst case relies on", () => {
 
   it("caps the wrap-up after a scroll session", () => {
     expect(buildWrapUpPrompt(saves.slice(0, 30), saves, user.facts).length).toBeLessThanOrEqual(WRAPUP_TEXT_CHARS);
+  });
+});
+
+describe("prices follow the models that are set", () => {
+  it("knows each model's price, and prices an unknown one like the most expensive", async () => {
+    const { priceOf } = await import("@/lib/bot/costs");
+    expect(priceOf("claude-sonnet-5-5")).toEqual({ input: 2, output: 10 });
+    expect(priceOf("claude-haiku-5-5")).toEqual({ input: 0.1, output: 0.5 });
+    expect(priceOf("claude-haiku-5-5", 150_000)).toEqual({ input: 0.5, output: 2.5 });
+    expect(priceOf("claude-opus-5-5")).toEqual({ input: 4, output: 20 });
+    expect(priceOf("claude-some-new-model")).toEqual({ input: 15, output: 75 });
+  });
+
+  it("raises the refill's price when a stronger model is set, so it still can't lose money", async () => {
+    vi.resetModules();
+    vi.stubEnv("KNOWING_WATCH_MODEL", "claude-opus-5-5");
+    vi.stubEnv("KNOWING_BOT_MODEL", "claude-opus-5-5");
+    try {
+      const costs = await import("@/lib/bot/costs");
+      const [pack] = costs.pricedPacks();
+      expect(pack.stars).toBeGreaterThan(150);
+      expect(costs.worstPackCost(pack)).toBeLessThanOrEqual(pack.stars * costs.PAYOUT_PER_STAR * costs.SAFETY);
+    } finally {
+      vi.unstubAllEnvs();
+      vi.resetModules();
+    }
   });
 });
