@@ -404,6 +404,13 @@ describe("buying extras with Stars", () => {
     expect(sent.filter((m) => m.chatId === 99).at(-1)?.html).toBe("<b>From the owner:</b> Sorted, check again");
   });
 
+  it("shows the owner what a test purchase added", async () => {
+    const { deps, sent } = setup();
+    await handleUpdate(paid("ch1", 7), deps);
+    await handleUpdate(text("/usage"), deps);
+    expect(sent.at(-1)?.html).toContain("<b>On your account:</b> 5 videos and 10 questions from purchases.");
+  });
+
   it("keeps what someone bought after /delete", async () => {
     const { deps, store } = setup();
     await handleUpdate(text("/start join-abc123", 99), deps);
@@ -881,13 +888,25 @@ describe("handleUpdate", () => {
     expect((await store.getUser(FRIEND)).turns).toEqual([]);
     // A bought one goes back in the wallet.
     await store.saveWallet(FRIEND, { videos: 2, questions: 0, paid: [], plan: null });
-    const user = await store.getUser(FRIEND);
-    await store.saveUser({ ...user, usage: { ...user.usage, videos: 3 } });
+    await store.setUsage(FRIEND, { day: "2026-11-03", videos: 3, questions: 0 });
     vi.mocked(deps.media.fromLink).mockRejectedValueOnce(new Error("Downloading the video: couldn't connect after 3 tries"));
     await handleUpdate(text("https://vm.tiktok.com/ZMdef/", FRIEND), deps);
     expect(edits.at(-1)?.html).toContain("I couldn't open that video");
     expect(edits.at(-1)?.html).toContain("It didn't use up a video.");
     expect((await store.getWallet(FRIEND)).videos).toBe(2);
+  });
+
+  it("never lets many messages at once use more than someone has", async () => {
+    const { deps, store, brain } = setup({ limits: { videos: 2, questions: 3 } });
+    await handleUpdate(text("/start join-abc123", 99), deps);
+    await store.saveWallet(99, { videos: 1, questions: 0, paid: [], plan: null });
+    // Twenty videos forwarded together arrive as twenty messages at the same moment.
+    await Promise.all(Array.from({ length: 20 }, (_, i) => handleUpdate(text(`https://vm.tiktok.com/f${i}/`, 99), deps)));
+    expect(store.saves).toHaveLength(3); // 2 free + 1 bought
+    expect((await store.getWallet(99)).videos).toBe(0);
+    await Promise.all(Array.from({ length: 10 }, (_, i) => handleUpdate(text(`question ${i}`, 99), deps)));
+    expect(brain.answer).toHaveBeenCalledTimes(3);
+    expect((await store.getUser(99)).usage).toMatchObject({ videos: 2, questions: 3 });
   });
 
   it("keeps a video that was saved even if the reply after it breaks", async () => {

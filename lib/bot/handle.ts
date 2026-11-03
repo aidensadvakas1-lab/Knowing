@@ -38,8 +38,8 @@ import { aboutKnowing, commandsText, GUIDE, guideButtons, WELCOME, type Setup } 
 import { buyButtons, invoiceFor, packName, PAYSUPPORT_HELP, priceList, readPack, SUPPORT_HELP, TERMS } from "./shop";
 import { relevantSaves, sharedVideoTurns } from "./prompts";
 import { costOf, metered } from "./meter";
-import { levelNotice, PLAN, PLAN_PERIOD_SECONDS, planActive, planButton, planButtons, planDeal, planInvoice, planLeft, planLevel, planOfferText, planStatus, readPlanPayload, refundPlan, shortDate, untilReset, usePlan, type PlanOffer } from "./plan";
-import { planBudget } from "./costs";
+import { levelNotice, PLAN, PLAN_PERIOD_SECONDS, planActive, planButton, planButtons, planDaily as planDaily_, planDeal, planInvoice, planLeft, planLevel, planOfferText, planStatus, readPlanPayload, shortDate, untilReset, type PlanOffer } from "./plan";
+import { planBudget, wrapUpShare } from "./costs";
 import { hasStarted, readReferral, REFERRAL_MAX, REFERRAL_QUESTIONS, REFERRAL_REWARD, REFERRAL_VIDEOS, referralCode } from "./referral";
 import { groupHits, searchQuery, type Retriever } from "./rag";
 import { FACTS_KEPT, newSaveId, newUser, TURNS_KEPT } from "./store";
@@ -446,32 +446,26 @@ type Paid = "nothing" | "plan" | "free" | "wallet";
 async function allow(user: BotUser, kind: PackKind, deps: Deps): Promise<Paid | null> {
   if (user.id === deps.ownerId) return "nothing";
   const wallet = await walletOf(user.id, deps);
-  if (wallet && usePlan(wallet.plan, kind)) {
-    await deps.store.saveWallet(user.id, wallet);
-    return "plan";
+  const planDaily = planActive(wallet?.plan) ? planDaily_(wallet.plan) : 0;
+  // One step in the database, so twenty videos forwarded at once can't use more than they have.
+  const rule = { free: deps.limits[kind], planDaily: planDaily ? planDaily[kind] : 0, day: today() };
+  let from = await deps.store.spend(user.id, kind, rule);
+  // Someone let in through settings may not have a row yet.
+  if (!from && !(await deps.store.hasUser(user.id))) {
+    await deps.store.saveUser(user);
+    from = await deps.store.spend(user.id, kind, rule);
   }
-  if (spend(user, kind, deps.limits[kind])) return "free";
-  if (!wallet || wallet[kind] < 1) return null;
-  await deps.store.saveWallet(user.id, { ...wallet, [kind]: wallet[kind] - 1 });
-  return "wallet";
+  // Kept in step here too, for /usage-style numbers in this same reply.
+  if (from === "free") spend(user, kind, Number.MAX_SAFE_INTEGER);
+  return from;
 }
 
 /** Give back a use that got them nothing, like a video that couldn't be saved. Never throws. */
 async function giveBack(user: BotUser, kind: PackKind, paid: Paid, deps: Deps): Promise<void> {
   try {
-    if (paid === "free") {
-      user.usage[kind] = Math.max(0, user.usage[kind] - 1);
-      await deps.store.saveUser(user);
-    }
-    if (paid === "wallet") {
-      const wallet = await deps.store.getWallet(user.id);
-      await deps.store.saveWallet(user.id, { ...wallet, [kind]: wallet[kind] + 1 });
-    }
-    if (paid === "plan") {
-      const wallet = await deps.store.getWallet(user.id);
-      refundPlan(wallet.plan, kind);
-      await deps.store.saveWallet(user.id, wallet);
-    }
+    if (paid === "nothing") return;
+    if (paid === "free") user.usage[kind] = Math.max(0, user.usage[kind] - 1);
+    await deps.store.giveBack(user.id, kind, paid, today());
   } catch (error) {
     console.error("Giving back a use failed", error);
   }
@@ -482,7 +476,11 @@ const walletOf = (userId: number, deps: Deps) => deps.store.getWallet(userId).ca
 
 async function showUsage(chatId: number, user: BotUser, deps: Deps): Promise<void> {
   if (user.id === deps.ownerId) {
-    return void (await deps.tg.sendMessage(chatId, `You're the owner, so you have no limits. Everyone else starts with ${deps.limits.videos} free videos and ${deps.limits.questions} free questions, given once.`));
+    // What the owner bought shows too, so a test purchase can be checked (they never use it up).
+    const wallet = await walletOf(user.id, deps);
+    const bought = wallet && (wallet.videos || wallet.questions) ? `\n\n<b>On your account:</b> ${wallet.videos} video${wallet.videos === 1 ? "" : "s"} and ${wallet.questions} question${wallet.questions === 1 ? "" : "s"} from purchases. You never use them up, since you have no limits.` : "";
+    const plan = planActive(wallet?.plan) ? `\n\n${planStatus(wallet.plan)}` : "";
+    return void (await deps.tg.sendMessage(chatId, `You're the owner, so you have no limits. Everyone else starts with ${deps.limits.videos} free videos and ${deps.limits.questions} free questions, given once.${bought}${plan}`));
   }
   const wallet = await walletOf(user.id, deps);
   const buttons = shopButtons(deps, planActive(wallet?.plan));
@@ -553,13 +551,11 @@ async function offerPlan(chatId: number, deps: Deps): Promise<void> {
  */
 async function chargePlan(chatId: number, userId: number, dollars: number, deps: Deps): Promise<void> {
   try {
-    const wallet = await deps.store.getWallet(userId);
-    const plan = wallet.plan;
-    if (!plan) return;
-    const before = planLevel(plan);
-    plan.cost += dollars;
-    const now = planLevel(plan);
-    await deps.store.saveWallet(userId, wallet);
+    const total = await deps.store.addPlanCost(userId, dollars);
+    const plan = total === null ? null : (await deps.store.getWallet(userId)).plan;
+    if (total === null || !plan) return;
+    const before = planLevel({ ...plan, cost: total - dollars });
+    const now = planLevel({ ...plan, cost: total });
     if (now === before) return;
     await deps.tg.sendMessage(chatId, levelNotice(now, plan)).catch(() => {});
     if (now === "paused") await tellOwner(deps, `<code>${userId}</code> reached this month's fair use on ${PLAN.name} ($${plan.cost.toFixed(2)} of $${planBudget(plan.stars).toFixed(2)}), so it's paused until ${shortDate(plan.until)}.`);
@@ -809,7 +805,8 @@ async function watchAndSave(chatId: number, user: BotUser, get: () => Promise<Wa
   // On the plan, what watching really cost is added to the month (the fair-use guard).
   await metered(
     () => watchOne(chatId, user, get, sourceUrl, note, paid, deps),
-    (dollars) => (paid === "plan" ? chargePlan(chatId, user.id, dollars, deps) : Promise.resolve()),
+    // Its share of a later wrap-up is counted now, since the wrap-up runs on its own.
+    (dollars) => (paid === "plan" ? chargePlan(chatId, user.id, dollars + wrapUpShare(), deps) : Promise.resolve()),
   );
 }
 
@@ -1043,7 +1040,8 @@ async function onButton(q: NonNullable<Update["callback_query"]>, deps: Deps) {
         await deps.store.deleteUser(q.from.id);
         // An empty row keeps their spot, what they've used, what they bought and their invite rewards,
         // so deleting doesn't lock them out or hand out new free ones.
-        await deps.store.saveUser({ ...newUser(q.from.id), usage });
+        await deps.store.saveUser(newUser(q.from.id));
+        await deps.store.setUsage(q.from.id, usage);
         if (wallet && (wallet.videos || wallet.questions || wallet.paid.length || wallet.plan)) await deps.store.saveWallet(q.from.id, wallet);
         if (referral && (referral.by || referral.rewarded)) await deps.store.saveReferral(q.from.id, referral);
       }

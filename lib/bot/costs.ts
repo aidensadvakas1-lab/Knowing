@@ -8,6 +8,7 @@
  * English (closer to 4), Russian and code. Images are counted exactly: Claude
  * charges about one token per 750 pixels.
  */
+import { MODELS } from "../constants";
 import { PACK_SIZES } from "./shop";
 import type { Pack } from "./types";
 
@@ -16,6 +17,26 @@ export const PRICES = {
   sonnet: { input: 2, output: 10 },
   haiku: { input: 0.1, output: 0.5 },
 } as const;
+
+/**
+ * Dollars per million tokens for each model the bot might be set to use
+ * (KNOWING_WATCH_MODEL, KNOWING_BOT_MODEL...), from Anthropic's price list.
+ * A model not listed is priced like the most expensive one, so switching to
+ * a stronger model raises prices instead of quietly selling at a loss.
+ */
+const MODEL_PRICES: Array<[RegExp, { input: number; output: number }]> = [
+  [/haiku-5-5/, PRICES.haiku],
+  [/sonnet-5(-5)?(\b|$)/, PRICES.sonnet],
+  [/opus-5-5/, { input: 4, output: 20 }],
+  [/opus-5(\b|$)|opus-4-[678]/, { input: 5, output: 25 }],
+];
+const MOST_EXPENSIVE = { input: 15, output: 75 };
+
+/** What a model costs. Haiku 5.5 costs 5 times more on a prompt over 100K tokens. */
+export function priceOf(model: string, inputTokens = 0): { input: number; output: number } {
+  const price = MODEL_PRICES.find(([match]) => match.test(model))?.[1] ?? MOST_EXPENSIVE;
+  return price === PRICES.haiku && inputTokens > 100_000 ? { input: 0.5, output: 2.5 } : price;
+}
 /** Speech to text (gpt-4o-mini-transcribe), dollars per minute of audio. */
 export const TRANSCRIBE_PER_MINUTE = 0.003;
 /** What Telegram pays the bot's owner per Star, in dollars. */
@@ -67,13 +88,14 @@ const WRAPUP_MIN_VIDEOS = 3;
 /** Embeddings for search, priced in hundredths of a cent; a generous allowance per video or question. */
 const SMALL_CALLS = 0.001;
 
-type Model = keyof typeof PRICES;
+/** Dollars for one call at its limits, at the price of the model that's set. */
+const callCost = (model: string, inputTokens: number, outputTokens: number) => {
+  const price = priceOf(model, inputTokens);
+  return (inputTokens * price.input + outputTokens * price.output) / 1_000_000;
+};
 
-/** Dollars for one call at its limits. */
-const callCost = (model: Model, inputTokens: number, outputTokens: number) => (inputTokens * PRICES[model].input + outputTokens * PRICES[model].output) / 1_000_000;
-
-/** A Sonnet call plus the cheap model's second look, in case a safety filter blocks it by mistake. */
-const withFallback = (inputTokens: number, outputTokens: number) => callCost("sonnet", inputTokens, outputTokens) + callCost("haiku", inputTokens, outputTokens);
+/** A call plus the cheap model's second look, in case a safety filter blocks it by mistake. */
+const withFallback = (model: string, inputTokens: number, outputTokens: number) => callCost(model, inputTokens, outputTokens) + callCost(MODELS.fallback, inputTokens, outputTokens);
 
 const textTokens = (chars: number) => Math.ceil(chars * TOKENS_PER_CHAR);
 /** One frame plus its "Frame 3, at 0:12:" label. */
@@ -81,17 +103,22 @@ const FRAME_TOKENS = Math.ceil(FRAME_PIXELS / 750) + 10;
 
 /** The most one video can cost, in dollars. */
 export function worstVideoCost(): number {
-  const read = callCost("haiku", SCAN_MAX * FRAME_TOKENS + READ_PROMPT_TOKENS, READ_MAX_TOKENS);
-  const watch = withFallback(FRAME_COUNT * FRAME_TOKENS + textTokens(WATCH_TEXT_CHARS), WATCH_MAX_TOKENS);
+  const read = callCost(MODELS.read, SCAN_MAX * FRAME_TOKENS + READ_PROMPT_TOKENS, READ_MAX_TOKENS);
+  const watch = withFallback(MODELS.watch, FRAME_COUNT * FRAME_TOKENS + textTokens(WATCH_TEXT_CHARS), WATCH_MAX_TOKENS);
   const hear = (MAX_SECONDS / 60) * TRANSCRIBE_PER_MINUTE;
-  const wrapUpShare = withFallback(textTokens(WRAPUP_TEXT_CHARS), WRAPUP_MAX_TOKENS) / WRAPUP_MIN_VIDEOS;
-  return read + watch + hear + wrapUpShare + SMALL_CALLS;
+  return read + watch + hear + wrapUpShare() + SMALL_CALLS;
+}
+
+/** Each video's share of the most a scroll's wrap-up can cost (one wrap-up needs at least 3 videos). It runs later, so Knowing Plus adds it to each video. */
+export function wrapUpShare(): number {
+  return withFallback(MODELS.bot, textTokens(WRAPUP_TEXT_CHARS), WRAPUP_MAX_TOKENS) / WRAPUP_MIN_VIDEOS;
 }
 
 /** The most one question can cost, in dollars: an answer, or a Fix / Add what it says, either one asked by voice. */
 export function worstQuestionCost(): number {
-  const answer = withFallback(textTokens(ASK_SYSTEM_CHARS + HISTORY_CHARS + QUESTION_CHARS), ANSWER_MAX_TOKENS);
-  const rewrite = withFallback(textTokens(REWRITE_TEXT_CHARS), REWRITE_MAX_TOKENS);
+  const answer = withFallback(MODELS.bot, textTokens(ASK_SYSTEM_CHARS + HISTORY_CHARS + QUESTION_CHARS), ANSWER_MAX_TOKENS);
+  // Fix something and Add what it says use the watching model.
+  const rewrite = withFallback(MODELS.watch, textTokens(REWRITE_TEXT_CHARS), REWRITE_MAX_TOKENS);
   const voice = (VOICE_MAX_SECONDS / 60) * TRANSCRIBE_PER_MINUTE;
   return Math.max(answer, rewrite) + voice + SMALL_CALLS;
 }
