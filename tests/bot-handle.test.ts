@@ -760,6 +760,9 @@ describe("the start message and guide", () => {
     expect(WELCOME.length).toBeLessThan(250);
     await handleUpdate(text("/start"), deps);
     expect(sent[0]?.html).toBe(WELCOME);
+    // Then every command, so nothing has to be guessed.
+    expect(sent[1]?.html).toContain("/folders · ");
+    expect(sent[1]?.html).toContain("/commands · ");
     expect(datas(sent[0]?.buttons)).toEqual(["guide:save", "guide:ask", "guide:folders", "guide:flashback", "guide:limits", "guide:data", "guide:commands"]);
     await handleUpdate(tap("guide:ask", sent[0]!.id), deps);
     expect(edits.at(-1)?.html).toContain("hold the mic");
@@ -769,8 +772,9 @@ describe("the start message and guide", () => {
     await handleUpdate(tap("guide:", sent[0]!.id), deps);
     expect(edits.at(-1)?.html).toBe(WELCOME);
     await handleUpdate(text("/help"), deps);
-    expect(sent.at(-1)?.html).toBe(WELCOME);
-    expect(datas(sent.at(-1)?.buttons)).toContain("guide:save");
+    expect(sent.at(-2)?.html).toBe(WELCOME);
+    expect(datas(sent.at(-2)?.buttons)).toContain("guide:save");
+    expect(sent.at(-1)?.html).toContain("📋 <b>Every command</b>");
   });
 });
 
@@ -787,7 +791,7 @@ describe("weekly flashback", () => {
     expect(edits.at(-1)?.html).toContain("Weekly flashback is on");
     const before = sent.length;
     await handleUpdate(text("/start", 99), deps);
-    expect(sent.length).toBe(before + 1); // just the welcome
+    expect(sent.length).toBe(before + 2); // just the welcome and the commands
   });
 
   it("asks people who started before it existed once, after their next save", async () => {

@@ -245,7 +245,9 @@ export async function handleUpdate(update: Update, deps: Deps): Promise<void> {
     if (support) return await askOwner(chatId, userId, msg.from.first_name, text.slice(support[0].length).trim(), Boolean(support[1]), deps);
     if (text.startsWith("/commands")) return void (await deps.tg.sendMessage(chatId, commandsText(userId === deps.ownerId)));
     if (text === "/start" || text.startsWith("/start ") || text.startsWith("/help")) {
+      // The welcome with its guide, then every command, so nothing has to be found by guessing.
       await deps.tg.sendMessage(chatId, WELCOME, guideButtons());
+      await deps.tg.sendMessage(chatId, commandsText(userId === deps.ownerId));
       if (text.startsWith("/start")) await offerFlashback(chatId, userId, deps);
       return;
     }
