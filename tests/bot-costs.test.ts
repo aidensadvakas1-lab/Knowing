@@ -13,6 +13,8 @@ import {
   worstVideoCost,
 } from "@/lib/bot/costs";
 import { buildAskSystem, buildFixPrompt, buildRewritePrompt, buildWatchPrompt, buildWrapUpPrompt, recentHistory } from "@/lib/bot/prompts";
+import { RULES_KEPT } from "@/lib/bot/folders";
+import { aboutKnowing } from "@/lib/bot/profile";
 import { PACK_SIZES } from "@/lib/bot/shop";
 import { newUser } from "@/lib/bot/store";
 import type { Save } from "@/lib/bot/types";
@@ -72,6 +74,10 @@ describe("the limits the worst case relies on", () => {
   const user = { ...newUser(1), facts: Array.from({ length: 40 }, () => long(160)), turns: Array.from({ length: 16 }, (_, i) => ({ role: i % 2 ? ("assistant" as const) : ("user" as const), content: long(4_000) })) };
   const saves = Array.from({ length: 150 }, (_, i) => bigSave(i));
   const memories = Array.from({ length: 4 }, () => ({ said: long(4_000), answered: long(4_000), at: "2026-11-01T00:00:00Z" }));
+  /** As many filing rules as are kept, as long as they can be. */
+  const rules = Array.from({ length: RULES_KEPT }, (_, i) => ({ folder: `${long(36)}${i}`, about: long(120) }));
+  /** Everything Knowing knows about itself, for the owner (the longest version). */
+  const about = aboutKnowing({ limits: { videos: 5, questions: 10 }, packs: pricedPacks(), open: true }, true);
 
   it("caps the text sent with a video's frames", () => {
     const prompt = buildWatchPrompt({ caption: long(9_000), transcript: long(60_000), screenText: long(9_000), note: long(4_096), frameCount: 20, facts: user.facts, saves });
@@ -80,7 +86,7 @@ describe("the limits the worst case relies on", () => {
 
   it("still caps it when they have a folder for everything", () => {
     const many = saves.map((s, i) => ({ ...s, topic: `${long(38)}${i}, part` }));
-    const prompt = buildWatchPrompt({ caption: long(9_000), transcript: long(60_000), screenText: long(9_000), note: long(4_096), frameCount: 20, facts: user.facts, saves: many });
+    const prompt = buildWatchPrompt({ caption: long(9_000), transcript: long(60_000), screenText: long(9_000), note: long(4_096), frameCount: 20, facts: user.facts, saves: many, rules });
     expect(prompt.length).toBeLessThanOrEqual(WATCH_TEXT_CHARS);
   });
 
@@ -91,7 +97,8 @@ describe("the limits the worst case relies on", () => {
 
   it("caps an answer's instructions, however much they've saved, said and told it", () => {
     const retrieved = saves.slice(0, 6).map((save) => ({ save, passages: [long(2_000), long(2_000)] }));
-    const system = buildAskSystem(user, saves, retrieved, "2026-11-02", { name: long(200), memories, usage: long(600) });
+    const system = buildAskSystem(user, saves, retrieved, "2026-11-02", { name: long(200), memories, usage: long(600), rules, about });
+    expect(about.length).toBeLessThan(6_000);
     expect(system.length).toBeLessThanOrEqual(ASK_SYSTEM_CHARS);
     expect(system).toContain("THEIR SAVES THAT MATCH THIS QUESTION:\n[id s0]");
   });

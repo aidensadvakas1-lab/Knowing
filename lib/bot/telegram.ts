@@ -67,6 +67,14 @@ export class Telegram implements TelegramApi {
     }
   }
 
+  async editButtons(chatId: number, messageId: number, buttons: InlineButton[][]): Promise<void> {
+    try {
+      await this.call("editMessageReplyMarkup", { chat_id: chatId, message_id: messageId, reply_markup: { inline_keyboard: buttons } });
+    } catch (error) {
+      if (!(error instanceof TelegramError && /not modified/i.test(error.message))) throw error;
+    }
+  }
+
   async answerCallback(callbackId: string, text?: string): Promise<void> {
     await this.call("answerCallbackQuery", { callback_query_id: callbackId, ...(text ? { text } : {}) }).catch(() => {});
   }

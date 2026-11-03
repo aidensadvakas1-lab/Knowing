@@ -105,7 +105,7 @@ describe("buildAskSystem", () => {
 
   it("gives each save's date and moment times, so \"last week\" and \"when does he...\" work", () => {
     const p = buildAskSystem(newUser(1), [save({ steps: ["0:42 Add the sauce"] })], [{ save: save({ steps: ["0:42 Add the sauce"] }), passages: [] }], "2026-11-02");
-    expect(p).toContain("Setup, saved 2026-10-29)");
+    expect(p).toContain("Setup, in Siege, saved 2026-10-29)");
     expect(p).toContain("1. 0:42 Add the sauce");
     expect(p).toContain('give the time ("At 0:42, right after searing the chicken."');
     expect(p).toContain("Never make up a time a save doesn't have");
@@ -153,7 +153,7 @@ describe("buildAskSystem", () => {
     const p = buildAskSystem(newUser(1), [linked, save({ id: "f1", title: "Sent as a file" })], [{ save: linked, passages: [] }], "2026-10-31");
     expect(p).toContain("Link: https://www.tiktok.com/@pro/video/123");
     expect(p).toContain("linked below");
-    expect(p).toContain('"Sent as a file" (Siege, Bank, saved 2026-10-29) Basement defense on Bank. (sent as a file, no link)');
+    expect(p).toContain('"Sent as a file" (Siege, Bank, in Siege, saved 2026-10-29) Basement defense on Bank. (sent as a file, no link)');
   });
 });
 
@@ -166,8 +166,8 @@ describe("watch prompt and cleanWatch", () => {
 
   it("files new videos into the folders they already have", () => {
     const p = buildWatchPrompt({ caption: "", transcript: "", note: "", frameCount: 2, saves: [save({}), save({ id: "g1", topic: "Gym, Chest" })] });
-    expect(p).toContain("THEIR FOLDERS: Gym (1), Siege (1)");
-    expect(p).toContain("use that exact name instead of a new one");
+    expect(p).toContain('THEIR FOLDERS (name, how many videos, the newest few, and any rule they gave for it):\nGym (1): "Bank basement: lockers + CCTV setup"\nSiege (1): "Bank basement: lockers + CCTV setup"');
+    expect(p).toContain("Use the folder's exact name");
   });
 
   it("puts the time each step happens at its start, and marks estimates", () => {
@@ -186,11 +186,11 @@ describe("watch prompt and cleanWatch", () => {
 describe("parseAnswer", () => {
   it("splits off REMEMBER and SOURCES and keeps only known ids", () => {
     const a = parseAnswer("1. Reinforce\n2. Mira\nREMEMBER: Plays on PC\nREMEMBER: Gold rank\nSOURCES: a1, zz", ["a1"]);
-    expect(a).toEqual({ text: "1. Reinforce\n2. Mira", sources: ["a1"], about: [], remember: ["Plays on PC", "Gold rank"] });
+    expect(a).toEqual({ text: "1. Reinforce\n2. Mira", sources: ["a1"], about: [], remember: ["Plays on PC", "Gold rank"], moves: [], renames: [], rules: [] });
   });
   it("keeps saves the chat is only about apart from the ones the answer came from", () => {
     const a = parseAnswer("Run this first.\nREMEMBER: Uses a Mac\nABOUT: m1, zz, a1\nSOURCES: a1", ["a1", "m1"]);
-    expect(a).toEqual({ text: "Run this first.", sources: ["a1"], about: ["m1"], remember: ["Uses a Mac"] });
+    expect(a).toEqual({ text: "Run this first.", sources: ["a1"], about: ["m1"], remember: ["Uses a Mac"], moves: [], renames: [], rules: [] });
     expect(parseAnswer("Steps from me.\nABOUT: m1\nSOURCES: none", ["m1"])).toMatchObject({ text: "Steps from me.", sources: [], about: ["m1"] });
     expect(parseAnswer("Here's the plan.\nRELATED: m1, b2, a1\nSOURCES: a1", ["a1", "m1", "b2"])).toMatchObject({ text: "Here's the plan.", sources: ["a1"], about: ["m1", "b2"] });
   });
@@ -218,5 +218,46 @@ describe("buildWrapUpPrompt", () => {
     expect(p).toContain("Mira on CCTV");
     expect(p).toContain("[id o1]");
     expect(p).toContain("Plays on PC");
+  });
+});
+
+describe("folders in the prompts", () => {
+  it("takes the folder Claude picked, never Unsorted, and falls back to the topic's subject", () => {
+    expect(cleanDraft({ topic: "Travel, Tokyo", folder: " Japan trip " }).folder).toBe("Japan trip");
+    expect(cleanDraft({ topic: "Travel, Tokyo", folder: "unsorted" }).folder).toBe("Travel");
+    expect(cleanDraft({ topic: "Travel, Tokyo" }).folder).toBe("Travel");
+  });
+
+  it("files by their rules and by what they've moved, and keeps the folder on Add what it says", () => {
+    const moved = save({ id: "j1", topic: "Travel, Tokyo", folder: "Japan trip" });
+    const p = buildWatchPrompt({ caption: "", transcript: "", note: "", frameCount: 2, saves: [moved], rules: [{ folder: "Car mods", about: "anything about cars" }] });
+    expect(p).toContain('Japan trip (1): "Bank basement: lockers + CCTV setup"');
+    expect(p).toContain("Car mods (0, nothing in it yet). Rule: anything about cars");
+    expect(p).toContain("(Travel, Tokyo; in Japan trip)");
+    expect(p).toContain("Follow their rules first");
+    expect(buildRewritePrompt(moved, "words")).toContain("its folder as it is");
+    expect(buildFixPrompt(moved, "it goes in Car mods")).toContain("set folder to that folder's name");
+  });
+
+  it("tells the answer about their folders and rules, how to organize, and everything about Knowing", () => {
+    const p = buildAskSystem(newUser(1), [save({ folder: "Bank setups" })], [], "2026-11-03", { rules: [{ folder: "Bank setups", about: "Bank" }], about: "Limits: 150 ⭐ packs" });
+    expect(p).toContain('Bank setups (1): "Bank basement: lockers + CCTV setup". Rule: Bank');
+    expect(p).toContain("MOVE: <folder name> | <ids, comma separated>");
+    expect(p).toContain("RENAME: <old name> | <new name>");
+    expect(p).toContain("RULE: <folder name> | <what goes there");
+    expect(p).toContain("only when they ask for it, never on your own");
+    expect(p).toContain("HOW KNOWING WORKS");
+    expect(p).toContain("Limits: 150 ⭐ packs");
+  });
+
+  it("reads MOVE, RENAME and RULE lines, keeps only real ids, and hides them from the answer", () => {
+    const a = parseAnswer(
+      "Done, they're in Dinner ideas.\nMOVE: Dinner ideas | a1, zz, b2\nMOVE: | a1\nMOVE: Gym | zz\nRENAME: Gym | Workouts\nRENAME: Same | Same\nRULE: Car mods | anything about cars\nRULE: no pipe here\nSOURCES: none",
+      ["a1", "b2"],
+    );
+    expect(a.text).toBe("Done, they're in Dinner ideas.");
+    expect(a.moves).toEqual([{ folder: "Dinner ideas", ids: ["a1", "b2"] }]);
+    expect(a.renames).toEqual([{ from: "Gym", to: "Workouts" }]);
+    expect(a.rules).toEqual([{ folder: "Car mods", about: "anything about cars" }]);
   });
 });
