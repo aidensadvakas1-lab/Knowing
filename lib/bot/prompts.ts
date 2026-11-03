@@ -9,8 +9,9 @@
  */
 import { formatTimestamp } from "../video-math";
 import { ASK_SYSTEM_CHARS, HISTORY_CHARS } from "./costs";
+import { collectionShelf } from "./collections";
 import { cleanFolderName, folderOf, folderShelf, topicFolder, UNSORTED } from "./folders";
-import { SAVE_TYPE_LABEL, SAVE_TYPES, type Answer, type BotUser, type ChatMemory, type FilingRule, type Relation, type Save, type SaveDraft, type SaveType, type Turn, type WatchResult } from "./types";
+import { SAVE_TYPE_LABEL, SAVE_TYPES, type Answer, type BotUser, type ChatMemory, type Collection, type FilingRule, type Relation, type Save, type SaveDraft, type SaveType, type Turn, type WatchResult } from "./types";
 
 const RELATIONS: readonly Relation[] = ["none", "related", "duplicate", "alternative"];
 
@@ -212,13 +213,16 @@ export function sharedVideoTurns(save: Save, reply: string, note: string): Turn[
   ];
 }
 
-/** Most characters of their folders and rules in an answer's instructions. */
-const ASK_FOLDERS_CHARS = 2_000;
+/** Most characters of their folders, rules and collections in an answer's instructions. */
+const ASK_FOLDERS_CHARS = 1_500;
+
+/** Most characters of their collections in an answer's instructions, taken out of ASK_FOLDERS_CHARS. */
+const ASK_COLLECTIONS_CHARS = 600;
 
 /** Most characters of what Knowing knows about itself (profile.ts aboutKnowing) in an answer's instructions. */
 const ABOUT_CHARS = 6_000;
 
-export function buildAskSystem(user: BotUser, saves: Save[], retrieved: Retrieved[], today: string, extra: { name?: string; memories?: ChatMemory[]; usage?: string; rules?: FilingRule[]; about?: string } = {}): string {
+export function buildAskSystem(user: BotUser, saves: Save[], retrieved: Retrieved[], today: string, extra: { name?: string; memories?: ChatMemory[]; usage?: string; rules?: FilingRule[]; collections?: Collection[]; about?: string } = {}): string {
   const hits = retrieved.map((r) => r.save);
   const passages = new Map(retrieved.map((r) => [r.save.id, r.passages]));
   const mindsets = saves.filter((s) => s.type === "mindset" && !hits.includes(s)).slice(0, 6);
@@ -227,7 +231,9 @@ export function buildAskSystem(user: BotUser, saves: Save[], retrieved: Retrieve
   // A Telegram name is the user's own text: one short line, so it can't start a section of its own.
   const name = (extra.name ?? "").replace(/\s+/g, " ").trim().slice(0, 40);
   const memories = extra.memories ?? [];
-  const shelf = fitPieces(folderShelf(saves, extra.rules ?? []).map((l) => l.slice(0, 250)), ASK_FOLDERS_CHARS).join("\n");
+  // Collections come out of the folders' share, so organizing never crowds out their saves.
+  const lists = fitPieces(collectionShelf(extra.collections ?? [], saves).map((l) => l.slice(0, 400)), ASK_COLLECTIONS_CHARS).join("\n");
+  const shelf = fitPieces(folderShelf(saves, extra.rules ?? []).map((l) => l.slice(0, 250)), ASK_FOLDERS_CHARS - lists.length).join("\n");
   const head = `You are Knowing, in Telegram: part memory, part companion. The person shares videos (drills, game setups, study methods, plans, ways of thinking, cars, anything they're into) so they never have to save captions or re-explain things, and when they ask, you hand back exactly what they saved. In between, you're good company: they can talk with you about anything, like a friend who knows a lot and remembers everything they've shared and told you. You're not a coach. Be warm, relaxed and curious, and quick and exact when it matters.
 ${name ? `\nTheir first name is ${name}. Use it now and then, not in every message.\n` : ""}
 WHAT THEY'VE TOLD YOU ABOUT THEMSELVES (use it so they never repeat themselves):
@@ -237,7 +243,7 @@ WHAT THEY'RE INTO (from what they save, most first): ${interests(saves) || "(not
 
 THEIR FOLDERS (name, how many videos, the newest few, and any rule they gave for it). Every video is in one; /folders shows them:
 ${shelf || "(none yet)"}
-${extra.about ? `\nHOW KNOWING WORKS (you are Knowing: when they ask about you, a command, a button, a feature, limits or prices, answer from this exactly, and never make up one that isn't here):\n${extra.about.slice(0, ABOUT_CHARS)}\n` : ""}${extra.usage ? `\nTHEIR LIMITS IN KNOWING RIGHT NOW (this message already counted). If they ask what they have left or how to get more, answer from this exactly. The free ones are a one-time start and don't come back; after them it's packs. Say /usage shows it any time without using a question:\n${extra.usage}\n` : ""}${memories.length ? `\nFROM EARLIER CHATS (things said before that may matter now, best match first):\n${memories.map((m) => `[${m.at.slice(0, 10)}] They said: ${m.said.slice(0, 500)}\nYou answered: ${m.answered.slice(0, 400)}`).join("\n\n")}\n` : ""}
+${lists ? `\nTHEIR COLLECTIONS (their own lists, in /collections; a video can be in many and stays in its folder):\n${lists}\n` : ""}${extra.about ? `\nHOW KNOWING WORKS (you are Knowing: when they ask about you, a command, a button, a feature, limits or prices, answer from this exactly, and never make up one that isn't here):\n${extra.about.slice(0, ABOUT_CHARS)}\n` : ""}${extra.usage ? `\nTHEIR LIMITS IN KNOWING RIGHT NOW (this message already counted). If they ask what they have left or how to get more, answer from this exactly. The free ones are a one-time start and don't come back; after them it's packs. Say /usage shows it any time without using a question:\n${extra.usage}\n` : ""}${memories.length ? `\nFROM EARLIER CHATS (things said before that may matter now, best match first):\n${memories.map((m) => `[${m.at.slice(0, 10)}] They said: ${m.said.slice(0, 500)}\nYou answered: ${m.answered.slice(0, 400)}`).join("\n\n")}\n` : ""}
 How to answer:
 - If a save answers the question, answer from it. Lead with the steps or setup itself, exact details (names, positions, reps). No generic tips on top unless asked.
 - If they ask for something a video doesn't cover (like how to install what it shows), don't open with what's missing. Start with a quick recap of what the video does show, then get them what they need from what you know, making clear in passing which part is yours ("Your video shows what each one does. Here's how to set them up:").
@@ -262,8 +268,9 @@ How to answer:
   - To move videos into a folder (one they have, or a new one, which this makes), add a line MOVE: <folder name> | <ids, comma separated>. One line per folder. Use the folder's exact name when they have it. Find the videos they mean from everything listed here, by title, topic, folder and date.
   - To rename a folder, add RENAME: <old name> | <new name>.
   - If they want new videos about something to always go in a folder ("anything about cars goes in Car mods"), add RULE: <folder name> | <what goes there, in under 12 words>.
-  - Then say in a few words what you did ("Done, your 4 pasta videos are in Dinner ideas now."), since it's done the moment you answer. Each video is in one folder, so moving it takes it out of the old one. Buttons do this too: 📂 on a video moves it, and a folder in /folders can be renamed, merged or deleted.
-- Last line, always: SOURCES: the ids of the saves your answer actually came from, comma separated, or SOURCES: none. Put REMEMBER, RELATED, MOVE, RENAME and RULE lines just before SOURCES.
+  - Collections are their own lists, apart from folders. When they ask, COLLECT: <name> | <ids> adds videos (making it if new) and UNCOLLECT: <name> | <ids> takes them out. Renaming or deleting one is in /collections.
+  - Then say in a few words what you did ("Done, your 4 pasta videos are in Dinner ideas now."), since it's done the moment you answer. Each video is in one folder, so moving it takes it out of the old one. Buttons do this too: 📂 on a video moves it, 📌 adds it to collections, and a folder in /folders can be renamed, merged or deleted.
+- Last line, always: SOURCES: the ids of the saves your answer actually came from, comma separated, or SOURCES: none. Put REMEMBER, RELATED, MOVE, RENAME, RULE, COLLECT and UNCOLLECT lines just before SOURCES.
 Today is ${today}.
 `;
   // Their saves fill what's left of ASK_SYSTEM_CHARS (costs.ts): best matches first, then ways of thinking, then the rest.
@@ -322,6 +329,12 @@ export function parseAnswer(raw: string, knownIds: string[]): Answer {
   const rules = pairs("RULE")
     .map(([folder, about]) => ({ folder: cleanFolderName(folder), about: about.replace(/\s+/g, " ").slice(0, 120) }))
     .filter((r) => r.folder && r.about);
-  const text = raw.replace(/\n?^(?:REMEMBER|ABOUT|RELATED|MOVE|RENAME|RULE|SOURCES):[\s\S]*$/m, "").trim();
-  return { text, sources, about, remember, moves, renames, rules };
+  const listed = (label: string) =>
+    pairs(label)
+      .map(([collection, list]) => ({ collection: cleanFolderName(collection), ids: [...new Set(list.split(/[,\s]+/).filter((id) => knownIds.includes(id)))] }))
+      .filter((c) => c.collection && c.ids.length);
+  const collects = listed("COLLECT");
+  const uncollects = listed("UNCOLLECT");
+  const text = raw.replace(/\n?^(?:REMEMBER|ABOUT|RELATED|MOVE|RENAME|RULE|COLLECT|UNCOLLECT|SOURCES):[\s\S]*$/m, "").trim();
+  return { text, sources, about, remember, moves, renames, rules, collects, uncollects };
 }

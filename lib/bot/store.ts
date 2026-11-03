@@ -5,8 +5,9 @@
  *   (server only). Tables are in docs/supabase.sql.
  * - `MemoryStore` keeps everything in memory, for tests.
  */
+import { readCollections } from "./collections";
 import { readRules } from "./folders";
-import type { BotUser, DigestState, FilingRule, Payment, Referral, Save, Sitting, Store, Wallet } from "./types";
+import type { BotUser, Collection, DigestState, FilingRule, Payment, Referral, Save, Sitting, Store, Wallet } from "./types";
 
 /** Recent turns kept per user, so follow-ups make sense. Older chats are kept as searchable memories. */
 export const TURNS_KEPT = 16;
@@ -61,6 +62,7 @@ export class MemoryStore implements Store {
   digests = new Map<number, DigestState>();
   referrals = new Map<number, Referral>();
   filing = new Map<number, FilingRule[]>();
+  collections = new Map<number, Collection[]>();
   /** When each user's row was last saved, like updated_at. */
   active = new Map<number, string>();
   saves: Save[] = [];
@@ -88,6 +90,7 @@ export class MemoryStore implements Store {
     this.digests.delete(userId);
     this.referrals.delete(userId);
     this.filing.delete(userId);
+    this.collections.delete(userId);
     this.saves = this.saves.filter((s) => s.userId !== userId);
   }
   async hasUser(id: number) {
@@ -141,6 +144,13 @@ export class MemoryStore implements Store {
   async saveFiling(userId: number, rules: FilingRule[]) {
     if (!this.users.has(userId)) this.users.set(userId, newUser(userId));
     this.filing.set(userId, readRules(structuredClone(rules)));
+  }
+  async getCollections(userId: number) {
+    return readCollections(structuredClone(this.collections.get(userId) ?? []));
+  }
+  async saveCollections(userId: number, collections: Collection[]) {
+    if (!this.users.has(userId)) this.users.set(userId, newUser(userId));
+    this.collections.set(userId, readCollections(structuredClone(collections)));
   }
   async getReferral(userId: number) {
     return readReferral(structuredClone(this.referrals.get(userId)));
@@ -318,6 +328,20 @@ export class SupabaseStore implements Store {
       method: "POST",
       headers: { prefer: "resolution=merge-duplicates,return=minimal" },
       body: JSON.stringify({ id: userId, filing: readRules(rules) }),
+    });
+  }
+
+  async getCollections(userId: number): Promise<Collection[]> {
+    const rows = await this.rest<Array<{ collections: unknown }>>(`bot_users?id=eq.${userId}&select=collections`);
+    return readCollections(rows[0]?.collections);
+  }
+
+  /** Writes only the collections column, creating the row if needed. */
+  async saveCollections(userId: number, collections: Collection[]): Promise<void> {
+    await this.rest("bot_users", {
+      method: "POST",
+      headers: { prefer: "resolution=merge-duplicates,return=minimal" },
+      body: JSON.stringify({ id: userId, collections: readCollections(collections) }),
     });
   }
 

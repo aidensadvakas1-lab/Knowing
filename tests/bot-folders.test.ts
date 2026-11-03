@@ -42,7 +42,10 @@ describe("folders", () => {
     const saves = [save("a", "Cooking, Pasta", "2026-11-02T10:00:00Z", "https://www.tiktok.com/@a/video/1"), save("b", "Cooking, Steak", "2026-10-20T10:00:00Z"), save("c", "Gym")];
     const list = folderList(saves);
     expect(list.html).toContain("3 videos in 2 folders");
-    expect(list.buttons).toEqual([[{ text: "Cooking (2)", callback_data: `folder:${folderKey("Cooking")}` }, { text: "Gym (1)", callback_data: `folder:${folderKey("Gym")}` }]]);
+    expect(list.buttons).toEqual([
+      [{ text: "Cooking (2)", callback_data: `folder:${folderKey("Cooking")}` }, { text: "Gym (1)", callback_data: `folder:${folderKey("Gym")}` }],
+      [{ text: "📌 Your collections", callback_data: "cols:" }],
+    ]);
     const view = folderView(saves, folderKey("Cooking"))!;
     expect(view.html).toContain('1. <a href="https://www.tiktok.com/@a/video/1">Video a</a> <i>(Tip, Nov 2)</i>');
     expect(view.html).toContain("2. Video b <i>(Tip, Oct 20)</i>");

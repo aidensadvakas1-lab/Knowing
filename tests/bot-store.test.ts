@@ -47,4 +47,17 @@ describe("folders in the database", () => {
     await store.deleteUser(7);
     expect(await store.getFiling(7)).toEqual([]);
   });
+
+  it("writes only the collections column, and forgets collections with /delete", async () => {
+    const calls: Array<{ url: string; body: string; prefer: string }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init: RequestInit) => (calls.push({ url, body: String(init.body), prefer: (init.headers as Record<string, string>).prefer ?? "" }), new Response(null, { status: 201 }))));
+    await new SupabaseStore("https://x.supabase.co", "key").saveCollections(7, [{ name: " Date night ", ids: ["a1", "a1"] }]);
+    expect(calls[0]!.url).toBe("https://x.supabase.co/rest/v1/bot_users");
+    expect(calls[0]!.prefer).toContain("merge-duplicates");
+    expect(JSON.parse(calls[0]!.body)).toEqual({ id: 7, collections: [{ name: "Date night", ids: ["a1"] }] });
+    const store = new MemoryStore();
+    await store.saveCollections(7, [{ name: "Date night", ids: ["a1"] }]);
+    await store.deleteUser(7);
+    expect(await store.getCollections(7)).toEqual([]);
+  });
 });

@@ -17,6 +17,7 @@ save captions or repeat themselves, and you can talk to it about anything.
 | Tap **Fix something** | Tell it what it got wrong and the save is rewritten |
 | Tap **Show steps** / **Start now** | The full steps, or a step-by-step run with **Next** / **Back** that counts each time you finish |
 | Tap **📂 Cooking** under a video | Shows the folder it's in. Tap to move it: pick another folder or **➕ New folder** and type a name. Free (no AI) |
+| Tap **📌 Collect** under a video | Your collections, ticked where the video is in one. Tap to add it or take it out, or **➕ New collection** and type a name. The video stays in its folder. Free (no AI) |
 | Tap **🗑 Delete** on a save's card | Deletes that one video, after asking |
 | `/start` or `/help` | A short welcome with topic buttons (saving, asking, folders, flashback, limits, your data, all commands) that open a few lines each |
 | `/commands` | Every command and what it does (the owner also sees `/refund` and `/reply`) |
@@ -29,6 +30,7 @@ save captions or repeat themselves, and you can talk to it about anything.
 | Mention something about you ("I'm Gold on PC", "I love Ferraris") | Remembers it, so you never repeat it. Every chat is also kept and searchable, so "what did I tell you about my tryout?" works weeks later |
 | `/memory` | Shows what it remembers about you, with a button to forget each one |
 | `/folders` (or `/tags`) | Every video is in one folder. Claude picks it as it's saved, the way you would: it follows your rules, then goes by what's in each folder, so if you made "Japan trip" and moved Tokyo videos in, the next Tokyo video goes there. Tap a folder for its videos (in sections like Legs and Arms once it has 8 or more), with dates, links and a button per video for its notes, plus **Rename**, **Merge** and **Delete** (its videos move to Unsorted, so nothing is lost) |
+| `/collections` (or `/lists`) | Lists you make yourself, like Date night or Watch later, up to 30. Unlike folders, a video can be in as many as you like, and nothing is added on its own. Open one for its videos (with their folder), plus **Rename** (to a name you already have merges them) and **Delete** (the videos stay saved). Or ask in chat: "add my pasta videos to Date night", "take the ramen one out of Japan" (uses a question) |
 | Ask "put my pasta videos in Dinner ideas", "rename Gym to Workouts" or "anything about cars goes in Car mods" | Moves them, renames the folder, or saves a filing rule that new videos follow, and lists what it did under the answer. It uses a question, like any message to the AI; the buttons are free. A folder's rule shows on its page, with **Stop the rule** |
 | `/saved` | Lists everything, grouped by folder, each linked to its video |
 | `/digest` | The weekly flashback: off until you turn it on (it's offered once, at `/start` or after the next save). Every Sunday around 17:00 UTC: what you saved that week by folder plus one from about a month ago, or, in a week with no saves, a few older ones (about a week, a month and three months old). No AI, so it's free. It pauses after 3 in a row with no reply, and `/digest off` stops it |
@@ -134,7 +136,7 @@ https://<your-app>.vercel.app/api/telegram/setup?key=<TELEGRAM_WEBHOOK_SECRET>
 ```
 
 It should say `"ok": true` and your bot's name. This points Telegram at your app and fills in the
-bot's commands menu (`/help`, `/commands`, `/folders`, `/saved`, `/digest`, `/memory`, `/usage`, `/buy`, `/invite`, `/support`, `/delete`) and the text people see
+bot's commands menu (`/help`, `/commands`, `/folders`, `/collections`, `/saved`, `/digest`, `/memory`, `/usage`, `/buy`, `/invite`, `/support`, `/delete`) and the text people see
 before they tap Start. Running it again is harmless, and it's needed once after updates that change
 what Telegram sends the bot (like payments).
 
@@ -250,7 +252,7 @@ switched off automatically.
   (at most one every 5 minutes). If the AI credit runs out, users are told the bot is paused, not broken.
 - **Delete.** `/delete` wipes a person's saves, chats, search index and memory after they confirm.
 - **Already set up before these existed?** Run [`supabase.sql`](supabase.sql) again. It only adds
-  what's missing. Folders need its `folder` and `filing` columns: until then videos still save
+  what's missing. Folders need its `folder` and `filing` columns, and collections its `collections` column: until then videos still save
   (filed by topic, like before), but moving them says it isn't set up yet and the owner gets an alert.
 
 ## How it works

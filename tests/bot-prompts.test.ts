@@ -184,13 +184,20 @@ describe("watch prompt and cleanWatch", () => {
 });
 
 describe("parseAnswer", () => {
+  it("reads COLLECT and UNCOLLECT lines, keeping only known ids", () => {
+    const a = parseAnswer("Done.\nCOLLECT: Date night | a1, zz\nUNCOLLECT: Japan | b2\nCOLLECT: Empty | zz\nSOURCES: none", ["a1", "b2"]);
+    expect(a.text).toBe("Done.");
+    expect(a.collects).toEqual([{ collection: "Date night", ids: ["a1"] }]);
+    expect(a.uncollects).toEqual([{ collection: "Japan", ids: ["b2"] }]);
+  });
+
   it("splits off REMEMBER and SOURCES and keeps only known ids", () => {
     const a = parseAnswer("1. Reinforce\n2. Mira\nREMEMBER: Plays on PC\nREMEMBER: Gold rank\nSOURCES: a1, zz", ["a1"]);
-    expect(a).toEqual({ text: "1. Reinforce\n2. Mira", sources: ["a1"], about: [], remember: ["Plays on PC", "Gold rank"], moves: [], renames: [], rules: [] });
+    expect(a).toEqual({ text: "1. Reinforce\n2. Mira", sources: ["a1"], about: [], remember: ["Plays on PC", "Gold rank"], moves: [], renames: [], rules: [], collects: [], uncollects: [] });
   });
   it("keeps saves the chat is only about apart from the ones the answer came from", () => {
     const a = parseAnswer("Run this first.\nREMEMBER: Uses a Mac\nABOUT: m1, zz, a1\nSOURCES: a1", ["a1", "m1"]);
-    expect(a).toEqual({ text: "Run this first.", sources: ["a1"], about: ["m1"], remember: ["Uses a Mac"], moves: [], renames: [], rules: [] });
+    expect(a).toEqual({ text: "Run this first.", sources: ["a1"], about: ["m1"], remember: ["Uses a Mac"], moves: [], renames: [], rules: [], collects: [], uncollects: [] });
     expect(parseAnswer("Steps from me.\nABOUT: m1\nSOURCES: none", ["m1"])).toMatchObject({ text: "Steps from me.", sources: [], about: ["m1"] });
     expect(parseAnswer("Here's the plan.\nRELATED: m1, b2, a1\nSOURCES: a1", ["a1", "m1", "b2"])).toMatchObject({ text: "Here's the plan.", sources: ["a1"], about: ["m1", "b2"] });
   });
