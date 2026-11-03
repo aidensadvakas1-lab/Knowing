@@ -5,6 +5,7 @@
  * this app's webhook and sets the bot's commands menu and profile text.
  * Running it again is harmless.
  */
+import { instagramAccount } from "@/lib/bot/deps";
 import { secretMatches } from "@/lib/bot/handle";
 import { COMMANDS, DESCRIPTION, SHORT_DESCRIPTION } from "@/lib/bot/profile";
 import { Telegram } from "@/lib/bot/telegram";
@@ -21,8 +22,16 @@ export async function GET(request: Request): Promise<Response> {
   if (!secretMatches(url.searchParams.get("key") ?? "", secret)) return apiError("unauthorized", "Add ?key=<your TELEGRAM_WEBHOOK_SECRET> to the URL.");
 
   try {
-    const me = await new Telegram(token).setup(`${url.origin}/api/telegram`, secret, { commands: COMMANDS, description: DESCRIPTION, shortDescription: SHORT_DESCRIPTION });
-    return Response.json({ ok: true, bot: me.username ? `@${me.username}` : null, webhook: `${url.origin}/api/telegram`, next: "Open the bot in Telegram and send /start." });
+    // /instagram only shows in the menu once sharing Reels to Knowing's Instagram is set up.
+    const commands = COMMANDS.filter((c) => c.command !== "instagram" || instagramAccount());
+    const me = await new Telegram(token).setup(`${url.origin}/api/telegram`, secret, { commands, description: DESCRIPTION, shortDescription: SHORT_DESCRIPTION });
+    return Response.json({
+      ok: true,
+      bot: me.username ? `@${me.username}` : null,
+      webhook: `${url.origin}/api/telegram`,
+      instagram: instagramAccount() ? { account: `@${instagramAccount()}`, webhook: `${url.origin}/api/instagram` } : "not set up",
+      next: "Open the bot in Telegram and send /start.",
+    });
   } catch (error) {
     return apiError("upstream_error", error instanceof Error ? error.message : "Telegram refused the setup.");
   }

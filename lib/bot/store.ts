@@ -60,6 +60,7 @@ export class MemoryStore implements Store {
   wallets = new Map<number, Wallet>();
   digests = new Map<number, DigestState>();
   referrals = new Map<number, Referral>();
+  instagram = new Map<number, string>();
   filing = new Map<number, FilingRule[]>();
   /** When each user's row was last saved, like updated_at. */
   active = new Map<number, string>();
@@ -87,6 +88,7 @@ export class MemoryStore implements Store {
     this.wallets.delete(userId);
     this.digests.delete(userId);
     this.referrals.delete(userId);
+    this.instagram.delete(userId);
     this.filing.delete(userId);
     this.saves = this.saves.filter((s) => s.userId !== userId);
   }
@@ -148,6 +150,18 @@ export class MemoryStore implements Store {
   async saveReferral(userId: number, referral: Referral) {
     if (!this.users.has(userId)) this.users.set(userId, newUser(userId));
     this.referrals.set(userId, readReferral(structuredClone(referral)));
+  }
+  async instagramUser(instagramId: string) {
+    return [...this.instagram].find(([, ig]) => ig === instagramId)?.[0] ?? 0;
+  }
+  async getInstagram(userId: number) {
+    return this.instagram.get(userId) ?? "";
+  }
+  async linkInstagram(userId: number, instagramId: string) {
+    for (const [id, ig] of this.instagram) if (ig === instagramId) this.instagram.delete(id);
+    if (!this.users.has(userId)) this.users.set(userId, newUser(userId));
+    if (instagramId) this.instagram.set(userId, instagramId);
+    else this.instagram.delete(userId);
   }
 }
 
@@ -385,6 +399,33 @@ export class SupabaseStore implements Store {
       method: "POST",
       headers: { prefer: "resolution=merge-duplicates,return=minimal" },
       body: JSON.stringify({ id: userId, referral: readReferral(referral) }),
+    });
+  }
+
+  async instagramUser(instagramId: string): Promise<number> {
+    if (!instagramId) return 0;
+    const rows = await this.rest<Array<{ id: number }>>(`bot_users?instagram=eq.${encodeURIComponent(instagramId)}&select=id&limit=1`);
+    return rows[0] ? Number(rows[0].id) : 0;
+  }
+
+  async getInstagram(userId: number): Promise<string> {
+    const rows = await this.rest<Array<{ instagram: string | null }>>(`bot_users?id=eq.${userId}&select=instagram`);
+    return rows[0]?.instagram ?? "";
+  }
+
+  async linkInstagram(userId: number, instagramId: string): Promise<void> {
+    // One Instagram account belongs to one person: take it off anyone else first.
+    if (instagramId) {
+      await this.rest(`bot_users?instagram=eq.${encodeURIComponent(instagramId)}&id=neq.${userId}`, {
+        method: "PATCH",
+        headers: { prefer: "return=minimal" },
+        body: JSON.stringify({ instagram: null }),
+      });
+    }
+    await this.rest("bot_users", {
+      method: "POST",
+      headers: { prefer: "resolution=merge-duplicates,return=minimal" },
+      body: JSON.stringify({ id: userId, instagram: instagramId || null }),
     });
   }
 

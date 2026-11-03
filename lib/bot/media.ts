@@ -14,7 +14,8 @@ import { fetchSource } from "../fetch-source";
 import { isAiConfigured } from "../server";
 import { isTranscriptionConfigured, transcribeAudio } from "../transcribe";
 import { FRAME_COUNT, FRAME_PIXELS, MAX_SECONDS, SCAN_MAX, VOICE_MAX_SECONDS } from "./costs";
-import { isVideoFileLink, LOGIN_WALLED, platformName, sendTheFileNote } from "./platforms";
+import { isVideoFileLink, LOGIN_WALLED, platformName, sendTheFileNote, shareToInstagramNote } from "./platforms";
+import { postText } from "./posts";
 import { readScreenText } from "./screen";
 import { isTikTok, resolveTikTok } from "./tiktok";
 import { NoTranscription, type Media, type WatchInput } from "./types";
@@ -190,6 +191,12 @@ async function hearVoiceBytes(voice: Buffer, durationHint: number): Promise<{ te
   }
 }
 
+/** JPEG, PNG, GIF or WebP, by the first bytes. */
+export function isImage(b: Buffer): boolean {
+  const ascii = (from: number, to: number) => b.subarray(from, to).toString("latin1");
+  return (b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) || ascii(1, 4) === "PNG" || ascii(0, 3) === "GIF" || (ascii(0, 4) === "RIFF" && ascii(8, 12) === "WEBP");
+}
+
 /** Photo-mode posts: convert each image to a small JPEG. */
 async function imagesToFrames(urls: string[]): Promise<string[]> {
   const dir = await mkdtemp(join(tmpdir(), "knowing-img-"));
@@ -212,8 +219,13 @@ async function imagesToFrames(urls: string[]): Promise<string[]> {
   }
 }
 
-/** The real implementation, used by the webhook. */
-export function createMedia(fileUrl: (fileId: string) => Promise<string>): Media {
+/**
+ * The real implementation, used by the webhook. `instagram` is Knowing's
+ * Instagram account when sharing Reels to it is set up, so Instagram links can
+ * point there instead of asking for the file.
+ */
+export function createMedia(fileUrl: (fileId: string) => Promise<string>, options: { instagram?: string; metaToken?: string } = {}): Media {
+  const tellHow = (platform: string) => (platform === "Instagram" && options.instagram ? shareToInstagramNote(options.instagram) : sendTheFileNote(platform));
   return {
     async fromLink(url: string): Promise<WatchInput> {
       if (isTikTok(url)) {
@@ -239,13 +251,24 @@ export function createMedia(fileUrl: (fileId: string) => Promise<string>): Media
       if (isVideoFileLink(url)) return { ...(await watchVideoBytes(await downloadBytes(url, MAX_VIDEO_BYTES), 0)), caption: "" };
       const platform = platformName(url);
       // Instagram, X, Facebook and the like don't let the bot download their videos, and show it a
-      // login wall, so their page text would be junk. Say how to get it watched instead.
-      if (LOGIN_WALLED.has(platform)) return { frames: [], transcript: "", caption: "", notes: [sendTheFileNote(platform)] };
+      // login wall, so their page text would be junk. Read the post's words through the app's own
+      // embed service where there is one, and say how to get the video watched.
+      if (LOGIN_WALLED.has(platform)) {
+        const post = await postText(url, platform, options.metaToken);
+        return { frames: [], transcript: "", caption: post.text, notes: [tellHow(platform)], postedBy: post.author };
+      }
       // YouTube transcripts, Reddit posts and articles: text only.
       const fetched = await fetchSource(url);
       const notes = fetched.warning ? [fetched.warning] : [];
-      if (platform && !fetched.text) notes.splice(0, notes.length, sendTheFileNote(platform));
+      if (platform && !fetched.text) notes.splice(0, notes.length, tellHow(platform));
       return { frames: [], transcript: fetched.text, caption: fetched.title, notes };
+    },
+
+    async fromInstagram(url: string, caption: string): Promise<WatchInput> {
+      const bytes = await downloadBytes(url, MAX_VIDEO_BYTES);
+      // A shared photo post is a picture, not a video.
+      if (isImage(bytes)) return { frames: await imagesToFrames([url]), transcript: "", caption, notes: [] };
+      return { ...(await watchVideoBytes(bytes, 0)), caption };
     },
 
     async fromTelegramFile(fileId: string, durationSec: number): Promise<WatchInput> {

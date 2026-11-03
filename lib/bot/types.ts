@@ -193,6 +193,12 @@ export interface Store {
   getReferral(userId: number): Promise<Referral>;
   /** Writes only the invite record, creating the row if needed. */
   saveReferral(userId: number, referral: Referral): Promise<void>;
+  /** Whose Telegram an Instagram account is linked to (by its Instagram-scoped id), or 0. */
+  instagramUser(instagramId: string): Promise<number>;
+  /** The Instagram account linked to them, or "". */
+  getInstagram(userId: number): Promise<string>;
+  /** Link an Instagram account to them ("" unlinks), taking it off anyone it was linked to before. Throws if the instagram column is missing. */
+  linkInstagram(userId: number, instagramId: string): Promise<void>;
 }
 
 /** What we could get out of a video: frames to look at, speech, and the caption. */
@@ -206,6 +212,8 @@ export interface WatchInput {
   caption: string;
   /** Problems worth telling the user about (no audio, couldn't download...). */
   notes: string[];
+  /** Who posted it, when known (X posts). */
+  postedBy?: string;
 }
 
 export interface Media {
@@ -213,6 +221,8 @@ export interface Media {
   fromLink(url: string): Promise<WatchInput>;
   /** A video sent straight to the bot. */
   fromTelegramFile(fileId: string, durationSec: number): Promise<WatchInput>;
+  /** A Reel (or post) someone shared to Knowing's Instagram account: the media link Instagram gave, and its caption. */
+  fromInstagram(url: string, caption: string): Promise<WatchInput>;
   /**
    * A voice message's words. Only the first VOICE_MAX_SECONDS are heard (`cut`
    * says so). Throws NoTranscription when speech-to-text isn't set up.

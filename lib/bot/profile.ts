@@ -16,6 +16,8 @@ export interface Setup {
   packs: Pack[];
   /** Anyone can start it with the bot's link. False means invite-only. */
   open: boolean;
+  /** Knowing's Instagram account, when Reels can be shared to it (docs/INSTAGRAM.md). */
+  instagram?: string;
 }
 
 /** One command and what it does. `menu` puts it in Telegram's menu (with `short`). */
@@ -25,6 +27,8 @@ interface Command {
   /** What it does, for /commands and the AI. */
   does: string;
   menu?: boolean;
+  /** Only shown when Instagram sharing is set up. */
+  instagram?: boolean;
 }
 
 /** Every command anyone can use, in the order /commands lists them. */
@@ -38,6 +42,7 @@ export const ALL_COMMANDS: Command[] = [
   { command: "usage", short: "What you have left", does: "Your free videos and questions left, and any extras you bought or earned. Free to check. /limits does the same.", menu: true },
   { command: "buy", short: "Get more videos or questions", does: "Packs of extra videos or questions, paid with Telegram Stars. They never expire.", menu: true },
   { command: "invite", short: "Invite friends, earn free videos", does: "Your own invite link. When a friend joins with it, saves a video and asks me something, you get 3 free videos, for up to 5 friends.", menu: true },
+  { command: "instagram", short: "Save Reels straight from Instagram", does: "Links your Instagram, so Reels you share to Knowing's Instagram account (Share, then Message) are saved here. /instagram off unlinks it.", menu: true, instagram: true },
   { command: "support", short: "Ask the owner for help", does: "Sends your message to the owner, like /support it didn't answer me. The reply comes here.", menu: true },
   { command: "paysupport", short: "Help with a payment", does: "For a payment problem or a refund, like /paysupport I paid but didn't get my videos." },
   { command: "terms", short: "The rules for buying", does: "The terms for using Knowing and buying extras." },
@@ -83,7 +88,7 @@ export const GUIDE: GuidePage[] = [
     text: () => `<b>Saving videos</b>
 In TikTok (or YouTube and most apps), tap Share, then Telegram, then me. You can also send a video file in any format, a GIF or a round video, or paste a link.
 
-Instagram, X and Facebook don't let me download from a link, so save the video there and send me the file.
+Instagram, X and Facebook don't let me download from a link. Paste one anyway: I save what the post says, and the video file you send next fills in that same save. For Instagram, /instagram shows how to share Reels to me there instead.
 
 I watch it, listen to it and read what's on screen, then tell you what I kept and which folder it's in.
 
@@ -133,7 +138,7 @@ You start with ${free(s)}, given once. Asking me to move videos uses a question;
   {
     id: "commands",
     button: "📋 All commands",
-    text: () => commandsText(),
+    text: (s) => commandsText(false, Boolean(s.instagram)),
   },
 ];
 
@@ -144,10 +149,13 @@ export function guideButtons(): Array<Array<{ text: string; callback_data: strin
   return rows;
 }
 
+/** The commands that work with these settings (/instagram only once it's set up). */
+const available = (instagram = false) => ALL_COMMANDS.filter((c) => !c.instagram || instagram);
+
 /** /commands: every command and what it does, plus the owner's own when it's them. */
-export function commandsText(owner = false): string {
+export function commandsText(owner = false, instagram = false): string {
   const line = (c: Command) => `/${c.command} · ${c.does}`;
-  const lines = ["📋 <b>Every command</b>", "", ...ALL_COMMANDS.map(line)];
+  const lines = ["📋 <b>Every command</b>", "", ...available(instagram).map(line)];
   if (owner) lines.push("", "<b>Only for you, the owner</b>", ...OWNER_COMMANDS.map(line));
   lines.push("", "You don't need commands for most things: send a video to save it, and ask or say anything else in your own words.");
   return lines.join("\n");
@@ -159,9 +167,12 @@ export function commandsText(owner = false): string {
  * answer. Plain text, built from the same lists as /commands and the guide.
  */
 export function aboutKnowing(s: Setup, owner = false): string {
-  const commands = [...ALL_COMMANDS, ...(owner ? OWNER_COMMANDS : [])].map((c) => `/${c.command}: ${c.does}`).join("\n");
+  const commands = [...available(Boolean(s.instagram)), ...(owner ? OWNER_COMMANDS : [])].map((c) => `/${c.command}: ${c.does}`).join("\n");
+  const instagram = s.instagram
+    ? ` Instagram Reels can also be shared straight from Instagram: after linking with /instagram, Share, then Message, then @${s.instagram}, and the Reel is watched and saved here.`
+    : "";
   return `What Knowing is: a Telegram bot. People send it videos to keep, and it watches each one (frames, speech and on-screen text, the first 5 minutes), saves exactly what it showed, files it in a folder and reacts like a friend. Later they ask about them in their own words, by text or a voice message (up to a minute), and get the exact thing back with the moment in the video and a link. They can also just chat; it remembers what they tell it and every chat.
-Saving: share from TikTok, YouTube and most apps (Share, then Telegram, then Knowing), paste a link, or send a video file in any format, a GIF or a round video (Telegram lets bots take files up to 20 MB). Instagram, X and Facebook don't let it download from a link, so the file has to be sent. A link from those doesn't use up a video.
+Saving: share from TikTok, YouTube and most apps (Share, then Telegram, then Knowing), paste a link, or send a video file in any format, a GIF or a round video (Telegram lets bots take files up to 20 MB). Instagram, X and Facebook don't let it download from a link. A link from those saves what the post says for free (no video used), and a video file sent within 30 minutes fills in that same save.${instagram}
 Buttons under a saved video: Show steps; Start now (step by step, for drills and plans); 📂 with its folder's name (move it, or make a new folder); Fix something (say what's wrong and it's corrected); Add what it says (paste the words when it couldn't hear them); Keep both or Replace the old one (when it's a repeat). A save's full card (from Show steps, or a number in a folder) also has Delete.
 Folders: every video is in one. It picks the folder, going by their folders, what they've moved where and their rules. They move a video with 📂, or many at once by asking ("put my pasta videos in Dinner ideas"), rename, merge or delete a folder in /folders (deleting moves its videos to Unsorted) or by asking, and set rules by asking ("anything about cars goes in Car mods"). Big folders split into sections by themselves.
 Weekly flashback: off unless they turn it on; Sundays around 17:00 UTC; what they saved that week, or older videos worth another look.

@@ -55,6 +55,10 @@ alter table bot_users add column if not exists digest jsonb not null default '{}
 -- Who invited them and how many friends earned them free videos ({by, name, credited, rewarded}).
 alter table bot_users add column if not exists referral jsonb not null default '{}';
 
+-- Which Instagram account someone linked with /instagram (its Instagram-scoped id), so Reels they share to Knowing on Instagram land in their library.
+alter table bot_users add column if not exists instagram text;
+create unique index if not exists bot_users_instagram on bot_users (instagram) where instagram is not null;
+
 -- The folder each save is filed in. Empty means the first part of its topic
 -- (saves from before folders could be moved).
 alter table saves add column if not exists folder text not null default '';

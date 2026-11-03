@@ -49,3 +49,8 @@ export const LOGIN_WALLED = new Set(["Instagram", "Facebook", "Threads", "X", "S
 export function sendTheFileNote(platform: string): string {
   return `${platform} doesn't let me download videos from a link. To have me watch this one, save it in ${platform} (or screen-record it) and send me the file. Any video format works.`;
 }
+
+/** For an Instagram link once sharing to Knowing's Instagram account is set up: that gets the whole Reel watched. */
+export function shareToInstagramNote(account: string): string {
+  return `Instagram doesn't let me open Reels from a link, but you can share it to me there instead: on the Reel, tap Share, pick ${account} and send. I'll watch the whole thing. /instagram shows how (you link it once).`;
+}
