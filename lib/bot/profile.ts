@@ -36,7 +36,7 @@ export const ALL_COMMANDS: Command[] = [
   { command: "digest", short: "Weekly flashback on or off", does: "Your weekly flashback: every Sunday, what you saved that week or a few older videos worth another look. /digest on and /digest off turn it on and off. It's off unless you turn it on.", menu: true },
   { command: "memory", short: "What I remember about you", does: "What I remember about you, with a button to forget each thing.", menu: true },
   { command: "usage", short: "What you have left", does: "Your free videos and questions left, and any extras you bought or earned. Free to check. /limits does the same.", menu: true },
-  { command: "buy", short: "Get more videos or questions", does: "Packs of extra videos or questions, paid with Telegram Stars. They never expire.", menu: true },
+  { command: "buy", short: "Get more videos and questions", does: "Packs of extra videos and questions together, paid with Telegram Stars. They never expire.", menu: true },
   { command: "invite", short: "Invite friends, earn free videos", does: "Your own invite link. When a friend joins with it, saves a video and asks me something, you get 3 free videos, for up to 5 friends.", menu: true },
   { command: "support", short: "Ask the owner for help", does: "Sends your message to the owner, like /support it didn't answer me. The reply comes here.", menu: true },
   { command: "paysupport", short: "Help with a payment", does: "For a payment problem or a refund, like /paysupport I paid but didn't get my videos." },
@@ -67,7 +67,7 @@ export const WELCOME = `Hi, I'm Knowing. Send me any video and I'll remember exa
 Tap a topic to see how it works. /commands lists everything.`;
 
 const free = (s: Setup) => `${s.limits.videos} free videos and ${s.limits.questions} free questions`;
-const prices = (s: Setup) => (s.packs.length ? `${priceList(s.packs, "videos")}; ${priceList(s.packs, "questions")}` : "");
+const prices = (s: Setup) => (s.packs.length ? priceList(s.packs) : "");
 
 /** One page of the guide behind the buttons under WELCOME. */
 interface GuidePage {
@@ -165,7 +165,7 @@ Saving: share from TikTok, YouTube and most apps (Share, then Telegram, then Kno
 Buttons under a saved video: Show steps; Start now (step by step, for drills and plans); 📂 with its folder's name (move it, or make a new folder); Fix something (say what's wrong and it's corrected); Add what it says (paste the words when it couldn't hear them); Keep both or Replace the old one (when it's a repeat). A save's full card (from Show steps, or a number in a folder) also has Delete.
 Folders: every video is in one. It picks the folder, going by their folders, what they've moved where and their rules. They move a video with 📂, or many at once by asking ("put my pasta videos in Dinner ideas"), rename, merge or delete a folder in /folders (deleting moves its videos to Unsorted) or by asking, and set rules by asking ("anything about cars goes in Car mods"). Big folders split into sections by themselves.
 Weekly flashback: off unless they turn it on; Sundays around 17:00 UTC; what they saved that week, or older videos worth another look.
-Limits: everyone starts with ${free(s)}, given once; they don't refill. Each message to the AI uses a question (asking it to move or rename things too); buttons, commands and checking what's left don't. ${s.packs.length ? `After that, packs paid with Telegram Stars: ${prices(s)}. They never expire and are used after the free ones.` : "Buying more is turned off right now."} Friends: their own /invite link earns 3 free videos per friend who joins, saves a video and asks something (up to 5 friends). ${s.open ? "Anyone can start Knowing with its link." : "Knowing is invite-only for now: people join with an invite link."}
+Limits: everyone starts with ${free(s)}, given once; they don't refill. Each message to the AI uses a question (asking it to move or rename things too); buttons, commands and checking what's left don't. ${s.packs.length ? `After that, packs paid with Telegram Stars, each with videos and questions together (one purchase): ${prices(s)}. They never expire and are used after the free ones.` : "Buying more is turned off right now."} Friends: their own /invite link earns 3 free videos per friend who joins, saves a video and asks something (up to 5 friends). ${s.open ? "Anyone can start Knowing with its link." : "Knowing is invite-only for now: people join with an invite link."}
 Payments: /paysupport for problems or refunds; /terms has the rules. Telegram's own support can't help with purchases in a bot.
 Commands:
 ${commands}`;

@@ -44,9 +44,20 @@ export function readWallet(raw: unknown): Wallet {
   const r = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
   const count = (v: unknown) => Math.max(0, Math.floor(Number(v) || 0));
   const paid = (Array.isArray(r.paid) ? r.paid : [])
-    .filter((p): p is Payment => !!p && typeof p.charge === "string" && (p.kind === "videos" || p.kind === "questions"))
-    // Payments from before pack sizes have no count: those packs were 10 videos or 20 questions.
-    .map((p) => ({ charge: p.charge, kind: p.kind, count: count(p.count) || (p.kind === "videos" ? 10 : 20), stars: count(p.stars), at: String(p.at ?? "") }));
+    .map((p) => (p && typeof p === "object" ? (p as Record<string, unknown>) : {}))
+    .filter((p) => typeof p.charge === "string")
+    .map((p): Payment => {
+      // Payments from before bundles bought one kind: { kind, count }, and before pack sizes, 10 videos or 20 questions.
+      const old = p.kind === "videos" || p.kind === "questions" ? (count(p.count) || (p.kind === "videos" ? 10 : 20)) : 0;
+      return {
+        charge: String(p.charge),
+        videos: p.kind === "videos" ? old : count(p.videos),
+        questions: p.kind === "questions" ? old : count(p.questions),
+        stars: count(p.stars),
+        at: String(p.at ?? ""),
+      };
+    })
+    .filter((p) => p.videos || p.questions);
   return { videos: count(r.videos), questions: count(r.questions), paid: paid.slice(-PAYMENTS_KEPT) };
 }
 

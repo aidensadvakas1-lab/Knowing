@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   ASK_SYSTEM_CHARS,
   HISTORY_CHARS,
+  packPrice,
   PAYOUT_PER_STAR,
   pricedPacks,
   REWRITE_TEXT_CHARS,
@@ -43,25 +44,21 @@ describe("worst-case costs", () => {
   it("never sells a pack for less than its worst case costs, with room to spare", () => {
     for (const pack of pricedPacks()) {
       const pays = pack.stars * PAYOUT_PER_STAR;
-      expect(worstPackCost(pack.kind, pack.count), `${pack.count} ${pack.kind}`).toBeLessThanOrEqual(pays * SAFETY);
+      expect(worstPackCost(pack), `${pack.videos} + ${pack.questions}`).toBeLessThanOrEqual(pays * SAFETY);
     }
   });
 
-  it("puts every pack size on sale at a round price", () => {
+  it("puts every bundle on sale at a round price", () => {
     const packs = pricedPacks();
-    expect(packs.map((p) => `${p.count} ${p.kind}`)).toEqual([...PACK_SIZES.videos.map((n) => `${n} videos`), ...PACK_SIZES.questions.map((n) => `${n} questions`)]);
+    expect(packs.map((p) => ({ videos: p.videos, questions: p.questions }))).toEqual(PACK_SIZES);
     for (const p of packs) expect(p.stars % 50).toBe(0);
   });
 
-  it("keeps the prices Aiden set: voice questions, timestamps, folders and flashbacks didn't change them", () => {
-    expect(pricedPacks().map((p) => `${p.count} ${p.kind}: ${p.stars}`)).toEqual([
-      "10 videos: 150",
-      "20 videos: 300",
-      "50 videos: 750",
-      "20 questions: 150",
-      "40 questions: 300",
-      "100 questions: 750",
-    ]);
+  it("sells one refill, videos and questions together, at the price Aiden picked", () => {
+    expect(pricedPacks().map((p) => `${p.videos} videos + ${p.questions} questions: ${p.stars}`)).toEqual(["5 videos + 10 questions: 150"]);
+    // Bigger bundles would still be priced from their worst case, at the same price per item.
+    expect(packPrice({ videos: 10, questions: 20 })).toBe(300);
+    expect(packPrice({ videos: 25, questions: 50 })).toBe(750);
   });
 
   it("keeps one video and one question cheap enough to matter", () => {
