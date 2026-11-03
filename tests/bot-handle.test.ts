@@ -404,6 +404,13 @@ describe("buying extras with Stars", () => {
     expect(sent.filter((m) => m.chatId === 99).at(-1)?.html).toBe("<b>From the owner:</b> Sorted, check again");
   });
 
+  it("shows the owner what a test purchase added", async () => {
+    const { deps, sent } = setup();
+    await handleUpdate(paid("ch1", 7), deps);
+    await handleUpdate(text("/usage"), deps);
+    expect(sent.at(-1)?.html).toContain("<b>On your account:</b> 5 videos and 10 questions from purchases.");
+  });
+
   it("keeps what someone bought after /delete", async () => {
     const { deps, store } = setup();
     await handleUpdate(text("/start join-abc123", 99), deps);

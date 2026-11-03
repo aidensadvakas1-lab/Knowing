@@ -476,7 +476,11 @@ const walletOf = (userId: number, deps: Deps) => deps.store.getWallet(userId).ca
 
 async function showUsage(chatId: number, user: BotUser, deps: Deps): Promise<void> {
   if (user.id === deps.ownerId) {
-    return void (await deps.tg.sendMessage(chatId, `You're the owner, so you have no limits. Everyone else starts with ${deps.limits.videos} free videos and ${deps.limits.questions} free questions, given once.`));
+    // What the owner bought shows too, so a test purchase can be checked (they never use it up).
+    const wallet = await walletOf(user.id, deps);
+    const bought = wallet && (wallet.videos || wallet.questions) ? `\n\n<b>On your account:</b> ${wallet.videos} video${wallet.videos === 1 ? "" : "s"} and ${wallet.questions} question${wallet.questions === 1 ? "" : "s"} from purchases. You never use them up, since you have no limits.` : "";
+    const plan = planActive(wallet?.plan) ? `\n\n${planStatus(wallet.plan)}` : "";
+    return void (await deps.tg.sendMessage(chatId, `You're the owner, so you have no limits. Everyone else starts with ${deps.limits.videos} free videos and ${deps.limits.questions} free questions, given once.${bought}${plan}`));
   }
   const wallet = await walletOf(user.id, deps);
   const buttons = shopButtons(deps, planActive(wallet?.plan));
