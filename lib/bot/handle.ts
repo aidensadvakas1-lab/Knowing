@@ -5,9 +5,15 @@
  * - A link (shared from TikTok) or a video: watch it, save it, and react in
  *   a sentence or two (how it connects to their other saves). No coaching.
  * - Any other text, or a voice message: answer from their saves and what they've told us.
- * - Buttons: Show steps, Start now, Add what it says, Fix something, Keep both / Replace.
- * - /start and /help: a short welcome with a tap-through guide. /folders, /saved, /digest,
- *   /memory, /usage, /buy, /delete, and /invite for the owner.
+ * - Buttons: Show steps, Start now, Add what it says, Fix something, Keep both / Replace,
+ *   📂 (move a video to another folder) and Delete.
+ * - Folders (folders.ts): every video is in one, picked by Claude the way they'd file it.
+ *   /folders opens them, to rename, merge or delete one. Asking in chat moves videos,
+ *   renames folders and sets filing rules (it uses a question, like any message to Claude).
+ * - /start and /help: a short welcome with a tap-through guide. /commands lists every
+ *   command. /folders, /saved, /digest, /memory, /usage, /buy, /delete, and /invite.
+ * - Claude is told everything about Knowing (profile.ts aboutKnowing), so questions about
+ *   the bot, its commands and its prices get real answers.
  * - The weekly flashback (digest.ts) is off until they turn it on. It's offered once,
  *   at /start or after their next save.
  * - Asking "how many questions do I have left?" gets the same answer as /usage, for free.
@@ -22,18 +28,19 @@
  */
 import { createHash, timingSafeEqual } from "node:crypto";
 import { flashback, OFF_TEXT, OFFER_BUTTONS, OFFER_TEXT, ON_TEXT } from "./digest";
-import { answerText, escapeHtml as esc, folderList, folderView, reactionButtons, reactionText, saveButtons, saveCard, savedList, stepButtons, stepText } from "./format";
+import { addRules, cleanFolderName, dropRules, findFolder, folderKey, folders, matchFolder, renameRules, topicFolder, UNSORTED, type Folder } from "./folders";
+import { answerText, buttonsFor, deleteButtons, escapeHtml as esc, folderList, folderView, mergeButtons, moveButtons, reactionButtons, reactionText, saveButtons, saveCard, savedList, stepButtons, stepText, type ButtonsAt } from "./format";
 import { dmLink, linkCode, readLinkCode, type InstagramEvent } from "./instagram";
 import { isVideoFile, LOGIN_WALLED, platformName } from "./platforms";
 import { postTitle } from "./posts";
-import { GUIDE, guideButtons, WELCOME } from "./profile";
+import { aboutKnowing, commandsText, GUIDE, guideButtons, WELCOME, type Setup } from "./profile";
 import { buyButtons, invoiceFor, packName, PAYSUPPORT_HELP, priceList, readPack, SUPPORT_HELP, TERMS } from "./shop";
 import { relevantSaves, sharedVideoTurns } from "./prompts";
 import { hasStarted, readReferral, REFERRAL_MAX, REFERRAL_QUESTIONS, REFERRAL_REWARD, REFERRAL_VIDEOS, referralCode } from "./referral";
 import { groupHits, searchQuery, type Retriever } from "./rag";
 import { FACTS_KEPT, newSaveId, newUser, TURNS_KEPT } from "./store";
 import { findUrl } from "./tiktok";
-import { NoTranscription, type Brain, type BotUser, type ChatMemory, type InlineButton, type Media, type Pack, type PackKind, type Save, type Store, type TelegramApi, type Usage, type Wallet, type WatchInput } from "./types";
+import { NoTranscription, type Answer, type Brain, type BotUser, type ChatMemory, type FilingRule, type InlineButton, type Media, type Pack, type PackKind, type Save, type Store, type TelegramApi, type Usage, type Wallet, type WatchInput } from "./types";
 
 export interface Deps {
   tg: TelegramApi;
@@ -181,8 +188,14 @@ export function usageText(usage: Usage, limits: Deps["limits"], wallet: Wallet |
   return lines.join("\n");
 }
 
-/** What the model is told about limits when the owner asks: they have none. */
-const OWNER_USAGE = "They're the owner of this bot, so they have no limits and never need to buy anything.";
+/** What the model is told about limits when the owner asks: they have none, and what everyone else gets, so the owner can ask about prices too. */
+function ownerUsage(deps: Deps): string {
+  const packs = deps.packs.length ? `, then can buy packs with /buy: ${priceList(deps.packs, "videos")}; ${priceList(deps.packs, "questions")}` : "; buying more is turned off";
+  return `They're the owner of this bot, so they have no limits and never need to buy anything. Everyone else starts with ${deps.limits.videos} free videos and ${deps.limits.questions} free questions, given once${packs}.`;
+}
+
+/** What the guide and Claude are told about the bot's settings. */
+const setupOf = (deps: Deps): Setup => ({ limits: deps.limits, packs: deps.packs, open: Boolean(deps.open), instagram: deps.instagram });
 
 /**
  * "How many questions do I have left?", "what's my limit": answered with
@@ -237,6 +250,7 @@ export async function handleUpdate(update: Update, deps: Deps): Promise<void> {
     if (text.startsWith("/terms")) return void (await deps.tg.sendMessage(chatId, TERMS));
     const support = /^\/(pay)?support\b/.exec(text);
     if (support) return await askOwner(chatId, userId, msg.from.first_name, text.slice(support[0].length).trim(), Boolean(support[1]), deps);
+    if (text.startsWith("/commands")) return void (await deps.tg.sendMessage(chatId, commandsText(userId === deps.ownerId, Boolean(deps.instagram))));
     if (text === "/start" || text.startsWith("/start ") || text.startsWith("/help")) {
       await deps.tg.sendMessage(chatId, WELCOME, guideButtons());
       if (text.startsWith("/start")) await offerFlashback(chatId, userId, deps);
@@ -445,6 +459,15 @@ const ALL_SAVES = 1_000;
 
 /** A typed message, or a voice message's words: a question, or the words Fix / Add what it says asked for. `heard` shows what a voice message said. */
 async function onText(chatId: number, user: BotUser, text: string, deps: Deps, name?: string, heard = "") {
+  // A name for a new folder, or a folder's new name: no Claude call, so no question used.
+  const naming = readNaming(user.awaitingWordsFor);
+  if (naming || user.awaitingWordsFor?.startsWith("name:")) {
+    user.awaitingWordsFor = null;
+    await deps.store.saveUser(user);
+    const folder = folderNameFrom(text);
+    if (naming && folder) return await nameFolder(chatId, user.id, naming, folder, deps, heard);
+    // Too late, or not a name (a question, a long message): answered like any other message below.
+  }
   // Remaking a save is a Claude call like an answer, so it uses a question. (A link waiting for its video isn't that.)
   if (user.awaitingWordsFor && !readPending(user.awaitingWordsFor)) {
     if (!(await allow(user, "questions", deps))) return await limitReached(chatId, "questions", deps);
@@ -725,12 +748,15 @@ async function watchAndSave(chatId: number, user: BotUser, get: () => Promise<Wa
 async function saveWatched(chatId: number, status: number, user: BotUser, input: WatchInput, sourceUrl: string, note: string, deps: Deps, replaces: Save | null = null) {
   // The text-only save being filled in isn't a duplicate of this video, so the watcher doesn't see it.
   const saves = (await deps.store.listSaves(user.id)).filter((s) => s.id !== replaces?.id);
+  const rules = await rulesOf(user.id, deps);
   // A file has no caption, so keep the post's words from its link.
   const caption = input.caption || (replaces?.source.startsWith("Caption: ") ? replaces.source.slice(9) : "");
   if (caption !== input.caption) input = { ...input, caption };
-  const watched = await deps.brain.watch({ ...input, note, facts: user.facts, saves });
+  const watched = await deps.brain.watch({ ...input, note, facts: user.facts, saves, rules });
   const save: Save = {
     ...watched.draft,
+    // "gym" goes in the Gym folder they already have. A post they already moved stays where they put it.
+    folder: replaces?.folder || matchFolder(watched.draft.folder || topicFolder(watched.draft.topic), saves),
     needsWords: watched.draft.needsWords && !input.transcript,
     id: replaces?.id ?? newSaveId(),
     userId: user.id,
@@ -766,9 +792,12 @@ async function addWords(chatId: number, user: BotUser, text: string, deps: Deps,
   if (!save) return answer(chatId, user, text, deps, "", heard);
   await deps.tg.typing(chatId);
   const draft = await deps.brain.rewrite(save, text, fixing ? "fix" : "words");
+  // A fix can move it ("it goes in Car mods"); the video's own words never do.
+  const saves = fixing ? await deps.store.listSaves(user.id) : [];
+  const folder = fixing && draft.folder ? matchFolder(draft.folder, saves) : (save.folder ?? "");
   const updated: Save = fixing
-    ? { ...save, ...draft, needsWords: save.needsWords && !save.words }
-    : { ...save, ...draft, words: text.slice(0, 8_000), needsWords: false };
+    ? { ...save, ...draft, folder, needsWords: save.needsWords && !save.words }
+    : { ...save, ...draft, folder, words: text.slice(0, 8_000), needsWords: false };
   await deps.store.updateSave(updated);
   await reindex(updated, deps);
   await deps.tg.sendMessage(chatId, `${heard ? `${heard}\n\n` : ""}${fixing ? "Fixed." : "Updated with what it says."}\n\n${saveCard(updated)}`, saveButtons(updated));
@@ -777,9 +806,11 @@ async function addWords(chatId: number, user: BotUser, text: string, deps: Deps,
 async function answer(chatId: number, user: BotUser, question: string, deps: Deps, name = "", heard = "") {
   await deps.tg.typing(chatId);
   const saves = await deps.store.listSaves(user.id);
-  const [retrieved, memories, wallet] = await Promise.all([retrieve(user, question, saves, deps), recall(user, question, deps), walletOf(user.id, deps)]);
-  const usage = user.id === deps.ownerId ? OWNER_USAGE : usageText(user.usage, deps.limits, wallet, deps.packs).replace(/<\/?b>/g, "");
-  const reply = await deps.brain.answer({ user, question: question.slice(0, 4_000), saves, retrieved, name, memories, usage });
+  const [retrieved, memories, wallet, rules] = await Promise.all([retrieve(user, question, saves, deps), recall(user, question, deps), walletOf(user.id, deps), rulesOf(user.id, deps)]);
+  const owner = user.id === deps.ownerId;
+  const usage = owner ? ownerUsage(deps) : usageText(user.usage, deps.limits, wallet, deps.packs).replace(/<\/?b>/g, "");
+  const about = aboutKnowing(setupOf(deps), owner);
+  const reply = await deps.brain.answer({ user, question: question.slice(0, 4_000), saves, retrieved, name, memories, usage, rules, about });
   const find = (ids: string[]) => ids.map((id) => saves.find((s) => s.id === id)).filter((s): s is Save => Boolean(s));
   const used = find(reply.sources);
 
@@ -791,7 +822,10 @@ async function answer(chatId: number, user: BotUser, question: string, deps: Dep
   const buttons: InlineButton[][] = [];
   const runnable = used.find((s) => (s.type === "drill" || s.type === "plan") && s.steps.length);
   if (runnable) buttons.push([{ text: `Start: ${runnable.title.slice(0, 40)}`, callback_data: `open:${runnable.id}` }]);
-  await deps.tg.sendMessage(chatId, `${heard ? `${heard}\n\n` : ""}${answerText(reply.text, used, find(reply.about))}`, buttons);
+  const organized = await organize(user.id, reply, saves, rules, deps);
+  if (organized.open) buttons.push([{ text: `📂 Open ${organized.open.slice(0, 30)}`, callback_data: `folder:${folderKey(organized.open)}:new` }]);
+  const receipt = organized.lines.length ? `\n\n${organized.lines.join("\n")}` : "";
+  await deps.tg.sendMessage(chatId, `${heard ? `${heard}\n\n` : ""}${answerText(reply.text, used, find(reply.about))}${receipt}`, buttons);
   // Every chat is kept and searchable, so something said weeks ago can still come back.
   const memory: ChatMemory = { said: question.slice(0, 4_000), answered: reply.text.slice(0, 4_000), at: new Date().toISOString() };
   await deps.retriever.remember(user.id, memory).catch((error) => console.error("Remembering the chat failed", error));
@@ -857,20 +891,22 @@ async function onButton(q: NonNullable<Update["callback_query"]>, deps: Deps) {
     if (kind === "guide") {
       await deps.tg.answerCallback(q.id);
       const page = GUIDE.find((g) => g.id === id);
-      await deps.tg.editMessage(chatId, messageId, page ? page.text(deps.limits) : WELCOME, page ? [[{ text: "« Back", callback_data: "guide:" }]] : guideButtons());
+      await deps.tg.editMessage(chatId, messageId, page ? page.text(setupOf(deps)) : WELCOME, page ? [[{ text: "« Back", callback_data: "guide:" }]] : guideButtons());
       return;
     }
     if (kind === "folders" || kind === "folder") {
       await deps.tg.answerCallback(q.id);
       const saves = await deps.store.listSaves(q.from.id, ALL_SAVES);
-      const view = kind === "folder" ? folderView(saves, id) : null;
+      const view = kind === "folder" ? folderView(saves, id, await rulesOf(q.from.id, deps)) : null;
       // A folder that's gone (its videos were moved or deleted) shows the list instead.
       const page = view ?? folderList(saves);
-      // From a flashback, open the folders as a new message so the flashback stays.
-      if (kind === "folders" && id === "new") await deps.tg.sendMessage(chatId, page.html, page.buttons);
+      // From a flashback or an answer, open it as a new message so that one stays.
+      if ((kind === "folders" && id === "new") || n === "new") await deps.tg.sendMessage(chatId, page.html, page.buttons);
       else await deps.tg.editMessage(chatId, messageId, page.html, page.buttons);
       return;
     }
+    if (FOLDER_BUTTONS.has(kind)) return await onFolderButton(q.id, chatId, messageId, q.from.id, kind, id, n, deps);
+    if (MOVE_BUTTONS.has(kind)) return await onMoveButton(q.id, chatId, messageId, q.from.id, data, deps);
     if (kind === "digest") {
       const digest = await deps.store.getDigest(q.from.id);
       const on = id === "on";
@@ -973,6 +1009,261 @@ async function onButton(q: NonNullable<Update["callback_query"]>, deps: Deps) {
   } catch (error) {
     await deps.tg.answerCallback(q.id, await failed(error, `handling the ${data.split(":")[0]} button`, deps));
   }
+}
+
+// Folders: moving videos, naming, renaming, merging and deleting folders, and filing rules.
+
+/** Said when the folder or filing column is missing (docs/supabase.sql not run again). */
+const NOT_SET_UP = "Organizing isn't set up yet. I've told the owner.";
+/** How long a "type the folder's name" question waits for its answer. */
+const NAMING_MS = 15 * 60_000;
+
+const videos = (n: number) => `${n} video${n === 1 ? "" : "s"}`;
+const sameName = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+
+/** What a typed folder name is for: a new folder for a video, or a folder's new name. */
+interface Naming {
+  kind: "move" | "rename";
+  /** The save's id, or the folder's key. */
+  target: string;
+}
+
+/** Kept in awaitingWordsFor while a folder name is asked for, with when it was asked. */
+export const namingFor = (kind: Naming["kind"], target: string, now = Date.now()) => `name:${kind}:${target}:${now.toString(36)}`;
+
+/** The folder name the next message is for, if one was asked for in the last NAMING_MS. */
+export function readNaming(pending: string | null, now = Date.now()): Naming | null {
+  const m = /^name:(move|rename):([^:]+):([0-9a-z]+)$/.exec(pending ?? "");
+  if (!m) return null;
+  return now - parseInt(m[3] ?? "", 36) <= NAMING_MS ? { kind: m[1] as Naming["kind"], target: m[2] ?? "" } : null;
+}
+
+/** A message that reads as a folder name: short, one line, not a question or a command. "" otherwise. */
+export function folderNameFrom(text: string): string {
+  const t = text.trim();
+  if (!t || t.length > 60 || t.includes("\n") || t.startsWith("/") || /\?\s*$/.test(t)) return "";
+  return cleanFolderName(t);
+}
+
+/** Their filing rules, or none if they can't be read. Never stops a save or an answer. */
+async function rulesOf(userId: number, deps: Deps): Promise<FilingRule[]> {
+  return deps.store.getFiling(userId).catch((error) => (console.error("Reading filing rules failed", error), []));
+}
+
+/** Change their filing rules. False (and the owner is told) if they can't be saved. */
+async function updateRules(userId: number, change: (rules: FilingRule[]) => FilingRule[], deps: Deps): Promise<boolean> {
+  try {
+    const rules = await deps.store.getFiling(userId);
+    const next = change(rules);
+    if (JSON.stringify(next) !== JSON.stringify(rules)) await deps.store.saveFiling(userId, next);
+    return true;
+  } catch (error) {
+    await notSetUp(error, deps);
+    return false;
+  }
+}
+
+async function notSetUp(error: unknown, deps: Deps): Promise<void> {
+  console.error("Organizing failed", error);
+  const detail = (error instanceof Error ? error.message : String(error)).slice(0, 200);
+  await deps.alert(`Moving videos or saving a filing rule failed. If you haven't, run docs/supabase.sql again in Supabase. ${detail}`).catch(() => {});
+}
+
+/** Put saves in a folder. False (and the owner is told) when that can't be saved. */
+async function moveInto(userId: number, ids: string[], folder: string, deps: Deps): Promise<boolean> {
+  try {
+    await deps.store.moveSaves(userId, ids, folder);
+    return true;
+  } catch (error) {
+    await notSetUp(error, deps);
+    return false;
+  }
+}
+
+/**
+ * Rename a folder, or merge it into another one (renaming it to a folder they
+ * already have). Its rules follow it. `saves` is updated to match. The name it
+ * ended up with, or null if it couldn't be saved.
+ */
+async function renameFolder(userId: number, from: Folder, to: string, saves: Save[], deps: Deps): Promise<string | null> {
+  const name = matchFolder(to, saves.filter((s) => !from.saves.includes(s)));
+  if (!(await moveInto(userId, from.saves.map((s) => s.id), name, deps))) return null;
+  for (const s of from.saves) s.folder = name;
+  await updateRules(userId, (rules) => renameRules(rules, from.name, name), deps);
+  return name;
+}
+
+/** Opens a folder as a new message. */
+const openButton = (folder: string): InlineButton[] => [{ text: `📂 Open ${folder.slice(0, 30)}`, callback_data: `folder:${folderKey(folder)}:new` }];
+
+/** The message after "New folder" or "Rename": its name. */
+async function nameFolder(chatId: number, userId: number, naming: Naming, name: string, deps: Deps, heard = ""): Promise<void> {
+  const saves = await deps.store.listSaves(userId, ALL_SAVES);
+  const pre = heard ? `${heard}\n\n` : "";
+  if (naming.kind === "move") {
+    const save = saves.find((s) => s.id === naming.target);
+    if (!save) return void (await deps.tg.sendMessage(chatId, "That video is gone, so there's nothing to move."));
+    const folder = matchFolder(name, saves);
+    if (!(await moveInto(userId, [save.id], folder, deps))) return void (await deps.tg.sendMessage(chatId, NOT_SET_UP));
+    return void (await deps.tg.sendMessage(chatId, `${pre}📂 Moved <b>${esc(save.title)}</b> to <b>${esc(folder)}</b>.`, [openButton(folder)]));
+  }
+  const from = findFolder(saves, naming.target);
+  if (!from) return void (await deps.tg.sendMessage(chatId, "That folder is gone (its videos were moved or deleted), so there's nothing to rename."));
+  const to = await renameFolder(userId, from, name, saves, deps);
+  if (!to) return void (await deps.tg.sendMessage(chatId, NOT_SET_UP));
+  await deps.tg.sendMessage(chatId, `${pre}✏️ Renamed <b>${esc(from.name)}</b> to <b>${esc(to)}</b>.`, [openButton(to)]);
+}
+
+/**
+ * What they asked for in chat: moves, renames and filing rules (from the
+ * answer's MOVE, RENAME and RULE lines). A line for each one done, to show
+ * under the answer, and the folder to offer to open.
+ */
+async function organize(userId: number, reply: Answer, saves: Save[], rules: FilingRule[], deps: Deps): Promise<{ lines: string[]; open: string }> {
+  const lines: string[] = [];
+  let open = "";
+  let broke = false;
+  for (const move of reply.moves) {
+    const folder = matchFolder(move.folder, saves);
+    if (!(await moveInto(userId, move.ids, folder, deps))) {
+      broke = true;
+      break;
+    }
+    for (const s of saves) if (move.ids.includes(s.id)) s.folder = folder;
+    lines.push(`📂 Moved ${videos(move.ids.length)} to <b>${esc(folder)}</b>.`);
+    open = folder;
+  }
+  for (const rename of broke ? [] : reply.renames) {
+    const from = folders(saves).find((f) => sameName(f.name, rename.from));
+    if (!from) {
+      lines.push(`I couldn't find a folder called <b>${esc(rename.from)}</b>, so nothing was renamed.`);
+      continue;
+    }
+    const to = await renameFolder(userId, from, rename.to, saves, deps);
+    if (!to) {
+      broke = true;
+      break;
+    }
+    lines.push(`✏️ Renamed <b>${esc(from.name)}</b> to <b>${esc(to)}</b>.`);
+    open = to;
+  }
+  if (!broke && reply.rules.length) {
+    const fresh = reply.rules.map((r) => ({ ...r, folder: matchFolder(r.folder, saves) }));
+    const base = reply.renames.length ? await rulesOf(userId, deps) : rules;
+    try {
+      await deps.store.saveFiling(userId, addRules(base, fresh));
+      lines.push(...fresh.map((r) => `📌 New videos about ${esc(r.about)} will go in <b>${esc(r.folder)}</b>.`));
+    } catch (error) {
+      await notSetUp(error, deps);
+      broke = true;
+    }
+  }
+  if (broke) lines.push(`⚠️ <i>I couldn't finish organizing that: ${NOT_SET_UP}</i>`);
+  return { lines, open };
+}
+
+const MOVE_BUTTONS = new Set(["mv", "mvto", "mvback", "mvnew", "del", "delok", "delno"]);
+const buttonsAt = (v: string): ButtonsAt => (v === "c" ? "c" : "r");
+
+/** 📂 under a video (pick a folder, or make one), and Delete on its card. */
+async function onMoveButton(queryId: string, chatId: number, messageId: number, userId: number, data: string, deps: Deps): Promise<void> {
+  const [kind, id = "", a = "", b = ""] = data.split(":");
+  const save = await deps.store.getSave(userId, id);
+  if (!save) return deps.tg.answerCallback(queryId, "That video is gone.");
+  if (kind === "mv") {
+    await deps.tg.editButtons(chatId, messageId, moveButtons(save, await deps.store.listSaves(userId, ALL_SAVES), buttonsAt(a)));
+    return deps.tg.answerCallback(queryId, "Pick a folder");
+  }
+  if (kind === "mvback") {
+    await deps.tg.editButtons(chatId, messageId, buttonsFor(save, buttonsAt(a)));
+    return deps.tg.answerCallback(queryId);
+  }
+  if (kind === "mvnew") {
+    const user = await deps.store.getUser(userId);
+    user.awaitingWordsFor = namingFor("move", save.id);
+    await deps.store.saveUser(user);
+    await deps.tg.answerCallback(queryId);
+    return void (await deps.tg.sendMessage(chatId, `What should the new folder for <b>${esc(save.title)}</b> be called? Type its name, like <i>Japan trip</i>.`));
+  }
+  if (kind === "mvto") {
+    const saves = await deps.store.listSaves(userId, ALL_SAVES);
+    const folder = findFolder(saves, a);
+    if (!folder) {
+      await deps.tg.editButtons(chatId, messageId, moveButtons(save, saves, buttonsAt(b)));
+      return deps.tg.answerCallback(queryId, "That folder is gone. Pick another.");
+    }
+    if (!(await moveInto(userId, [save.id], folder.name, deps))) return deps.tg.answerCallback(queryId, NOT_SET_UP);
+    await deps.tg.editButtons(chatId, messageId, buttonsFor({ ...save, folder: folder.name }, buttonsAt(b)));
+    return deps.tg.answerCallback(queryId, `Moved to ${folder.name}`);
+  }
+  if (kind === "del") {
+    await deps.tg.editButtons(chatId, messageId, deleteButtons(save));
+    return deps.tg.answerCallback(queryId, "Delete this video? It can't be undone.");
+  }
+  if (kind === "delno") {
+    await deps.tg.editButtons(chatId, messageId, saveButtons(save));
+    return deps.tg.answerCallback(queryId);
+  }
+  await deps.store.deleteSave(userId, save.id);
+  await deps.retriever.remove(userId, save.id).catch((error) => console.error("Unindex failed", error));
+  await deps.tg.editMessage(chatId, messageId, `🗑 Deleted <b>${esc(save.title)}</b>.`);
+  await deps.tg.answerCallback(queryId, "Deleted");
+}
+
+const FOLDER_BUTTONS = new Set(["frn", "fmg", "fmgto", "fdl", "fdlok", "frl"]);
+
+/** Rename, Merge, Delete and Stop the rule, in a folder opened from /folders. */
+async function onFolderButton(queryId: string, chatId: number, messageId: number, userId: number, kind: string, key: string, other: string, deps: Deps): Promise<void> {
+  const saves = await deps.store.listSaves(userId, ALL_SAVES);
+  const folder = findFolder(saves, key);
+  const show = async (page: { html: string; buttons: InlineButton[][] } | null) => {
+    const shown = page ?? folderList(saves);
+    await deps.tg.editMessage(chatId, messageId, shown.html, shown.buttons);
+  };
+  if (!folder) {
+    await deps.tg.answerCallback(queryId, "That folder is gone.");
+    return show(null);
+  }
+  if (kind === "frn") {
+    const user = await deps.store.getUser(userId);
+    user.awaitingWordsFor = namingFor("rename", key);
+    await deps.store.saveUser(user);
+    await deps.tg.answerCallback(queryId);
+    return void (await deps.tg.sendMessage(chatId, `What should <b>${esc(folder.name)}</b> be called? Type the new name.`));
+  }
+  if (kind === "fmg") {
+    if (folders(saves).length < 2) return deps.tg.answerCallback(queryId, "This is your only folder, so there's nothing to merge it into.");
+    await deps.tg.answerCallback(queryId);
+    return deps.tg.editMessage(chatId, messageId, `Merge <b>${esc(folder.name)}</b> into which folder? Its ${videos(folder.saves.length)} move there.`, mergeButtons(saves, key));
+  }
+  if (kind === "fmgto") {
+    const into = findFolder(saves, other);
+    if (!into) return deps.tg.answerCallback(queryId, "That folder is gone.");
+    const to = await renameFolder(userId, folder, into.name, saves, deps);
+    if (!to) return deps.tg.answerCallback(queryId, NOT_SET_UP);
+    await deps.tg.answerCallback(queryId, `Merged into ${to}`);
+    return show(folderView(saves, folderKey(to), await rulesOf(userId, deps)));
+  }
+  if (kind === "fdl") {
+    if (sameName(folder.name, UNSORTED)) return deps.tg.answerCallback(queryId, `${UNSORTED} is where videos from deleted folders go, so it stays. Move its videos with 📂.`);
+    await deps.tg.answerCallback(queryId);
+    const n = folder.saves.length;
+    return deps.tg.editMessage(chatId, messageId, `Delete the <b>${esc(folder.name)}</b> folder? ${n === 1 ? "Its video moves" : `Its ${n} videos move`} to <b>${UNSORTED}</b>, so nothing is lost.`, [
+      [{ text: "Delete the folder", callback_data: `fdlok:${key}` }, { text: "Cancel", callback_data: `folder:${key}` }],
+    ]);
+  }
+  if (kind === "fdlok") {
+    const unsorted = matchFolder(UNSORTED, saves.filter((s) => !folder.saves.includes(s)));
+    if (!(await moveInto(userId, folder.saves.map((s) => s.id), unsorted, deps))) return deps.tg.answerCallback(queryId, NOT_SET_UP);
+    for (const s of folder.saves) s.folder = unsorted;
+    await updateRules(userId, (rules) => dropRules(rules, folder.name), deps);
+    await deps.tg.answerCallback(queryId, "Folder deleted");
+    return show(null);
+  }
+  // Stop the rule
+  await updateRules(userId, (rules) => dropRules(rules, folder.name), deps);
+  await deps.tg.answerCallback(queryId, "Rule stopped");
+  return show(folderView(saves, key, await rulesOf(userId, deps)));
 }
 
 /** Search failures never block saving: the save is still kept and found by words. */

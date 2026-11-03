@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { asksAboutUsage, handleInstagram, handleUpdate, readPending, inviteCode, isOutOfCredit, limitText, parseAllowed, secretMatches, spend, usageText, type Deps, type Update } from "@/lib/bot/handle";
+import { folderKey } from "@/lib/bot/folders";
+import { asksAboutUsage, folderNameFrom, handleInstagram, handleUpdate, inviteCode, isOutOfCredit, limitText, namingFor, parseAllowed, readNaming, readPending, secretMatches, spend, usageText, type Deps, type Update } from "@/lib/bot/handle";
 import { MemoryRetriever } from "@/lib/bot/rag";
 import { MemoryStore } from "@/lib/bot/store";
-import { WELCOME } from "@/lib/bot/profile";
+import { ALL_COMMANDS, COMMANDS, WELCOME } from "@/lib/bot/profile";
 import { linkCode, type InstagramEvent } from "@/lib/bot/instagram";
 import { readReferral, referralCode } from "@/lib/bot/referral";
 import { NoTranscription, type Answer, type Brain, type InlineButton, type Media, type Pack, type Save, type SaveDraft, type TelegramApi, type WatchResult } from "@/lib/bot/types";
@@ -22,10 +23,13 @@ interface Sent { chatId: number; html: string; buttons?: InlineButton[][]; id: n
 function setup(opts: { answer?: Partial<Answer>; draft?: Partial<SaveDraft>; watch?: (saves: Save[]) => Partial<WatchResult>; limits?: Deps["limits"]; spots?: number; packs?: Pack[]; heard?: { text: string; cut: boolean }; newcomers?: boolean; instagram?: string; open?: { cap: number } } = {}) {
   const sent: Sent[] = [];
   const edits: Sent[] = [];
+  /** Buttons changed in place (the text stays). */
+  const rebuttons: Sent[] = [];
   let nextId = 100;
   const tg: TelegramApi = {
     sendMessage: vi.fn(async (chatId, html, buttons) => { const id = nextId++; sent.push({ chatId, html, buttons, id }); return id; }),
     editMessage: vi.fn(async (chatId, id, html, buttons) => { edits.push({ chatId, html, buttons, id }); }),
+    editButtons: vi.fn(async (chatId, id, buttons) => { rebuttons.push({ chatId, html: "", buttons, id }); }),
     answerCallback: vi.fn(async () => {}),
     typing: vi.fn(async () => {}),
     sendInvoice: vi.fn(async () => {}),
@@ -36,7 +40,7 @@ function setup(opts: { answer?: Partial<Answer>; draft?: Partial<SaveDraft>; wat
   const brain: Brain = {
     watch: vi.fn(async ({ saves }: { saves: Save[] }) => ({ draft, reply: "A split dodge drill for your weak hand.", relation: "none" as const, relatedId: "", ...opts.watch?.(saves) })),
     rewrite: vi.fn(async (s: Save) => ({ ...s, steps: ["Exact step"] })),
-    answer: vi.fn(async ({ saves }: { saves: Save[] }) => ({ text: "Do the split dodge.", sources: saves.map((s) => s.id), about: [], remember: [], ...opts.answer })),
+    answer: vi.fn(async ({ saves }: { saves: Save[] }) => ({ text: "Do the split dodge.", sources: saves.map((s) => s.id), about: [], remember: [], moves: [], renames: [], rules: [], ...opts.answer })),
     wrapUp: vi.fn(async ({ kept }: { kept: Save[] }) => `From that scroll you kept **${kept.length}**.`),
   };
   const media: Media = {
@@ -51,7 +55,7 @@ function setup(opts: { answer?: Partial<Answer>; draft?: Partial<SaveDraft>; wat
   const retriever = new MemoryRetriever();
   const alerts: string[] = [];
   const deps: Deps = { tg, store, brain, media, retriever, isAllowed: (id) => id === 7 || id === FRIEND, ownerId: 7, invite: { code: "join-abc123", spots: opts.spots ?? 10, key: "test-key", link: async (start = "join-abc123") => `https://t.me/KnowingTestBot${start ? `?start=${start}` : ""}` }, limits: opts.limits ?? { videos: 50, questions: 50 }, packs: opts.packs ?? PACKS, alert: async (t) => void alerts.push(t), instagram: opts.instagram, open: opts.open };
-  return { deps, sent, edits, store, brain, media, retriever, alerts };
+  return { deps, sent, edits, rebuttons, store, brain, media, retriever, alerts };
 }
 
 const text = (t: string, from = 7, name?: string): Update => ({ message: { message_id: 1, chat: { id: from }, from: { id: from, first_name: name }, text: t } });
@@ -620,7 +624,8 @@ describe("handleUpdate", () => {
     expect(edits[0]?.html).toContain("A split dodge drill for your weak hand.");
     expect(edits[0]?.html).toContain("Saved: Split dodge drill");
     expect(edits[0]?.html).not.toContain("1. Jog");
-    expect(datas(edits[0]?.buttons)).toEqual([expect.stringMatching(/^show:/), expect.stringMatching(/^open:/), expect.stringMatching(/^fix:/)]);
+    expect(datas(edits[0]?.buttons)).toEqual([expect.stringMatching(/^show:/), expect.stringMatching(/^open:/), expect.stringMatching(/^mv:.+:r$/), expect.stringMatching(/^fix:/)]);
+    expect(edits[0]?.buttons?.flat().find((b) => b.callback_data.startsWith("mv:"))?.text).toBe("📂 Lacrosse");
     expect(store.saves[0]?.sourceUrl).toBe("https://vm.tiktok.com/ZMabc/");
   });
 
@@ -680,7 +685,7 @@ describe("handleUpdate", () => {
   it("lists the video under related, not From your save, when the answer came from its own knowledge", async () => {
     const { deps, sent, brain } = setup();
     await handleUpdate(text("https://vm.tiktok.com/ZMabc/"), deps);
-    vi.mocked(brain.answer).mockImplementationOnce(async ({ saves }) => ({ text: "Your video shows the drill. Here's a warm-up:", sources: [], about: saves.map((s) => s.id), remember: [] }));
+    vi.mocked(brain.answer).mockImplementationOnce(async ({ saves }) => ({ text: "Your video shows the drill. Here's a warm-up:", sources: [], about: saves.map((s) => s.id), remember: [], moves: [], renames: [], rules: [] }));
     await handleUpdate(text("how do I warm up for it?"), deps);
     const reply = sent.at(-1)!.html;
     expect(reply).toContain('<b>Videos related to this topic:</b>\n• <a href="https://vm.tiktok.com/ZMabc/">Split dodge drill</a>');
@@ -887,7 +892,7 @@ describe("the start message and guide", () => {
     expect(WELCOME.length).toBeLessThan(250);
     await handleUpdate(text("/start"), deps);
     expect(sent[0]?.html).toBe(WELCOME);
-    expect(datas(sent[0]?.buttons)).toEqual(["guide:save", "guide:ask", "guide:folders", "guide:flashback", "guide:limits", "guide:data"]);
+    expect(datas(sent[0]?.buttons)).toEqual(["guide:save", "guide:ask", "guide:folders", "guide:flashback", "guide:limits", "guide:data", "guide:commands"]);
     await handleUpdate(tap("guide:ask", sent[0]!.id), deps);
     expect(edits.at(-1)?.html).toContain("hold the mic");
     expect(datas(edits.at(-1)?.buttons)).toEqual(["guide:"]);
@@ -1010,7 +1015,8 @@ describe("folders", () => {
     expect(edits.at(-1)?.html).toContain("📂 <b>Cooking</b> · 2 videos");
     expect(edits.at(-1)?.html).toContain("Video 3");
     const cooking = store.saves.filter((s) => s.topic.toLowerCase().startsWith("cooking"));
-    expect(datas(edits.at(-1)?.buttons)).toEqual([...cooking.map((s) => `show:${s.id}`), "folders:"]);
+    const key = list.buttons![0]![0]!.callback_data.slice(7);
+    expect(datas(edits.at(-1)?.buttons)).toEqual([...cooking.map((s) => `show:${s.id}`), `frn:${key}`, `fmg:${key}`, `fdl:${key}`, "folders:"]);
     await handleUpdate(tap("folders:", list.id), deps);
     expect(edits.at(-1)?.html).toContain("Your folders");
     await handleUpdate(text("/tags"), deps);
@@ -1023,5 +1029,209 @@ describe("folders", () => {
     await handleUpdate(tap("folders:new"), deps);
     expect(sent.at(-1)?.html).toContain("Your folders");
     expect(edits.filter((e) => e.html.includes("Your folders"))).toHaveLength(0);
+  });
+});
+
+describe("organizing folders", () => {
+  /** Saves three videos: two Cooking, one Gym. */
+  async function saved(opts: Parameters<typeof setup>[0] = {}, from = 7) {
+    let n = 0;
+    const topics = ["Cooking, Pasta", "Gym, Legs", "Cooking, Steak"];
+    const env = setup({ watch: () => ({ draft: { title: `Video ${++n}`, topic: topics[n - 1]!, folder: (topics[n - 1] ?? "").split(",")[0], type: "tip", summary: "", steps: [], details: "", needsWords: false } }), ...opts });
+    for (const t of topics) await handleUpdate(text(`https://vm.tiktok.com/${encodeURIComponent(t)}/`, from), env.deps);
+    const [pasta, legs, steak] = [...env.store.saves].reverse();
+    return { ...env, pasta: pasta!, legs: legs!, steak: steak! };
+  }
+  const keyOf = (name: string) => folderKey(name);
+
+  it("files a new video in the folder Claude picked, with the spelling they already use, and tells Claude their rules", async () => {
+    const { deps, store, brain } = await saved();
+    await store.saveFiling(7, [{ folder: "Gym", about: "anything about lifting" }]);
+    vi.mocked(brain.watch).mockImplementationOnce(async () => ({ draft: { title: "Deadlift", topic: "Fitness, Back", folder: "gym", type: "tip", summary: "", steps: [], details: "", needsWords: false }, reply: "", relation: "none", relatedId: "" }));
+    await handleUpdate(text("https://vm.tiktok.com/dead/"), deps);
+    expect(store.saves[0]?.folder).toBe("Gym");
+    expect(vi.mocked(brain.watch).mock.calls.at(-1)?.[0].rules).toEqual([{ folder: "Gym", about: "anything about lifting" }]);
+  });
+
+  it("moves a video with its 📂 button, and puts the same buttons back with the new folder", async () => {
+    const { deps, store, rebuttons, legs, pasta } = await saved();
+    await handleUpdate(tap(`mv:${legs.id}:r`), deps);
+    const picker = rebuttons.at(-1)!.buttons!.flat();
+    expect(picker.map((b) => b.text)).toEqual(["Cooking", "➕ New folder", "« Back"]);
+    await handleUpdate(tap(picker[0]!.callback_data), deps);
+    expect((await store.getSave(7, legs.id))?.folder).toBe("Cooking");
+    expect(deps.tg.answerCallback).toHaveBeenLastCalledWith("cb", "Moved to Cooking");
+    const back = rebuttons.at(-1)!.buttons!.flat();
+    expect(back.find((b) => b.callback_data === `mv:${legs.id}:r`)?.text).toBe("📂 Cooking");
+    await handleUpdate(tap(`mvback:${pasta.id}:c`), deps);
+    expect(datas(rebuttons.at(-1)?.buttons)).toContain(`del:${pasta.id}`);
+  });
+
+  it("makes a new folder from a typed name, without using a question", async () => {
+    const { deps, store, sent, brain, legs } = await saved({ limits: { videos: 50, questions: 0 } });
+    await handleUpdate(tap(`mvnew:${legs.id}`, 100, FRIEND), deps);
+    await handleUpdate(tap(`mvnew:${legs.id}`), deps);
+    expect(sent.at(-1)?.html).toContain("What should the new folder");
+    await handleUpdate(text("Leg day"), deps);
+    expect((await store.getSave(7, legs.id))?.folder).toBe("Leg day");
+    expect(sent.at(-1)?.html).toBe(`📂 Moved <b>Video 2</b> to <b>Leg day</b>.`);
+    expect(datas(sent.at(-1)?.buttons)).toEqual([`folder:${keyOf("Leg day")}:new`]);
+    expect(brain.answer).not.toHaveBeenCalled();
+    expect((await store.getUser(7)).awaitingWordsFor).toBeNull();
+  });
+
+  it("answers a question asked instead of a folder name, and forgets a name asked for too long ago", async () => {
+    const { deps, store, brain, legs } = await saved();
+    await handleUpdate(tap(`mvnew:${legs.id}`), deps);
+    await handleUpdate(text("wait, what was in the pasta one?"), deps);
+    expect(brain.answer).toHaveBeenCalledTimes(1);
+    expect((await store.getSave(7, legs.id))?.folder).toBe("Gym");
+    expect(readNaming(namingFor("move", "abc", 0), 16 * 60_000)).toBeNull();
+    expect(readNaming(namingFor("rename", "k1", 0), 60_000)).toEqual({ kind: "rename", target: "k1" });
+    expect(folderNameFrom("Japan trip")).toBe("Japan trip");
+    expect(folderNameFrom("/folders")).toBe("");
+    expect(folderNameFrom("x".repeat(80))).toBe("");
+  });
+
+  it("moves, renames and sets rules when asked in chat, which uses a question", async () => {
+    const { deps, store, sent, pasta, steak } = await saved({}, FRIEND);
+    vi.mocked(deps.brain.answer).mockImplementationOnce(async () => ({
+      text: "Done, both are in Dinner ideas now.",
+      sources: [],
+      about: [],
+      remember: [],
+      moves: [{ folder: "Dinner ideas", ids: [pasta.id, steak.id] }],
+      renames: [{ from: "gym", to: "Workouts" }, { from: "Nope", to: "X" }],
+      rules: [{ folder: "dinner IDEAS", about: "anything I could cook tonight" }],
+    }));
+    await handleUpdate(text("put my food videos in Dinner ideas, rename gym to Workouts", FRIEND), deps);
+    const reply = sent.at(-1)!;
+    expect(reply.html).toContain("📂 Moved 2 videos to <b>Dinner ideas</b>.");
+    expect(reply.html).toContain("✏️ Renamed <b>Gym</b> to <b>Workouts</b>.");
+    expect(reply.html).toContain("I couldn't find a folder called <b>Nope</b>");
+    expect(reply.html).toContain("📌 New videos about anything I could cook tonight will go in <b>Dinner ideas</b>.");
+    expect(datas(reply.buttons)).toEqual([`folder:${keyOf("Workouts")}:new`]);
+    expect((await store.getSave(FRIEND, pasta.id))?.folder).toBe("Dinner ideas");
+    expect((await store.getUser(FRIEND)).usage.questions).toBe(1);
+    expect(await store.getFiling(FRIEND)).toEqual([{ folder: "Dinner ideas", about: "anything I could cook tonight" }]);
+  });
+
+  it("applies chat moves to their own videos and keeps the rules with a renamed folder", async () => {
+    const { deps, store, pasta, steak } = await saved();
+    await store.saveFiling(7, [{ folder: "Gym", about: "lifting" }]);
+    vi.mocked(deps.brain.answer).mockImplementationOnce(async () => ({ text: "Done.", sources: [], about: [], remember: [], moves: [{ folder: "dinner ideas", ids: [pasta.id, steak.id] }], renames: [{ from: "Gym", to: "Workouts" }], rules: [] }));
+    await handleUpdate(text("tidy up"), deps);
+    expect((await store.getSave(7, steak.id))?.folder).toBe("dinner ideas");
+    expect(store.saves.find((s) => s.title === "Video 2")?.folder).toBe("Workouts");
+    expect(await store.getFiling(7)).toEqual([{ folder: "Workouts", about: "lifting" }]);
+  });
+
+  it("renames, merges and deletes a folder from /folders, and never loses a video", async () => {
+    const { deps, store, sent, edits, legs } = await saved();
+    await handleUpdate(tap(`frn:${keyOf("Gym")}`), deps);
+    expect(sent.at(-1)?.html).toContain("What should <b>Gym</b> be called?");
+    await handleUpdate(text("Workouts"), deps);
+    expect((await store.getSave(7, legs.id))?.folder).toBe("Workouts");
+    expect(sent.at(-1)?.html).toContain("✏️ Renamed <b>Gym</b> to <b>Workouts</b>.");
+
+    await handleUpdate(tap(`fmg:${keyOf("Workouts")}`), deps);
+    expect(datas(edits.at(-1)?.buttons)).toEqual([`fmgto:${keyOf("Workouts")}:${keyOf("Cooking")}`, `folder:${keyOf("Workouts")}`]);
+    await handleUpdate(tap(`fmgto:${keyOf("Workouts")}:${keyOf("Cooking")}`), deps);
+    expect((await store.getSave(7, legs.id))?.folder).toBe("Cooking");
+    expect(edits.at(-1)?.html).toContain("📂 <b>Cooking</b> · 3 videos");
+
+    await handleUpdate(tap(`fdl:${keyOf("Cooking")}`), deps);
+    expect(edits.at(-1)?.html).toContain("Its 3 videos move to <b>Unsorted</b>");
+    await handleUpdate(tap(`fdlok:${keyOf("Cooking")}`), deps);
+    expect(store.saves.map((s) => s.folder)).toEqual(["Unsorted", "Unsorted", "Unsorted"]);
+    expect(edits.at(-1)?.html).toContain("Your folders");
+    await handleUpdate(tap(`fdl:${keyOf("Unsorted")}`), deps);
+    expect(deps.tg.answerCallback).toHaveBeenLastCalledWith("cb", expect.stringContaining("so it stays"));
+    await handleUpdate(tap(`fmg:${keyOf("Unsorted")}`), deps);
+    expect(deps.tg.answerCallback).toHaveBeenLastCalledWith("cb", expect.stringContaining("only folder"));
+  });
+
+  it("stops a folder's rule from its page", async () => {
+    const { deps, store, edits } = await saved();
+    await store.saveFiling(7, [{ folder: "Gym", about: "lifting" }, { folder: "Cooking", about: "food" }]);
+    await handleUpdate(tap(`folder:${keyOf("Gym")}`), deps);
+    expect(edits.at(-1)?.html).toContain("📌 New videos about lifting come here.");
+    await handleUpdate(tap(`frl:${keyOf("Gym")}`), deps);
+    expect(await store.getFiling(7)).toEqual([{ folder: "Cooking", about: "food" }]);
+    expect(edits.at(-1)?.html).not.toContain("📌");
+  });
+
+  it("deletes one video from its card after asking", async () => {
+    const { deps, store, edits, rebuttons, retriever, legs } = await saved();
+    await handleUpdate(tap(`del:${legs.id}`), deps);
+    expect(datas(rebuttons.at(-1)?.buttons)).toEqual([`delok:${legs.id}`, `delno:${legs.id}`]);
+    await handleUpdate(tap(`delno:${legs.id}`), deps);
+    expect(await store.getSave(7, legs.id)).not.toBeNull();
+    const remove = vi.spyOn(retriever, "remove");
+    await handleUpdate(tap(`delok:${legs.id}`), deps);
+    expect(await store.getSave(7, legs.id)).toBeNull();
+    expect(remove).toHaveBeenCalledWith(7, legs.id);
+    expect(edits.at(-1)?.html).toBe("🗑 Deleted <b>Video 2</b>.");
+  });
+
+  it("moves it with Fix something when they say where it goes", async () => {
+    const { deps, store, brain, legs } = await saved();
+    vi.mocked(brain.rewrite).mockImplementationOnce(async (s) => ({ ...s, folder: "cooking" }));
+    await handleUpdate(tap(`fix:${legs.id}`), deps);
+    await handleUpdate(text("it goes in cooking"), deps);
+    expect((await store.getSave(7, legs.id))?.folder).toBe("Cooking");
+  });
+
+  it("says so and tells the owner when the database isn't set up for moving yet", async () => {
+    const { deps, store, alerts, legs } = await saved();
+    vi.spyOn(store, "moveSaves").mockRejectedValue(new Error("Supabase PATCH saves: 400 Could not find the 'folder' column"));
+    await handleUpdate(tap(`mvto:${legs.id}:${keyOf("Cooking")}:r`), deps);
+    expect(deps.tg.answerCallback).toHaveBeenLastCalledWith("cb", "Organizing isn't set up yet. I've told the owner.");
+    expect(alerts.at(-1)).toContain("run docs/supabase.sql again");
+  });
+});
+
+describe("what Knowing knows about itself", () => {
+  it("explains every command with /commands, and the owner's own only to the owner", async () => {
+    const { deps, sent } = setup();
+    await handleUpdate(text("/commands", FRIEND), deps);
+    const list = sent.at(-1)!.html;
+    for (const c of ALL_COMMANDS.filter((c) => !c.instagram)) expect(list).toContain(`/${c.command} · `);
+    expect(list).not.toContain("/refund");
+    // /instagram only once Instagram sharing is set up.
+    expect(list).not.toContain("/instagram · ");
+    await handleUpdate(text("/commands"), deps);
+    expect(sent.at(-1)!.html).toContain("/refund");
+    expect(sent.at(-1)!.html).toContain("Only for you, the owner");
+  });
+
+  it("lists every command the bot handles, and puts the main ones in Telegram's menu", () => {
+    const handled = ["help", "commands", "folders", "saved", "digest", "memory", "usage", "buy", "invite", "instagram", "support", "paysupport", "terms", "delete"];
+    expect(ALL_COMMANDS.map((c) => c.command).sort()).toEqual([...handled].sort());
+    expect(COMMANDS.map((c) => c.command)).toContain("commands");
+  });
+
+  it("tells Claude the real limits and prices, for the owner too", async () => {
+    const { deps, brain } = setup();
+    await handleUpdate(text("how much are the packs?"), deps);
+    const input = vi.mocked(brain.answer).mock.calls[0]![0];
+    expect(input.usage).toContain("no limits");
+    expect(input.usage).toContain("50 free videos and 50 free questions");
+    expect(input.usage).toContain("10 videos for 150 ⭐");
+    expect(input.about).toContain("10 videos for 150 ⭐");
+    expect(input.about).toContain("/refund");
+    await handleUpdate(text("and what can you do?", FRIEND), deps);
+    const friend = vi.mocked(brain.answer).mock.calls[1]![0];
+    expect(friend.about).toContain("/folders");
+    expect(friend.about).not.toContain("/refund");
+    expect(friend.about).not.toContain("/instagram");
+  });
+
+  it("explains Instagram sharing once it's set up", async () => {
+    const { deps, sent, brain } = setup({ instagram: "knowing.app" });
+    await handleUpdate(text("/commands", FRIEND), deps);
+    expect(sent.at(-1)!.html).toContain("/instagram · ");
+    await handleUpdate(text("can I save reels?", FRIEND), deps);
+    expect(vi.mocked(brain.answer).mock.calls[0]![0].about).toContain("@knowing.app");
   });
 });

@@ -9,18 +9,19 @@
  */
 import { formatTimestamp } from "../video-math";
 import { ASK_SYSTEM_CHARS, HISTORY_CHARS } from "./costs";
-import { folderNames } from "./folders";
-import { SAVE_TYPE_LABEL, SAVE_TYPES, type Answer, type BotUser, type ChatMemory, type Relation, type Save, type SaveDraft, type SaveType, type Turn, type WatchResult } from "./types";
+import { cleanFolderName, folderOf, folderShelf, topicFolder, UNSORTED } from "./folders";
+import { SAVE_TYPE_LABEL, SAVE_TYPES, type Answer, type BotUser, type ChatMemory, type FilingRule, type Relation, type Save, type SaveDraft, type SaveType, type Turn, type WatchResult } from "./types";
 
 const RELATIONS: readonly Relation[] = ["none", "related", "duplicate", "alternative"];
 
 export const WATCH_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["title", "topic", "type", "summary", "steps", "details", "needsWords", "reply", "relation", "relatedId"],
+  required: ["title", "topic", "folder", "type", "summary", "steps", "details", "needsWords", "reply", "relation", "relatedId"],
   properties: {
     title: { type: "string" },
     topic: { type: "string" },
+    folder: { type: "string" },
     type: { type: "string", enum: [...SAVE_TYPES] },
     summary: { type: "string" },
     steps: { type: "array", items: { type: "string" } },
@@ -35,7 +36,8 @@ export const WATCH_SCHEMA = {
 const WATCH_RULES = `Record what it shows or teaches, with every specific detail, so a later question like "what was that setup / drill / car?" gets THIS one back, not a generic answer. Don't add advice that isn't in it.
 
 - title: what it teaches, max 8 words, specific ("Bank basement: lockers + CCTV setup", "Split dodge to weak hand", "15-minute garlic butter pasta"). Never trail off with "more" or "etc.": if the items don't all fit, name the group instead ("5 Claude Code add-ons for web research").
-- topic: the subject, then the specific part ("Siege, Bank", "Lacrosse, Dodging", "Cooking, Pasta", "Cars, Porsche", "SAT, Reading", "Business, Mindset"). The subject is the folder it's filed in, so keep it broad (Cooking, not Pasta; Gym, not Chest day) and, when one of THEIR FOLDERS below fits, use that exact name instead of a new one.
+- topic: the subject, then the specific part ("Siege, Bank", "Lacrosse, Dodging", "Cooking, Pasta", "Cars, Porsche", "SAT, Reading", "Business, Mindset"). Keep the subject broad (Cooking, not Pasta; Gym, not Chest day). The specific part becomes its section in a big folder, so keep it short and reuse one their other saves have when it fits (Legs, not Leg day squats).
+- folder: where to file it, out of THEIR FOLDERS below, the way they would. Follow their rules first. Then go by what's in each folder: they make their own (Japan trip, Gift ideas, Date night) and move videos in, so a new video that fits one of those goes there, even when its subject is something else. Use the folder's exact name. If none fits, start a new broad one, usually the subject from topic. Never ${UNSORTED}. At most 40 characters.
 - type: drill (something to practice), setup (a configuration to copy), plan (a schedule or routine), tip (one trick), mindset (a way of seeing things: a belief, an argument or big-picture strategy about career, money, life or a skill), info (facts).
 - summary: one sentence, what it is and when to use it.
 - steps: the exact steps or key claims in order, each short and specific: names, positions, numbers, reps, timings. 2 to 10. When the frames or on-screen text have times, start each step with when it happens in the video, like "0:42 Add the sauce, right after searing the chicken": the time of the frame or text that shows it, or your best estimate with ~ in front ("~1:10") when it falls between frames or is only said. If nothing gives times (photos, a page's text), leave them out.
@@ -52,8 +54,8 @@ Then react in "reply" the way a friend who knows the topic and just watched it w
 /** Most characters of facts, and of the saves list, in contextBlock. Keeps the cost of watching a video capped (costs.ts). */
 const CONTEXT_FACTS_CHARS = 3_000;
 const CONTEXT_SAVES_CHARS = 12_000;
-/** Most characters of folder names, taken out of CONTEXT_SAVES_CHARS. */
-const CONTEXT_FOLDERS_CHARS = 1_000;
+/** Most characters of their folders and rules, taken out of CONTEXT_SAVES_CHARS. */
+const CONTEXT_FOLDERS_CHARS = 2_500;
 
 /** The pieces, in order, that fit in `max` characters (with a separator after each). One that doesn't fit is skipped. */
 export function fitPieces(pieces: string[], max: number, separator = 1): string[] {
@@ -67,14 +69,15 @@ export function fitPieces(pieces: string[], max: number, separator = 1): string[
   return out;
 }
 
-/** What they've told us (newest kept), their folders, and what they've saved, for spotting connections and filing. */
-function contextBlock(facts: string[], saves: Save[]): string {
+/** What they've told us (newest kept), their folders and rules, and what they've saved, for spotting connections and filing. */
+function contextBlock(facts: string[], saves: Save[], rules: FilingRule[] = []): string {
   const told = fitPieces([...facts].reverse(), CONTEXT_FACTS_CHARS, 2).reverse();
-  const lines = saves.slice(0, 100).map((s) => `[id ${s.id}] "${s.title}" (${s.topic || "?"}): ${s.summary} ${s.steps.slice(0, 4).join(" / ")}`.slice(0, 300));
+  const lines = saves.slice(0, 100).map((s) => `[id ${s.id}] "${s.title}" (${s.topic || "?"}; in ${folderOf(s)}): ${s.summary} ${s.steps.slice(0, 4).join(" / ")}`.slice(0, 300));
   // The folders come out of the saves' share, so the whole block stays the same size.
-  const shelf = fitPieces(folderNames(saves).split(", ").filter(Boolean), CONTEXT_FOLDERS_CHARS, 2).join(", ");
+  const shelf = fitPieces(folderShelf(saves, rules).map((l) => l.slice(0, 300)), CONTEXT_FOLDERS_CHARS).join("\n");
   return `WHAT THEY'VE TOLD YOU: ${told.length ? told.join("; ") : "(nothing yet)"}
-THEIR FOLDERS: ${shelf || "(none yet)"}
+THEIR FOLDERS (name, how many videos, the newest few, and any rule they gave for it):
+${shelf || "(none yet)"}
 THEIR EXISTING SAVES:
 ${fitPieces(lines, CONTEXT_SAVES_CHARS - shelf.length).join("\n") || "(none yet)"}`;
 }
@@ -102,7 +105,7 @@ export function frameLabel(index: number, seconds?: number): string {
 }
 
 /** The text that goes before the frames when Claude watches a video. */
-export function buildWatchPrompt(input: { caption: string; transcript: string; screenText?: string; note: string; frameCount: number; facts?: string[]; saves?: Save[] }): string {
+export function buildWatchPrompt(input: { caption: string; transcript: string; screenText?: string; note: string; frameCount: number; facts?: string[]; saves?: Save[]; rules?: FilingRule[] }): string {
   const parts = [`Someone shared a short video so you'll remember it for them.`];
   if (input.frameCount) parts.push(`The ${input.frameCount} images are frames from across it, in order. Read any text on screen word for word (titles, labels, captions burned into the video), and notice arrows or circles drawn on it, since they usually mark the exact spot.`);
   if (input.note) parts.push(`They said: "${input.note.slice(0, 1_000)}"`);
@@ -110,20 +113,26 @@ export function buildWatchPrompt(input: { caption: string; transcript: string; s
   if (input.screenText) parts.push(`ON-SCREEN TEXT (copied from frames taken about every second, so it includes text that flashes by between the frames below):\n${input.screenText.slice(0, 6_000)}`);
   parts.push(input.transcript ? `WHAT IS SAID (transcript):\n${input.transcript.slice(0, 10_000)}` : "There is no transcript, so go by what's on screen.");
   parts.push(WATCH_RULES);
-  parts.push(contextBlock(input.facts ?? [], input.saves ?? []));
+  parts.push(contextBlock(input.facts ?? [], input.saves ?? [], input.rules ?? []));
   return parts.join("\n\n");
 }
 
 export function buildRewritePrompt(save: Save, words: string): string {
-  return `You saved this from a video's frames. Here is what the video actually says. Rewrite the save so it's exact, using what they say, and keep the times at the start of steps. For "reply", say in one sentence what changed.\n\nSAVE:\n${saveText(save)}\n\nWHAT THE VIDEO SAYS:\n${words.slice(0, 8_000)}\n\n${WATCH_RULES}\n\n${contextBlock([], [])}`;
+  return `You saved this from a video's frames. Here is what the video actually says. Rewrite the save so it's exact, using what they say, and keep the times at the start of steps and its folder as it is. For "reply", say in one sentence what changed.\n\nSAVE:\n${saveText(save)}\n\nWHAT THE VIDEO SAYS:\n${words.slice(0, 8_000)}\n\n${WATCH_RULES}\n\n${contextBlock([], [])}`;
 }
 
 /** The person who saved it says part of it is wrong. Their word beats what the frames seemed to show. */
 export function buildFixPrompt(save: Save, correction: string): string {
-  return `You saved this from a video, and the person who saved it says something in it is wrong. They watched it, so their correction wins over what you saw in the frames. Rewrite the save with the correction applied everywhere it matters (title, topic, steps, details) and keep everything else as it was, including the times at the start of steps. If they want it in another folder, change the first part of the topic to that folder's name. For "reply", say in one sentence what changed.\n\nSAVE:\n${saveText(save)}\n\nTHEIR CORRECTION:\n${correction.slice(0, 4_000)}\n\n${WATCH_RULES}\n\n${contextBlock([], [])}`;
+  return `You saved this from a video, and the person who saved it says something in it is wrong. They watched it, so their correction wins over what you saw in the frames. Rewrite the save with the correction applied everywhere it matters (title, topic, steps, details) and keep everything else as it was, including the times at the start of steps. Keep its folder unless they want it in another one: then set folder to that folder's name. For "reply", say in one sentence what changed.\n\nSAVE:\n${saveText(save)}\n\nTHEIR CORRECTION:\n${correction.slice(0, 4_000)}\n\n${WATCH_RULES}\n\n${contextBlock([], [])}`;
 }
 
 const str = (v: unknown, max: number) => (typeof v === "string" ? v.trim().slice(0, max) : "");
+
+/** The folder Claude picked, tidied; never Unsorted. Without one, the subject of the topic. */
+function folderFor(raw: unknown, topic: string): string {
+  const name = cleanFolderName(typeof raw === "string" ? raw : "");
+  return name && name.toLowerCase() !== UNSORTED.toLowerCase() ? name : topicFolder(topic);
+}
 
 /** Trim and cap whatever Claude returned into a valid draft. */
 export function cleanDraft(raw: unknown, fallbackTitle = "Saved video"): SaveDraft {
@@ -132,6 +141,7 @@ export function cleanDraft(raw: unknown, fallbackTitle = "Saved video"): SaveDra
   return {
     title: str(r.title, 100) || fallbackTitle,
     topic: str(r.topic, 60),
+    folder: folderFor(r.folder, str(r.topic, 60)),
     type,
     summary: str(r.summary, 240),
     steps: (Array.isArray(r.steps) ? r.steps : []).map((s) => str(s, 240)).filter(Boolean).slice(0, 12),
@@ -150,7 +160,7 @@ export function cleanWatch(raw: unknown, saves: Save[], fallbackTitle = "Saved v
 
 /** A save as Claude sees it when answering. */
 export function saveText(s: Save): string {
-  return `[id ${s.id}] "${s.title}" (${s.topic || "no topic"}, ${SAVE_TYPE_LABEL[s.type]}${s.createdAt ? `, saved ${s.createdAt.slice(0, 10)}` : ""})
+  return `[id ${s.id}] "${s.title}" (${s.topic || "no topic"}, ${SAVE_TYPE_LABEL[s.type]}, in ${folderOf(s)}${s.createdAt ? `, saved ${s.createdAt.slice(0, 10)}` : ""})
 Steps:
 ${s.steps.map((x, i) => `${i + 1}. ${x}`).join("\n")}
 Details: ${s.details}${s.words ? `\nWhat the video says: ${s.words}` : ""}`;
@@ -202,7 +212,13 @@ export function sharedVideoTurns(save: Save, reply: string, note: string): Turn[
   ];
 }
 
-export function buildAskSystem(user: BotUser, saves: Save[], retrieved: Retrieved[], today: string, extra: { name?: string; memories?: ChatMemory[]; usage?: string } = {}): string {
+/** Most characters of their folders and rules in an answer's instructions. */
+const ASK_FOLDERS_CHARS = 2_000;
+
+/** Most characters of what Knowing knows about itself (profile.ts aboutKnowing) in an answer's instructions. */
+const ABOUT_CHARS = 6_000;
+
+export function buildAskSystem(user: BotUser, saves: Save[], retrieved: Retrieved[], today: string, extra: { name?: string; memories?: ChatMemory[]; usage?: string; rules?: FilingRule[]; about?: string } = {}): string {
   const hits = retrieved.map((r) => r.save);
   const passages = new Map(retrieved.map((r) => [r.save.id, r.passages]));
   const mindsets = saves.filter((s) => s.type === "mindset" && !hits.includes(s)).slice(0, 6);
@@ -211,13 +227,17 @@ export function buildAskSystem(user: BotUser, saves: Save[], retrieved: Retrieve
   // A Telegram name is the user's own text: one short line, so it can't start a section of its own.
   const name = (extra.name ?? "").replace(/\s+/g, " ").trim().slice(0, 40);
   const memories = extra.memories ?? [];
+  const shelf = fitPieces(folderShelf(saves, extra.rules ?? []).map((l) => l.slice(0, 250)), ASK_FOLDERS_CHARS).join("\n");
   const head = `You are Knowing, in Telegram: part memory, part companion. The person shares videos (drills, game setups, study methods, plans, ways of thinking, cars, anything they're into) so they never have to save captions or re-explain things, and when they ask, you hand back exactly what they saved. In between, you're good company: they can talk with you about anything, like a friend who knows a lot and remembers everything they've shared and told you. You're not a coach. Be warm, relaxed and curious, and quick and exact when it matters.
 ${name ? `\nTheir first name is ${name}. Use it now and then, not in every message.\n` : ""}
 WHAT THEY'VE TOLD YOU ABOUT THEMSELVES (use it so they never repeat themselves):
 ${user.facts.length ? user.facts.map((f) => `- ${f}`).join("\n") : "(nothing yet)"}
 
 WHAT THEY'RE INTO (from what they save, most first): ${interests(saves) || "(nothing saved yet)"}
-${extra.usage ? `\nTHEIR LIMITS IN KNOWING RIGHT NOW (this message already counted). If they ask what they have left or how to get more, answer from this exactly. The free ones are a one-time start and don't come back; after them it's packs. Say /usage shows it any time without using a question:\n${extra.usage}\n` : ""}${memories.length ? `\nFROM EARLIER CHATS (things said before that may matter now, best match first):\n${memories.map((m) => `[${m.at.slice(0, 10)}] They said: ${m.said.slice(0, 500)}\nYou answered: ${m.answered.slice(0, 400)}`).join("\n\n")}\n` : ""}
+
+THEIR FOLDERS (name, how many videos, the newest few, and any rule they gave for it). Every video is in one; /folders shows them:
+${shelf || "(none yet)"}
+${extra.about ? `\nHOW KNOWING WORKS (you are Knowing: when they ask about you, a command, a button, a feature, limits or prices, answer from this exactly, and never make up one that isn't here):\n${extra.about.slice(0, ABOUT_CHARS)}\n` : ""}${extra.usage ? `\nTHEIR LIMITS IN KNOWING RIGHT NOW (this message already counted). If they ask what they have left or how to get more, answer from this exactly. The free ones are a one-time start and don't come back; after them it's packs. Say /usage shows it any time without using a question:\n${extra.usage}\n` : ""}${memories.length ? `\nFROM EARLIER CHATS (things said before that may matter now, best match first):\n${memories.map((m) => `[${m.at.slice(0, 10)}] They said: ${m.said.slice(0, 500)}\nYou answered: ${m.answered.slice(0, 400)}`).join("\n\n")}\n` : ""}
 How to answer:
 - If a save answers the question, answer from it. Lead with the steps or setup itself, exact details (names, positions, reps). No generic tips on top unless asked.
 - If they ask for something a video doesn't cover (like how to install what it shows), don't open with what's missing. Start with a quick recap of what the video does show, then get them what they need from what you know, making clear in passing which part is yours ("Your video shows what each one does. Here's how to set them up:").
@@ -238,7 +258,12 @@ How to answer:
 - Telegram chat style: as long as needed and no longer. A numbered list for steps, at most 1 or 2 sentences around it. **bold** is fine; no headings, no tables. Put commands, code, file paths and package names in \`backticks\`, and a command to copy on its own in a \`\`\` block, so they can tap it to copy. Talk like a person, not a report: contractions, short friendly sentences. No long greetings, no hype or motivation speeches, no "great question", and no "want me to...?" offers apart from the how-to one above. Now and then, when you're actually curious about them, ask one thing back, but not every message.
 - If their message says something about them worth remembering (rank, platform, position, school year, schedule, what they're working toward, things they love or can't stand, favorites, people in their life, something coming up), add a line REMEMBER: <the fact in under 15 words>. One line per new fact.
 - If what you're talking about has saves on it, add a line RELATED: with the ids of up to 5 of them that your answer didn't come from, best first. They're listed under your answer as "Videos related to this topic", linked, so they can rewatch them. Include the video the chat is about when the useful part came from you (like install steps its video doesn't show), so they're never told it came from their save, and other saves on the same thing. Only ones that really fit the topic; leave the line out when none do, like in small talk.
-- Last line, always: SOURCES: the ids of the saves your answer actually came from, comma separated, or SOURCES: none. Put REMEMBER and RELATED lines just before SOURCES.
+- Organizing: only when they ask for it, never on your own.
+  - To move videos into a folder (one they have, or a new one, which this makes), add a line MOVE: <folder name> | <ids, comma separated>. One line per folder. Use the folder's exact name when they have it. Find the videos they mean from everything listed here, by title, topic, folder and date.
+  - To rename a folder, add RENAME: <old name> | <new name>.
+  - If they want new videos about something to always go in a folder ("anything about cars goes in Car mods"), add RULE: <folder name> | <what goes there, in under 12 words>.
+  - Then say in a few words what you did ("Done, your 4 pasta videos are in Dinner ideas now."), since it's done the moment you answer. Each video is in one folder, so moving it takes it out of the old one. Buttons do this too: 📂 on a video moves it, and a folder in /folders can be renamed, merged or deleted.
+- Last line, always: SOURCES: the ids of the saves your answer actually came from, comma separated, or SOURCES: none. Put REMEMBER, RELATED, MOVE, RENAME and RULE lines just before SOURCES.
 Today is ${today}.
 `;
   // Their saves fill what's left of ASK_SYSTEM_CHARS (costs.ts): best matches first, then ways of thinking, then the rest.
@@ -248,7 +273,7 @@ Today is ${today}.
   let room = ASK_SYSTEM_CHARS - head.length - labels - hitBlocks.reduce((n, b) => n + b.length + 2, 0);
   const mindsetBlocks = fitPieces(mindsets.map((s) => withLink(s, 1_500)), room, 2);
   room -= mindsetBlocks.reduce((n, b) => n + b.length + 2, 0);
-  const restLines = fitPieces(rest.map((s) => `[id ${s.id}] "${s.title}" (${s.topic || "?"}, saved ${s.createdAt.slice(0, 10)}) ${s.summary}${s.sourceUrl ? "" : " (sent as a file, no link)"}`.slice(0, 250)), room);
+  const restLines = fitPieces(rest.map((s) => `[id ${s.id}] "${s.title}" (${s.topic || "?"}, in ${folderOf(s)}, saved ${s.createdAt.slice(0, 10)}) ${s.summary}${s.sourceUrl ? "" : " (sent as a file, no link)"}`.slice(0, 250)), room);
   return `${head}
 THEIR SAVES THAT MATCH THIS QUESTION:
 ${hitBlocks.join("\n\n") || "(none match)"}
@@ -282,6 +307,21 @@ export function parseAnswer(raw: string, knownIds: string[]): Answer {
   // A save the answer came from is cited as a source, never also as just related. (ABOUT is the older name for RELATED.)
   const about = [...new Set([...ids("ABOUT"), ...ids("RELATED")])].filter((id) => !sources.includes(id));
   const remember = [...raw.matchAll(/^REMEMBER:\s*(.+)$/gm)].map((x) => (x[1] ?? "").trim().slice(0, 160)).filter(Boolean);
-  const text = raw.replace(/\n?^(?:REMEMBER|ABOUT|RELATED|SOURCES):[\s\S]*$/m, "").trim();
-  return { text, sources, about, remember };
+  // "MOVE: Dinner ideas | a1, b2" and the like: the part before | and the part after.
+  const pairs = (label: string) =>
+    [...raw.matchAll(new RegExp(`^${label}:\\s*(.+)$`, "gm"))].flatMap((x) => {
+      const [left = "", ...right] = (x[1] ?? "").split("|");
+      return right.length ? [[left.trim(), right.join("|").trim()] as const] : [];
+    });
+  const moves = pairs("MOVE")
+    .map(([folder, list]) => ({ folder: cleanFolderName(folder), ids: [...new Set(list.split(/[,\s]+/).filter((id) => knownIds.includes(id)))] }))
+    .filter((m) => m.folder && m.ids.length);
+  const renames = pairs("RENAME")
+    .map(([from, to]) => ({ from: cleanFolderName(from), to: cleanFolderName(to) }))
+    .filter((r) => r.from && r.to && r.from !== r.to);
+  const rules = pairs("RULE")
+    .map(([folder, about]) => ({ folder: cleanFolderName(folder), about: about.replace(/\s+/g, " ").slice(0, 120) }))
+    .filter((r) => r.folder && r.about);
+  const text = raw.replace(/\n?^(?:REMEMBER|ABOUT|RELATED|MOVE|RENAME|RULE|SOURCES):[\s\S]*$/m, "").trim();
+  return { text, sources, about, remember, moves, renames, rules };
 }

@@ -59,6 +59,13 @@ alter table bot_users add column if not exists referral jsonb not null default '
 alter table bot_users add column if not exists instagram text;
 create unique index if not exists bot_users_instagram on bot_users (instagram) where instagram is not null;
 
+-- The folder each save is filed in. Empty means the first part of its topic
+-- (saves from before folders could be moved).
+alter table saves add column if not exists folder text not null default '';
+
+-- Their filing rules ([{folder, about}]), like "anything about cars goes in Car mods".
+alter table bot_users add column if not exists filing jsonb not null default '[]';
+
 -- Retrieval (RAG): each save is split into chunks with an embedding (meaning)
 -- and a full-text index (exact words). match_chunks merges both rankings.
 create extension if not exists vector;

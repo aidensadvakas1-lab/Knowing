@@ -21,8 +21,14 @@ export const SAVE_TYPE_LABEL: Record<SaveType, string> = {
 /** The part of a save that Claude writes after watching a video. */
 export interface SaveDraft {
   title: string;
-  /** Subject, then the specific part, e.g. "Siege, Bank". */
+  /** Subject, then the specific part, e.g. "Cooking, Pasta". */
   topic: string;
+  /**
+   * The folder it's filed in (folders.ts). Claude picks it when it watches the
+   * video, and they can move it. Empty on saves from before folders could be
+   * moved: those are filed by the first part of the topic.
+   */
+  folder?: string;
   type: SaveType;
   summary: string;
   /** The exact steps, in order. */
@@ -128,6 +134,13 @@ export interface Referral {
   rewarded: number;
 }
 
+/** "Anything about cars goes in Car mods": followed whenever a new video is filed. */
+export interface FilingRule {
+  folder: string;
+  /** What goes there, in their words. */
+  about: string;
+}
+
 /** One scroll session: videos shared close together. Which videos is worked out from the saves' times. */
 export interface Sitting {
   /** When the latest video in it was saved (ISO). */
@@ -170,6 +183,12 @@ export interface Store {
   saveDigest(userId: number, digest: DigestState): Promise<void>;
   /** Everyone with the flashback on, and when they last messaged the bot (ISO). */
   listDigestUsers(): Promise<Array<{ id: number; digest: DigestState; active: string }>>;
+  /** Put these saves in a folder. Throws if the folder column is missing (docs/supabase.sql not run again). */
+  moveSaves(userId: number, ids: string[], folder: string): Promise<void>;
+  /** Their filing rules. Throws if the filing column is missing (docs/supabase.sql not run again). */
+  getFiling(userId: number): Promise<FilingRule[]>;
+  /** Writes only the filing rules, creating the row if needed. Throws if the column is missing. */
+  saveFiling(userId: number, rules: FilingRule[]): Promise<void>;
   /** Their invite record. Throws if the referral column is missing (docs/supabase.sql not run again). */
   getReferral(userId: number): Promise<Referral>;
   /** Writes only the invite record, creating the row if needed. */
@@ -228,6 +247,12 @@ export interface Answer {
   about: string[];
   /** New lasting facts the user mentioned. */
   remember: string[];
+  /** Videos they asked to put in a folder (a new one or one they have). */
+  moves: Array<{ folder: string; ids: string[] }>;
+  /** Folders they asked to rename. */
+  renames: Array<{ from: string; to: string }>;
+  /** Filing rules they asked for. */
+  rules: FilingRule[];
 }
 
 /** How a new save relates to what's already saved. */
@@ -255,6 +280,10 @@ export interface AskInput {
   memories?: ChatMemory[];
   /** What they have left today and bought (the /usage text, plain), so "how many do I have left?" in any words gets real numbers. */
   usage?: string;
+  /** Their filing rules, so the answer knows them and can change them. */
+  rules?: FilingRule[];
+  /** Everything Knowing is and does (profile.ts aboutKnowing), so questions about the bot get real answers. */
+  about?: string;
 }
 
 /** One exchange from the chat, kept so it can be found again weeks later. */
@@ -266,7 +295,7 @@ export interface ChatMemory {
 }
 
 export interface Brain {
-  watch(input: WatchInput & { note: string; facts: string[]; saves: Save[] }): Promise<WatchResult>;
+  watch(input: WatchInput & { note: string; facts: string[]; saves: Save[]; rules?: FilingRule[] }): Promise<WatchResult>;
   /** Remake a save from its spoken words, or from the user's correction. */
   rewrite(save: Save, text: string, kind?: "words" | "fix"): Promise<SaveDraft>;
   answer(input: AskInput): Promise<Answer>;
@@ -293,6 +322,8 @@ export interface Invoice {
 export interface TelegramApi {
   sendMessage(chatId: number, html: string, buttons?: InlineButton[][]): Promise<number>;
   editMessage(chatId: number, messageId: number, html: string, buttons?: InlineButton[][]): Promise<void>;
+  /** Change only a message's buttons, leaving its text as it is. */
+  editButtons(chatId: number, messageId: number, buttons: InlineButton[][]): Promise<void>;
   answerCallback(callbackId: string, text?: string): Promise<void>;
   typing(chatId: number): Promise<void>;
   sendInvoice(chatId: number, invoice: Invoice): Promise<void>;
