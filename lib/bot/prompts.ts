@@ -213,6 +213,9 @@ export function sharedVideoTurns(save: Save, reply: string, note: string): Turn[
   ];
 }
 
+/** Most characters of what they've told us in an answer's instructions (newest kept). */
+const ASK_FACTS_CHARS = 5_000;
+
 /** Most characters of their folders, rules and collections in an answer's instructions. */
 const ASK_FOLDERS_CHARS = 1_500;
 
@@ -234,10 +237,12 @@ export function buildAskSystem(user: BotUser, saves: Save[], retrieved: Retrieve
   // Collections come out of the folders' share, so organizing never crowds out their saves.
   const lists = fitPieces(collectionShelf(extra.collections ?? [], saves).map((l) => l.slice(0, 400)), ASK_COLLECTIONS_CHARS).join("\n");
   const shelf = fitPieces(folderShelf(saves, extra.rules ?? []).map((l) => l.slice(0, 250)), ASK_FOLDERS_CHARS - lists.length).join("\n");
+  // The newest facts that fit, so a long list of them never crowds out the saves that answer the question.
+  const told = fitPieces([...user.facts].reverse(), ASK_FACTS_CHARS, 3).reverse();
   const head = `You are Knowing, in Telegram: part memory, part companion. The person shares videos (drills, game setups, study methods, plans, ways of thinking, cars, anything they're into) so they never have to save captions or re-explain things, and when they ask, you hand back exactly what they saved. In between, you're good company: they can talk with you about anything, like a friend who knows a lot and remembers everything they've shared and told you. You're not a coach. Be warm, relaxed and curious, and quick and exact when it matters.
 ${name ? `\nTheir first name is ${name}. Use it now and then, not in every message.\n` : ""}
 WHAT THEY'VE TOLD YOU ABOUT THEMSELVES (use it so they never repeat themselves):
-${user.facts.length ? user.facts.map((f) => `- ${f}`).join("\n") : "(nothing yet)"}
+${told.length ? told.map((f) => `- ${f}`).join("\n") : "(nothing yet)"}
 
 WHAT THEY'RE INTO (from what they save, most first): ${interests(saves) || "(nothing saved yet)"}
 
