@@ -2,8 +2,8 @@
  * Telegram message text (HTML parse mode) and buttons for saves, drill
  * steps and answers.
  */
-import { folderKey, folders } from "./folders";
-import { SAVE_TYPE_LABEL, type InlineButton, type Save } from "./types";
+import { findFolder, folderKey, folderOf, folders, sections, type Folder } from "./folders";
+import { SAVE_TYPE_LABEL, type FilingRule, type InlineButton, type Save } from "./types";
 
 export const escapeHtml = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
@@ -55,7 +55,38 @@ export function reactionButtons(s: Save, decideAgainst?: Save | null, kind: "dup
   if (canRun(s)) row.push({ text: "Start now", callback_data: `open:${s.id}` });
   if (row.length) rows.push(row);
   if (s.needsWords && !s.words) rows.push([{ text: "Add what it says", callback_data: `words:${s.id}` }]);
-  rows.push([{ text: "Fix something", callback_data: `fix:${s.id}` }]);
+  rows.push([folderButton(s, "r"), { text: "Fix something", callback_data: `fix:${s.id}` }]);
+  return rows;
+}
+
+/**
+ * Where buttons were, so moving a video can put the same ones back: "r" under
+ * the reaction to a shared video, "c" under a save's full card.
+ */
+export type ButtonsAt = "r" | "c";
+
+/** "📂 Cooking": shows the folder it's in, and tapping it moves it. */
+function folderButton(s: Save, at: ButtonsAt): InlineButton {
+  return { text: `📂 ${folderOf(s).slice(0, 28)}`, callback_data: `mv:${s.id}:${at}` };
+}
+
+/** The buttons a save had at `at`, with its folder button up to date. */
+export function buttonsFor(s: Save, at: ButtonsAt): InlineButton[][] {
+  return at === "c" ? saveButtons(s) : reactionButtons(s);
+}
+
+/** Most folders offered when moving a video; the rest are a "New folder" (same name) away. */
+const MOVE_CHOICES = 12;
+
+/** Moving a video: their other folders, biggest first, then a new one. */
+export function moveButtons(s: Save, saves: Save[], at: ButtonsAt): InlineButton[][] {
+  const here = folderOf(s).toLowerCase();
+  const others = folders(saves).filter((f) => f.name.toLowerCase() !== here).slice(0, MOVE_CHOICES);
+  const rows: InlineButton[][] = [];
+  for (let i = 0; i < others.length; i += 2) {
+    rows.push(others.slice(i, i + 2).map((f) => ({ text: f.name, callback_data: `mvto:${s.id}:${folderKey(f.name)}:${at}` })));
+  }
+  rows.push([{ text: "➕ New folder", callback_data: `mvnew:${s.id}` }, { text: "« Back", callback_data: `mvback:${s.id}:${at}` }]);
   return rows;
 }
 
@@ -63,7 +94,7 @@ export function reactionButtons(s: Save, decideAgainst?: Save | null, kind: "dup
 export function saveCard(s: Save, notes: string[] = []): string {
   const lines = [
     `<b>${escapeHtml(s.title)}</b>`,
-    `<i>${escapeHtml(s.topic || "No topic")} · ${SAVE_TYPE_LABEL[s.type]}</i>`,
+    `<i>📂 ${escapeHtml(folderOf(s))} · ${escapeHtml(s.topic || "No topic")} · ${SAVE_TYPE_LABEL[s.type]}</i>`,
   ];
   if (s.summary) lines.push("", escapeHtml(s.summary));
   if (s.steps.length) lines.push("", ...s.steps.map((x, i) => `${i + 1}. ${escapeHtml(x)}`));
@@ -77,8 +108,14 @@ export function saveButtons(s: Save): InlineButton[][] {
   const rows: InlineButton[][] = [];
   if (canRun(s)) rows.push([{ text: "Start now", callback_data: `open:${s.id}` }]);
   if (s.needsWords && !s.words) rows.push([{ text: "Add what it says", callback_data: `words:${s.id}` }]);
-  rows.push([{ text: "Fix something", callback_data: `fix:${s.id}` }]);
+  rows.push([folderButton(s, "c"), { text: "Fix something", callback_data: `fix:${s.id}` }]);
+  rows.push([{ text: "🗑 Delete", callback_data: `del:${s.id}` }]);
   return rows;
+}
+
+/** Asked before a save is deleted. */
+export function deleteButtons(s: Save): InlineButton[][] {
+  return [[{ text: "Yes, delete it", callback_data: `delok:${s.id}` }, { text: "Cancel", callback_data: `delno:${s.id}` }]];
 }
 
 /** One step of Start now. */
@@ -140,25 +177,57 @@ export function folderList(saves: Save[]): { html: string; buttons: InlineButton
   }
   const more = all.length > shown.length ? `\n\n${all.length - shown.length} smaller folders aren't shown. /saved lists everything.` : "";
   return {
-    html: `📂 <b>Your folders</b>\n${saves.length} video${saves.length === 1 ? "" : "s"} in ${all.length} folder${all.length === 1 ? "" : "s"}, filed for you as you save them. Tap one to open it.${more}`,
+    html: `📂 <b>Your folders</b>\n${saves.length} video${saves.length === 1 ? "" : "s"} in ${all.length} folder${all.length === 1 ? "" : "s"}, filed for you as you save them. Tap one to open it. To move a video, tap 📂 under it, or ask me ("put my pasta videos in Dinner ideas").${more}`,
     buttons,
   };
 }
 
-/** One folder: its videos, newest first, each linked, with number buttons that open the notes. */
-export function folderView(saves: Save[], key: string): { html: string; buttons: InlineButton[][] } | null {
-  const folder = folders(saves).find((f) => folderKey(f.name) === key);
+/**
+ * One folder: its videos (newest first, in sections when it's big), each
+ * linked, with number buttons that open the notes, then rename, merge and
+ * delete, and its filing rules.
+ */
+export function folderView(saves: Save[], key: string, rules: FilingRule[] = []): { html: string; buttons: InlineButton[][] } | null {
+  const folder = findFolder(saves, key);
   if (!folder) return null;
-  const listed = folder.saves.slice(0, LISTED);
+  const parts: Folder[] = sections(folder) ?? [{ name: "", saves: folder.saves }];
   const n = folder.saves.length;
-  const lines = [`📂 <b>${escapeHtml(folder.name)}</b> · ${n} video${n === 1 ? "" : "s"}`, ""];
-  lines.push(...listed.map((s, i) => `${i + 1}. ${linkedTitle(s)} <i>(${SAVE_TYPE_LABEL[s.type]}, ${shortDate(s.createdAt)})</i>`));
-  if (n > listed.length) lines.push(`…and ${n - listed.length} older ones. Ask me about them any time.`);
+  const lines = [`📂 <b>${escapeHtml(folder.name)}</b> · ${n} video${n === 1 ? "" : "s"}`];
+  const listed: Save[] = [];
+  for (const part of parts) {
+    const room = part.saves.slice(0, LISTED - listed.length);
+    if (!room.length) break;
+    lines.push(part.name ? `\n<b>${escapeHtml(part.name)}</b>` : "");
+    for (const s of room) {
+      listed.push(s);
+      lines.push(`${listed.length}. ${linkedTitle(s)} <i>(${SAVE_TYPE_LABEL[s.type]}, ${shortDate(s.createdAt)})</i>`);
+    }
+  }
+  if (n > listed.length) lines.push(`…and ${n - listed.length} more. Ask me about them any time.`);
+  const own = rules.filter((r) => r.folder.toLowerCase() === folder.name.toLowerCase());
+  if (own.length) lines.push("", `📌 New videos about ${own.map((r) => escapeHtml(r.about)).join("; ")} come here.`);
   lines.push("", "Tap a number for its notes, or just ask me about any of them.");
   const buttons: InlineButton[][] = [];
   for (let i = 0; i < listed.length; i += 6) {
     buttons.push(listed.slice(i, i + 6).map((s, j) => ({ text: String(i + j + 1), callback_data: `show:${s.id}` })));
   }
+  buttons.push([
+    { text: "✏️ Rename", callback_data: `frn:${key}` },
+    { text: "🔀 Merge", callback_data: `fmg:${key}` },
+    { text: "🗑 Delete", callback_data: `fdl:${key}` },
+  ]);
+  if (own.length) buttons.push([{ text: "📌 Stop the rule", callback_data: `frl:${key}` }]);
   buttons.push([{ text: "« All folders", callback_data: "folders:" }]);
   return { html: lines.join("\n"), buttons };
+}
+
+/** Merging a folder: the others to merge it into. */
+export function mergeButtons(saves: Save[], key: string): InlineButton[][] {
+  const others = folders(saves).filter((f) => folderKey(f.name) !== key).slice(0, FOLDERS_SHOWN);
+  const rows: InlineButton[][] = [];
+  for (let i = 0; i < others.length; i += 2) {
+    rows.push(others.slice(i, i + 2).map((f) => ({ text: f.name, callback_data: `fmgto:${key}:${folderKey(f.name)}` })));
+  }
+  rows.push([{ text: "« Back", callback_data: `folder:${key}` }]);
+  return rows;
 }

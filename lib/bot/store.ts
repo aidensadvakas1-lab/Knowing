@@ -5,7 +5,8 @@
  *   (server only). Tables are in docs/supabase.sql.
  * - `MemoryStore` keeps everything in memory, for tests.
  */
-import type { BotUser, DigestState, Payment, Referral, Save, Sitting, Store, Wallet } from "./types";
+import { readRules } from "./folders";
+import type { BotUser, DigestState, FilingRule, Payment, Referral, Save, Sitting, Store, Wallet } from "./types";
 
 /** Recent turns kept per user, so follow-ups make sense. Older chats are kept as searchable memories. */
 export const TURNS_KEPT = 16;
@@ -59,6 +60,7 @@ export class MemoryStore implements Store {
   wallets = new Map<number, Wallet>();
   digests = new Map<number, DigestState>();
   referrals = new Map<number, Referral>();
+  filing = new Map<number, FilingRule[]>();
   /** When each user's row was last saved, like updated_at. */
   active = new Map<number, string>();
   saves: Save[] = [];
@@ -85,6 +87,7 @@ export class MemoryStore implements Store {
     this.wallets.delete(userId);
     this.digests.delete(userId);
     this.referrals.delete(userId);
+    this.filing.delete(userId);
     this.saves = this.saves.filter((s) => s.userId !== userId);
   }
   async hasUser(id: number) {
@@ -129,6 +132,16 @@ export class MemoryStore implements Store {
   async listDigestUsers() {
     return [...this.digests].filter(([, d]) => d.on).map(([id, d]) => ({ id, digest: structuredClone(d), active: this.active.get(id) ?? "" }));
   }
+  async moveSaves(userId: number, ids: string[], folder: string) {
+    for (const s of this.saves) if (s.userId === userId && ids.includes(s.id)) s.folder = folder;
+  }
+  async getFiling(userId: number) {
+    return readRules(structuredClone(this.filing.get(userId) ?? []));
+  }
+  async saveFiling(userId: number, rules: FilingRule[]) {
+    if (!this.users.has(userId)) this.users.set(userId, newUser(userId));
+    this.filing.set(userId, readRules(structuredClone(rules)));
+  }
   async getReferral(userId: number) {
     return readReferral(structuredClone(this.referrals.get(userId)));
   }
@@ -143,6 +156,8 @@ interface SaveRow {
   user_id: number;
   title: string;
   topic: string;
+  /** Missing before docs/supabase.sql is run again. */
+  folder?: string;
   type: Save["type"];
   summary: string;
   steps: string[];
@@ -160,6 +175,7 @@ const toRow = (s: Save): SaveRow => ({
   user_id: s.userId,
   title: s.title,
   topic: s.topic,
+  folder: s.folder ?? "",
   type: s.type,
   summary: s.summary,
   steps: s.steps,
@@ -172,11 +188,15 @@ const toRow = (s: Save): SaveRow => ({
   created_at: s.createdAt,
 });
 
+/** Supabase saying the saves table has no folder column yet (docs/supabase.sql not run again). */
+export const missingFolderColumn = (error: unknown) => /PGRST204|'folder' column/.test(error instanceof Error ? error.message : String(error));
+
 const fromRow = (r: SaveRow): Save => ({
   id: r.id,
   userId: Number(r.user_id),
   title: r.title ?? "",
   topic: r.topic ?? "",
+  folder: r.folder ?? "",
   type: r.type ?? "info",
   summary: r.summary ?? "",
   steps: Array.isArray(r.steps) ? r.steps : [],
@@ -261,15 +281,43 @@ export class SupabaseStore implements Store {
     });
   }
 
+  /** A save still goes through before the folder column exists: it's then filed by its topic, like before. */
+  private async writeSave(path: string, method: "POST" | "PATCH", save: Save): Promise<void> {
+    const write = (row: Partial<SaveRow>) => this.rest(path, { method, headers: { prefer: "return=minimal" }, body: JSON.stringify(row) });
+    try {
+      await write(toRow(save));
+    } catch (error) {
+      if (!missingFolderColumn(error)) throw error;
+      const { folder: _folder, ...row } = toRow(save);
+      await write(row);
+    }
+  }
+
   async addSave(save: Save): Promise<void> {
-    await this.rest("saves", { method: "POST", headers: { prefer: "return=minimal" }, body: JSON.stringify(toRow(save)) });
+    await this.writeSave("saves", "POST", save);
   }
 
   async updateSave(save: Save): Promise<void> {
-    await this.rest(`saves?id=eq.${encodeURIComponent(save.id)}&user_id=eq.${save.userId}`, {
-      method: "PATCH",
-      headers: { prefer: "return=minimal" },
-      body: JSON.stringify(toRow(save)),
+    await this.writeSave(`saves?id=eq.${encodeURIComponent(save.id)}&user_id=eq.${save.userId}`, "PATCH", save);
+  }
+
+  async moveSaves(userId: number, ids: string[], folder: string): Promise<void> {
+    if (!ids.length) return;
+    const list = ids.map((id) => `"${id.replace(/["\\,()]/g, "")}"`).join(",");
+    await this.rest(`saves?user_id=eq.${userId}&id=in.(${encodeURIComponent(list)})`, { method: "PATCH", headers: { prefer: "return=minimal" }, body: JSON.stringify({ folder }) });
+  }
+
+  async getFiling(userId: number): Promise<FilingRule[]> {
+    const rows = await this.rest<Array<{ filing: unknown }>>(`bot_users?id=eq.${userId}&select=filing`);
+    return readRules(rows[0]?.filing);
+  }
+
+  /** Writes only the filing column, creating the row if needed. */
+  async saveFiling(userId: number, rules: FilingRule[]): Promise<void> {
+    await this.rest("bot_users", {
+      method: "POST",
+      headers: { prefer: "resolution=merge-duplicates,return=minimal" },
+      body: JSON.stringify({ id: userId, filing: readRules(rules) }),
     });
   }
 

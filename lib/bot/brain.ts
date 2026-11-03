@@ -35,9 +35,9 @@ async function watchJson(content: Anthropic.ContentBlockParam[], maxTokens: numb
 
 export function createBrain(): Brain {
   return {
-    async watch({ frames, frameTimes, transcript, screenText, caption, note, facts, saves }) {
+    async watch({ frames, frameTimes, transcript, screenText, caption, note, facts, saves, rules }) {
       const content: Anthropic.ContentBlockParam[] = [
-        { type: "text", text: buildWatchPrompt({ caption, transcript, screenText, note, frameCount: frames.length, facts, saves }) },
+        { type: "text", text: buildWatchPrompt({ caption, transcript, screenText, note, frameCount: frames.length, facts, saves, rules }) },
       ];
       for (const [i, data] of frames.entries()) {
         content.push({ type: "text", text: frameLabel(i, frameTimes?.[i]) });
@@ -51,9 +51,9 @@ export function createBrain(): Brain {
       return cleanDraft(await watchJson([{ type: "text", text: prompt }], REWRITE_MAX_TOKENS), save.title);
     },
 
-    async answer({ user, question, saves, retrieved, name, memories, usage }) {
+    async answer({ user, question, saves, retrieved, name, memories, usage, rules, about }) {
       const history = recentHistory(user.turns);
-      const system = buildAskSystem(user, saves, retrieved, today(), { name, memories, usage });
+      const system = buildAskSystem(user, saves, retrieved, today(), { name, memories, usage, rules, about });
       const ask = (model: string) =>
         getAnthropic().messages.create({
           model,

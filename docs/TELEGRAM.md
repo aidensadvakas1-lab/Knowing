@@ -16,7 +16,11 @@ save captions or repeat themselves, and you can talk to it about anything.
 | Tap **Keep both** / **Replace the old one** | Asked only when a new video duplicates an older save. Another way to do something is kept next to the old one, with **Replace the old one** if you want it |
 | Tap **Fix something** | Tell it what it got wrong and the save is rewritten |
 | Tap **Show steps** / **Start now** | The full steps, or a step-by-step run with **Next** / **Back** that counts each time you finish |
-| `/start` or `/help` | A short welcome with topic buttons (saving, asking, folders, flashback, limits, your data) that open a few lines each |
+| Tap **📂 Cooking** under a video | Shows the folder it's in. Tap to move it: pick another folder or **➕ New folder** and type a name. Free (no AI) |
+| Tap **🗑 Delete** on a save's card | Deletes that one video, after asking |
+| `/start` or `/help` | A short welcome with topic buttons (saving, asking, folders, flashback, limits, your data, all commands) that open a few lines each |
+| `/commands` | Every command and what it does (the owner also sees `/refund` and `/reply`) |
+| Ask about the bot ("how do I move a video?", "how much is a pack?") | Answered from what Knowing knows about itself: every command, button and feature, and the real limits and prices from your settings (`lib/bot/profile.ts aboutKnowing`, built from the same list as `/commands`, so it's never out of date) |
 | Ask a question | Answers from the matching saves and names them, each linked to its video (ask "send me the link to that video" and it's right there). If nothing matches exactly, it adapts the closest saves to your situation and says which parts are straight from your videos. Up to 5 other saves on the same topic are listed under **Videos related to this topic**, linked, so you can rewatch them |
 | Ask "when does he add the sauce?" | Gives the moment: "At 0:42, right after searing the chicken." Each step is saved with its time from the frames and the on-screen text. Moments that are only said get an estimate marked with ~, since speech-to-text gives no times |
 | Hold the mic and ask | A voice message works like a typed one and uses a question. Only the first minute is heard. The answer starts with what it heard |
@@ -24,7 +28,8 @@ save captions or repeat themselves, and you can talk to it about anything.
 | Just talk (about a video, a car, your game, your day) | Chats like a friend who knows a lot. It can tell you about what's in a video even when the video doesn't say ("that's Clubhouse"), marked as its own read |
 | Mention something about you ("I'm Gold on PC", "I love Ferraris") | Remembers it, so you never repeat it. Every chat is also kept and searchable, so "what did I tell you about my tryout?" works weeks later |
 | `/memory` | Shows what it remembers about you, with a button to forget each one |
-| `/folders` (or `/tags`) | Every video is filed into a folder (the first part of its topic, like Cooking or Gym) as it's saved, reusing folders you already have. Tap a folder for its videos, with dates, links and a button per video for its notes |
+| `/folders` (or `/tags`) | Every video is in one folder. Claude picks it as it's saved, the way you would: it follows your rules, then goes by what's in each folder, so if you made "Japan trip" and moved Tokyo videos in, the next Tokyo video goes there. Tap a folder for its videos (in sections like Legs and Arms once it has 8 or more), with dates, links and a button per video for its notes, plus **Rename**, **Merge** and **Delete** (its videos move to Unsorted, so nothing is lost) |
+| Ask "put my pasta videos in Dinner ideas", "rename Gym to Workouts" or "anything about cars goes in Car mods" | Moves them, renames the folder, or saves a filing rule that new videos follow, and lists what it did under the answer. It uses a question, like any message to the AI; the buttons are free. A folder's rule shows on its page, with **Stop the rule** |
 | `/saved` | Lists everything, grouped by folder, each linked to its video |
 | `/digest` | The weekly flashback: off until you turn it on (it's offered once, at `/start` or after the next save). Every Sunday around 17:00 UTC: what you saved that week by folder plus one from about a month ago, or, in a week with no saves, a few older ones (about a week, a month and three months old). No AI, so it's free. It pauses after 3 in a row with no reply, and `/digest off` stops it |
 | `/usage` (or ask "how many questions do I have left?") | Shows the free videos and questions left, any extras you bought, and buttons to buy more. Checking never uses up a question |
@@ -129,7 +134,7 @@ https://<your-app>.vercel.app/api/telegram/setup?key=<TELEGRAM_WEBHOOK_SECRET>
 ```
 
 It should say `"ok": true` and your bot's name. This points Telegram at your app and fills in the
-bot's commands menu (`/help`, `/folders`, `/saved`, `/digest`, `/memory`, `/usage`, `/buy`, `/invite`, `/delete`, `/support`) and the text people see
+bot's commands menu (`/help`, `/commands`, `/folders`, `/saved`, `/digest`, `/memory`, `/usage`, `/buy`, `/invite`, `/support`, `/delete`) and the text people see
 before they tap Start. Running it again is harmless, and it's needed once after updates that change
 what Telegram sends the bot (like payments).
 
@@ -245,7 +250,8 @@ switched off automatically.
   (at most one every 5 minutes). If the AI credit runs out, users are told the bot is paused, not broken.
 - **Delete.** `/delete` wipes a person's saves, chats, search index and memory after they confirm.
 - **Already set up before these existed?** Run [`supabase.sql`](supabase.sql) again. It only adds
-  what's missing.
+  what's missing. Folders need its `folder` and `filing` columns: until then videos still save
+  (filed by topic, like before), but moving them says it isn't set up yet and the owner gets an alert.
 
 ## How it works
 
