@@ -763,6 +763,8 @@ describe("the start message and guide", () => {
     // Then every command, so nothing has to be guessed.
     expect(sent[1]?.html).toContain("/folders · ");
     expect(sent[1]?.html).toContain("/commands · ");
+    // And the owner's link to share (the owner here is user 7).
+    expect(sent[1]?.html).toContain("🎁 <b>Share Knowing:</b> https://t.me/KnowingTestBot?start=join-abc123");
     expect(datas(sent[0]?.buttons)).toEqual(["guide:save", "guide:ask", "guide:folders", "guide:flashback", "guide:limits", "guide:data", "guide:commands"]);
     await handleUpdate(tap("guide:ask", sent[0]!.id), deps);
     expect(edits.at(-1)?.html).toContain("hold the mic");
@@ -792,6 +794,9 @@ describe("weekly flashback", () => {
     const before = sent.length;
     await handleUpdate(text("/start", 99), deps);
     expect(sent.length).toBe(before + 2); // just the welcome and the commands
+    // Everyone else gets their own invite link and what it earns them.
+    expect(sent.at(-1)?.html).toContain(`🎁 <b>Invite friends:</b> https://t.me/KnowingTestBot?start=${referralCode("test-key", 99)}`);
+    expect(sent.at(-1)?.html).toContain("you get 3 free videos (up to 5 friends)");
   });
 
   it("asks people who started before it existed once, after their next save", async () => {

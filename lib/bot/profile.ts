@@ -29,7 +29,7 @@ interface Command {
 
 /** Every command anyone can use, in the order /commands lists them. */
 export const ALL_COMMANDS: Command[] = [
-  { command: "help", short: "How everything works", does: "The welcome, a tap-through guide to everything and this list. /start does the same.", menu: true },
+  { command: "help", short: "How everything works", does: "The welcome, a tap-through guide to everything, this list and your own invite link. /start does the same.", menu: true },
   { command: "commands", short: "Every command explained", does: "This list.", menu: true },
   { command: "folders", short: "Your videos in folders", does: "Your folders as buttons. Tap one to see its videos, then rename it, merge it into another or delete it (its videos move to Unsorted, so nothing is lost). Big folders are split into sections for you.", menu: true },
   { command: "saved", short: "Everything you've saved", does: "Every video you've saved, folder by folder, each linked.", menu: true },

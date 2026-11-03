@@ -18,7 +18,7 @@ save captions or repeat themselves, and you can talk to it about anything.
 | Tap **Show steps** / **Start now** | The full steps, or a step-by-step run with **Next** / **Back** that counts each time you finish |
 | Tap **📂 Cooking** under a video | Shows the folder it's in. Tap to move it: pick another folder or **➕ New folder** and type a name. Free (no AI) |
 | Tap **🗑 Delete** on a save's card | Deletes that one video, after asking |
-| `/start` or `/help` | A short welcome with topic buttons (saving, asking, folders, flashback, limits, your data, all commands) that open a few lines each, then the list of every command |
+| `/start` or `/help` | A short welcome with topic buttons (saving, asking, folders, flashback, limits, your data, all commands) that open a few lines each, then the list of every command and their own invite link (the owner gets the bot's main link) |
 | `/commands` | Every command and what it does (the owner also sees `/refund` and `/reply`) |
 | Ask about the bot ("how do I move a video?", "how much is a pack?") | Answered from what Knowing knows about itself: every command, button and feature, and the real limits and prices from your settings (`lib/bot/profile.ts aboutKnowing`, built from the same list as `/commands`, so it's never out of date) |
 | Ask a question | Answers from the matching saves and names them, each linked to its video (ask "send me the link to that video" and it's right there). If nothing matches exactly, it adapts the closest saves to your situation and says which parts are straight from your videos. Up to 5 other saves on the same topic are listed under **Videos related to this topic**, linked, so you can rewatch them |

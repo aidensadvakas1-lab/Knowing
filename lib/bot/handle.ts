@@ -10,7 +10,8 @@
  * - Folders (folders.ts): every video is in one, picked by Claude the way they'd file it.
  *   /folders opens them, to rename, merge or delete one. Asking in chat moves videos,
  *   renames folders and sets filing rules (it uses a question, like any message to Claude).
- * - /start and /help: a short welcome with a tap-through guide. /commands lists every
+ * - /start and /help: a short welcome with a tap-through guide, then every command and
+ *   their own invite link. /commands lists every
  *   command. /folders, /saved, /digest, /memory, /usage, /buy, /delete, and /invite.
  * - Claude is told everything about Knowing (profile.ts aboutKnowing), so questions about
  *   the bot, its commands and its prices get real answers.
@@ -247,7 +248,7 @@ export async function handleUpdate(update: Update, deps: Deps): Promise<void> {
     if (text === "/start" || text.startsWith("/start ") || text.startsWith("/help")) {
       // The welcome with its guide, then every command, so nothing has to be found by guessing.
       await deps.tg.sendMessage(chatId, WELCOME, guideButtons());
-      await deps.tg.sendMessage(chatId, commandsText(userId === deps.ownerId));
+      await deps.tg.sendMessage(chatId, `${commandsText(userId === deps.ownerId)}\n\n${await inviteLine(userId, deps)}`);
       if (text.startsWith("/start")) await offerFlashback(chatId, userId, deps);
       return;
     }
@@ -678,6 +679,15 @@ async function answer(chatId: number, user: BotUser, question: string, deps: Dep
 async function inviterFrom(code: string, userId: number, deps: Deps): Promise<number> {
   const id = readReferral(deps.invite.key, code);
   return id && id !== userId && (await hasAccess(id, deps)) ? id : 0;
+}
+
+/** The invite part of /start and /help: their own link and what it earns them, or the bot's main link for the owner. */
+async function inviteLine(userId: number, deps: Deps): Promise<string> {
+  if (userId === deps.ownerId) return `🎁 <b>Share Knowing:</b> ${await deps.invite.link(deps.open ? "" : undefined)}\n/invite shows who has joined.`;
+  const link = await deps.invite.link(referralCode(deps.invite.key, userId));
+  const earned = (await deps.store.getReferral(userId).catch(() => null))?.rewarded ?? 0;
+  const reward = earned >= REFERRAL_MAX ? "" : `\nWhen a friend joins with it, saves a video and asks me something, you get ${REFERRAL_REWARD} free videos (up to ${REFERRAL_MAX} friends).`;
+  return `🎁 <b>Invite friends:</b> ${link}${reward}`;
 }
 
 /** /invite for everyone but the owner: their own link, and what it earns them. */
