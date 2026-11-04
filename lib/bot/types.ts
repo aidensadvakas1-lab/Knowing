@@ -3,6 +3,7 @@
  * and the small interfaces the update handler depends on (so tests can swap
  * in fakes for Telegram, the database, Claude and video processing).
  */
+import type { StatsData } from "./stats";
 
 /** What kind of thing a video teaches. Drills and plans can be run step by step. */
 export type SaveType = "drill" | "setup" | "plan" | "tip" | "mindset" | "info";
@@ -215,6 +216,13 @@ export interface Store {
   giveBack(userId: number, kind: PackKind, from: Spent, day: string): Promise<void>;
   /** Add dollars to this month of the plan, in a single step. The new total, or null with no plan. */
   addPlanCost(userId: number, dollars: number): Promise<number | null>;
+  /**
+   * Log what a video or question really cost (meter.ts), and whether it failed,
+   * for /stats. Throws if bot_costs is missing (docs/supabase.sql not run again).
+   */
+  addCost(userId: number, kind: PackKind, dollars: number, ok: boolean): Promise<void>;
+  /** Everything /stats counts. Costs and chats are from the last 30 days. */
+  statsData(): Promise<StatsData>;
   /** Put back what they had used (after /delete). saveUser never writes it, so a reply can't undo a use. */
   setUsage(userId: number, usage: Usage): Promise<void>;
   /** Newest first. */
@@ -261,13 +269,15 @@ export interface WatchInput {
   caption: string;
   /** Problems worth telling the user about (no audio, couldn't download...). */
   notes: string[];
+  /** True when the video was longer than what's watched, so only its start was. */
+  cut?: boolean;
 }
 
 export interface Media {
-  /** A TikTok link: download, then frames + speech. Falls back to the caption. */
-  fromLink(url: string): Promise<WatchInput>;
+  /** A TikTok link: download, then frames + speech. Falls back to the caption. Only the first `maxSeconds` (default costs.ts MAX_SECONDS) are watched. */
+  fromLink(url: string, maxSeconds?: number): Promise<WatchInput>;
   /** A video sent straight to the bot. */
-  fromTelegramFile(fileId: string, durationSec: number): Promise<WatchInput>;
+  fromTelegramFile(fileId: string, durationSec: number, maxSeconds?: number): Promise<WatchInput>;
   /**
    * A voice message's words. Only the first VOICE_MAX_SECONDS are heard (`cut`
    * says so). Throws NoTranscription when speech-to-text isn't set up.

@@ -52,7 +52,7 @@ export const TERMS = `<b>Knowing terms</b>
 
 1. Knowing is in early testing. You get a few free videos and questions to start. They're given once and don't refill.
 2. You can buy extra videos and questions, together in one pack, with Telegram Stars any time with /buy. They never expire and are used after your free ones run out. They can't be turned back into Stars or money, except by a refund.
-3. Knowing Plus (/plan) is a monthly Telegram Stars subscription with videos and questions every day. They start again at midnight UTC and unused ones don't carry over. It renews every 30 days until you cancel, which you can do any time with /plan; it keeps working until the month ends. Fair use: if a month's use gets very heavy, it drops to fewer a day, and at most pauses until it renews. Your free ones and extras still work then.
+3. Knowing Plus (/plan) is a monthly Telegram Stars subscription with videos and questions every day, and videos watched up to 30 minutes (5 without it). They start again at midnight UTC and unused ones don't carry over. It renews every 30 days until you cancel, which you can do any time with /plan; it keeps working until the month ends. Fair use: if a month's use gets very heavy, it drops to fewer a day, and at most pauses until it renews. Your free ones and extras still work then.
 4. If a purchase goes wrong, send /paysupport and you'll get help or a refund.
 5. Knowing can make mistakes. Double-check anything important before you rely on it.
 6. /delete erases your saves, our chats and what I remember about you. Extras and Knowing Plus stay with you.

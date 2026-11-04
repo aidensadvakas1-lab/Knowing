@@ -6,7 +6,7 @@
  * deep it runs, because the meter follows the work through AsyncLocalStorage.
  */
 import { AsyncLocalStorage } from "node:async_hooks";
-import { MAX_SECONDS, priceOf, TRANSCRIBE_PER_MINUTE } from "./costs";
+import { PLAN_MAX_SECONDS, priceOf, TRANSCRIBE_PER_MINUTE } from "./costs";
 
 const meters = new AsyncLocalStorage<{ dollars: number }>();
 
@@ -36,7 +36,7 @@ export function chargeClaude(model: string, usage: ClaudeUsage | null | undefine
 
 /** Hearing `seconds` of audio. An unknown length counts as the longest there can be. */
 export function chargeAudio(seconds: number): void {
-  const heard = seconds > 0 ? Math.min(seconds, MAX_SECONDS) : MAX_SECONDS;
+  const heard = seconds > 0 ? Math.min(seconds, PLAN_MAX_SECONDS) : PLAN_MAX_SECONDS;
   charge((heard / 60) * TRANSCRIBE_PER_MINUTE);
 }
 

@@ -53,8 +53,10 @@ export const FRAME_COUNT = 20;
 export const FRAME_PIXELS = 960 * 540;
 /** Most frames read for on-screen text. About one a second for a one-minute video. */
 export const SCAN_MAX = 60;
-/** Only the first this many seconds of a video are watched and heard. */
+/** Only the first this many seconds of a video are watched and heard: 5 minutes, or 30 on Knowing Plus. Longer would raise the refill's price. */
 export const MAX_SECONDS = 300;
+/** Knowing Plus watches longer videos. Its real cost is measured (meter.ts), so the fair-use guard covers it. */
+export const PLAN_MAX_SECONDS = 1_800;
 /** Most characters of text sent with the frames (rules, caption, screen text, transcript, their saves). */
 export const WATCH_TEXT_CHARS = 40_000;
 /** Most tokens the watcher may write, thinking included. A save is about 1,500. */

@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 const readScreenText = vi.hoisted(() => vi.fn(async (frames: string[], _times?: number[]) => (frames.length ? "npx -y firecrawl-mcp" : "")));
 vi.mock("@/lib/bot/screen", () => ({ readScreenText }));
-const { createMedia, frameFilter, frameFilterTimes, parseDuration, scanFilter, shownTimes, FRAME_COUNT, MAX_SECONDS, SCAN_MAX } = await import("@/lib/bot/media");
+const { createMedia, frameFilter, frameFilterTimes, maxVideoBytes, parseDuration, scanFilter, scanTimes, shownTimes, FRAME_COUNT, MAX_SECONDS, PLAN_MAX_SECONDS, SCAN_MAX, SEEK_FROM } = await import("@/lib/bot/media");
 const { NoTranscription } = await import("@/lib/bot/types");
 const { FRAME_PIXELS } = await import("@/lib/bot/costs");
 
@@ -51,6 +51,14 @@ describe("parseDuration / frameFilter", () => {
     expect(scanFilter(120)).toMatch(/^fps=0\.500,mpdecimate,/);
     expect(scanFilter(0)).toMatch(/^fps=1\.000,mpdecimate,/);
   });
+  it("spreads a long video's screen reads evenly, and allows bigger downloads for longer watches", () => {
+    const times = scanTimes(600);
+    expect(times).toHaveLength(SCAN_MAX);
+    expect(times[0]).toBe(5);
+    expect(times.at(-1)).toBe(595);
+    expect(maxVideoBytes(MAX_SECONDS)).toBe(60 * 1024 * 1024);
+    expect(maxVideoBytes(PLAN_MAX_SECONDS)).toBe(352 * 1024 * 1024);
+  });
   it("knows when each frame is taken", () => {
     expect(frameFilterTimes(4, 8)).toEqual([0, 2, 4, 6]);
     expect(frameFilterTimes(3, 0)).toEqual([0, 2, 4]);
@@ -79,6 +87,21 @@ describe("createMedia (real ffmpeg)", () => {
     expect(Math.max(...(got.frameTimes ?? []))).toBeLessThan(MAX_SECONDS);
     expect(got.frames.length).toBeGreaterThanOrEqual(FRAME_COUNT - 1);
   }, 30_000);
+
+  it("watches up to 30 minutes on Knowing Plus, jumping to each moment of a long video", async () => {
+    vi.stubEnv("OPENAI_API_KEY", "");
+    vi.stubEnv("ANTHROPIC_API_KEY", "test");
+    readScreenText.mockClear();
+    const got = await serveClip("64x64", SEEK_FROM + 100, 1).fromTelegramFile("F", SEEK_FROM + 100, PLAN_MAX_SECONDS);
+    expect(got.cut).toBe(false);
+    expect(got.notes.join(" ")).not.toContain("watched the first");
+    expect(got.frames.length).toBeGreaterThanOrEqual(FRAME_COUNT - 1);
+    expect(Math.max(...(got.frameTimes ?? []))).toBeGreaterThan(SEEK_FROM);
+    const [frames, times] = readScreenText.mock.calls[0]!;
+    expect(frames.length).toBeGreaterThanOrEqual(SCAN_MAX - 2);
+    expect(times).toHaveLength(frames.length);
+    expect(got.screenText).toBe("npx -y firecrawl-mcp");
+  }, 60_000);
 
   it("pulls frames out of a video file sent to the bot", async () => {
     vi.stubEnv("OPENAI_API_KEY", "");
@@ -146,6 +169,21 @@ describe("createMedia (real ffmpeg)", () => {
     expect(got.transcript).toBe("put Mira on lockers");
     expect(got.frames.length).toBeGreaterThan(0);
   }, 30_000);
+
+  it("hears a long video in 10-minute pieces and joins them in order", async () => {
+    vi.stubEnv("OPENAI_API_KEY", "sk-test");
+    vi.stubEnv("ANTHROPIC_API_KEY", "");
+    const dir = mkdtempSync(join(tmpdir(), "knowing-test-"));
+    const file = join(dir, "long.mp4");
+    execFileSync(ffmpegPath!, ["-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=64x64:rate=1:duration=700", "-f", "lavfi", "-i", "sine=frequency=440:duration=700", "-shortest", "-pix_fmt", "yuv420p", file]);
+    const bytes = readFileSync(file);
+    let piece = 0;
+    const fetchMock = vi.fn(async (url: string) => (String(url).includes("openai") ? Response.json({ text: `part ${++piece}` }) : new Response(bytes)));
+    vi.stubGlobal("fetch", fetchMock);
+    const got = await createMedia(async () => "https://files/long.mp4").fromTelegramFile("F", 700, PLAN_MAX_SECONDS);
+    expect(fetchMock.mock.calls.filter(([u]) => String(u).includes("openai"))).toHaveLength(2);
+    expect(got.transcript.split(" ").sort().join(" ")).toBe("1 2 part part");
+  }, 60_000);
 
   it("turns a photo post's images into frames", async () => {
     const dir = mkdtempSync(join(tmpdir(), "knowing-test-"));

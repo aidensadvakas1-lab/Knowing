@@ -108,6 +108,7 @@ export const planButton = (offer: PlanOffer): InlineButton => ({ text: `⭐ ${of
 export function planOfferText(offer: PlanOffer): string {
   return `<b>${offer.name}</b>
 ${offer.videos} videos and ${offer.questions} questions <b>every day</b>, for ${offer.stars} ⭐ a month.
+It watches videos up to <b>30 minutes</b> long (5 without it).
 
 • They start again every day at midnight UTC. Unused ones don't carry over.
 • It renews every 30 days through Telegram. Cancel any time with /plan; it keeps working until the month ends.
@@ -119,7 +120,7 @@ By paying you agree to the /terms.`;
 export function planInvoice(offer: PlanOffer): Invoice {
   return {
     title: offer.name,
-    description: `${offer.videos} videos + ${offer.questions} questions every day. Renews every 30 days; cancel any time with /plan. Fair use applies. By paying you agree to the /terms.`,
+    description: `${offer.videos} videos + ${offer.questions} questions every day, and videos up to 30 minutes. Renews every 30 days; cancel any time with /plan. Fair use applies. By paying you agree to the /terms.`,
     payload: `plan:${offer.stars}`,
     stars: offer.stars,
   };

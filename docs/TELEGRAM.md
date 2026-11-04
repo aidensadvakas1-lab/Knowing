@@ -55,7 +55,7 @@ answers back to about 2 cents.
 
 Every call has a hard ceiling, so the most a video or a question can ever cost is known
 ([`lib/bot/costs.ts`](../lib/bot/costs.ts)): about **16 cents a video** (only the first 5 minutes
-are watched, frames are capped in size, and each reply has a token limit) and about **8 cents a
+are watched, 30 on Knowing Plus, whose real cost is measured, frames are capped in size, and each reply has a token limit) and about **8 cents a
 question** (instructions, recent chat and the reply are all capped, a voice question is heard for
 at most a minute, and Fix something and Add what it says count as a question). Each person's free videos and questions are given **once** and don't
 refill, so a free user costs at most about $1.60 (typically about 60 cents), however long they stay.
@@ -254,6 +254,28 @@ Getting the money out: Stars collect in the bot's balance. Third-party write-ups
 about 1.3 cents a Star after the app stores and Telegram take their share, withdrawable from 1,000
 Stars, 21 days after they were earned, as TON (a cryptocurrency) through Fragment. Check the current
 terms in Telegram before counting on it.
+
+### Your stats (/stats)
+
+Send `/stats` to the bot (only you can). Nothing in it uses AI. It shows:
+
+- **People** (not counting you): how many joined out of your spots, new and active today, this week
+  and in 30 days, how many never used it, how many used up their free videos or questions, how many
+  came from an invite link, invite rewards given, and how many have the weekly flashback on.
+- **Videos saved**: today, this week, in 30 days and in all, how many people have a save, the
+  average per person, the kinds of saves, and the top folders.
+- **Questions asked**: today, this week and in 30 days.
+- **Money in**: Knowing Plus subscribers (and how many turned renewal off, or were slowed or paused
+  by fair use), Stars paid in all and in 30 days with roughly what you get, how many people pay,
+  and the unused extras people hold.
+- **AI spend** (measured from what each AI call reports): today, this week and in 30 days, how much
+  of it was yours, the average per video and per question, how many failed and were given back,
+  money in minus money out for 30 days, and the 5 people who cost the most.
+- **Most active**: the 5 people with the most saves and questions in 30 days.
+
+AI spend is logged in the `bot_costs` table, so run `docs/supabase.sql` again once. Until then the
+rest of /stats still works and that part says it isn't tracked yet. Wrap-ups aren't in it, since
+they run on their own.
 
 ### 7. Turn on wrap-ups (optional)
 
