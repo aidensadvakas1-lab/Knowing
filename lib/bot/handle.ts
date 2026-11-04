@@ -39,7 +39,8 @@ import { buyButtons, invoiceFor, packName, PAYSUPPORT_HELP, priceList, readPack,
 import { relevantSaves, sharedVideoTurns } from "./prompts";
 import { costOf, metered } from "./meter";
 import { levelNotice, PLAN, PLAN_PERIOD_SECONDS, planActive, planButton, planButtons, planDaily as planDaily_, planDeal, planInvoice, planLeft, planLevel, planOfferText, planStatus, readPlanPayload, shortDate, untilReset, type PlanOffer } from "./plan";
-import { planBudget, wrapUpShare } from "./costs";
+import { MAX_SECONDS, PLAN_MAX_SECONDS, planBudget, wrapUpShare } from "./costs";
+import { statsText } from "./stats";
 import { hasStarted, readReferral, REFERRAL_MAX, REFERRAL_QUESTIONS, REFERRAL_REWARD, REFERRAL_VIDEOS, referralCode } from "./referral";
 import { groupHits, searchQuery, type Retriever } from "./rag";
 import { FACTS_KEPT, newSaveId, newUser, TURNS_KEPT } from "./store";
@@ -263,6 +264,7 @@ export async function handleUpdate(update: Update, deps: Deps): Promise<void> {
     }
     if (text.startsWith("/invite")) return await showReferral(chatId, userId, deps);
     if (userId === deps.ownerId && /^\/(refund|reply)\b/.test(text)) return await ownerCommand(chatId, text, deps);
+    if (userId === deps.ownerId && /^\/stats?\b/.test(text)) return await showStats(chatId, deps);
     if (text.startsWith("/terms")) return void (await deps.tg.sendMessage(chatId, TERMS));
     const support = /^\/(pay)?support\b/.exec(text);
     if (support) return await askOwner(chatId, userId, msg.from.first_name, text.slice(support[0].length).trim(), Boolean(support[1]), deps);
@@ -316,7 +318,7 @@ export async function handleUpdate(update: Update, deps: Deps): Promise<void> {
       const paid = await allow(user, "videos", deps);
       if (!paid) return await limitReached(chatId, userId, "videos", deps);
       const duration = "duration" in video && typeof video.duration === "number" ? video.duration : 0;
-      return await watchAndSave(chatId, user, () => deps.media.fromTelegramFile(video.file_id, duration), "", text, paid, deps);
+      return await watchAndSave(chatId, user, () => deps.media.fromTelegramFile(video.file_id, duration, watchLength(paid, userId, deps)), "", text, paid, deps);
     }
 
     if (msg.voice) return await voiceMessage(chatId, user, msg.voice, deps, msg.from.first_name);
@@ -327,7 +329,7 @@ export async function handleUpdate(update: Update, deps: Deps): Promise<void> {
     if (url) {
       const paid = walled ? "nothing" : await allow(user, "videos", deps);
       if (!paid) return await limitReached(chatId, userId, "videos", deps);
-      return await watchAndSave(chatId, user, () => deps.media.fromLink(url), url, text.replace(url, "").trim(), paid, deps);
+      return await watchAndSave(chatId, user, () => deps.media.fromLink(url, watchLength(paid, userId, deps)), url, text.replace(url, "").trim(), paid, deps);
     }
 
     if (!text) return;
@@ -357,11 +359,18 @@ async function onText(chatId: number, user: BotUser, text: string, deps: Deps, n
   if (!remaking && asksAboutUsage(text)) return await showUsage(chatId, user, deps);
   const paid = await allow(user, "questions", deps);
   if (!paid) return await limitReached(chatId, user.id, "questions", deps);
+  let ok = true;
   try {
-    // On the plan, what it really cost is added to the month (the fair-use guard).
+    // On the plan, what it really cost is added to the month (the fair-use guard). It's logged for /stats either way.
     await metered(
-      () => (remaking ? addWords(chatId, user, text, deps, heard) : answer(chatId, user, text, deps, name, heard)),
-      (dollars) => (paid === "plan" ? chargePlan(chatId, user.id, dollars + spent, deps) : Promise.resolve()),
+      () => (remaking ? addWords(chatId, user, text, deps, heard) : answer(chatId, user, text, deps, name, heard)).catch((error) => {
+        ok = false;
+        throw error;
+      }),
+      async (dollars) => {
+        await logCost(user.id, "questions", dollars + spent, ok, deps);
+        if (paid === "plan") await chargePlan(chatId, user.id, dollars + spent, deps);
+      },
     );
   } catch (error) {
     // Every connection is tried again first (lib/net.ts). If it still breaks, the question is given back.
@@ -803,17 +812,40 @@ const NOT_USED = "It didn't use up a video.";
  */
 async function watchAndSave(chatId: number, user: BotUser, get: () => Promise<WatchInput>, sourceUrl: string, note: string, paid: Paid, deps: Deps) {
   // On the plan, what watching really cost is added to the month (the fair-use guard).
+  const outcome = { ok: true };
   await metered(
-    () => watchOne(chatId, user, get, sourceUrl, note, paid, deps),
-    // Its share of a later wrap-up is counted now, since the wrap-up runs on its own.
-    (dollars) => (paid === "plan" ? chargePlan(chatId, user.id, dollars + wrapUpShare(), deps) : Promise.resolve()),
+    () => watchOne(chatId, user, get, sourceUrl, note, paid, deps, outcome),
+    async (dollars) => {
+      // A link that's only told how to send the file uses nothing and costs nothing worth logging.
+      if (paid !== "nothing" || user.id === deps.ownerId) await logCost(user.id, "videos", dollars, outcome.ok, deps);
+      // Its share of a later wrap-up is counted now, since the wrap-up runs on its own.
+      if (paid === "plan") await chargePlan(chatId, user.id, dollars + wrapUpShare(), deps);
+    },
   );
 }
 
-async function watchOne(chatId: number, user: BotUser, get: () => Promise<WatchInput>, sourceUrl: string, note: string, paid: Paid, deps: Deps) {
+/** How much of a video is watched: 30 minutes on Knowing Plus (and for the owner), 5 otherwise. */
+function watchLength(paid: Paid, userId: number, deps: Deps): number {
+  return paid === "plan" || userId === deps.ownerId ? PLAN_MAX_SECONDS : MAX_SECONDS;
+}
+
+/** Log what a use really cost, for /stats. Never throws: a missing bot_costs table only loses the log. */
+async function logCost(userId: number, kind: PackKind, dollars: number, ok: boolean, deps: Deps): Promise<void> {
+  await deps.store.addCost(userId, kind, dollars, ok).catch((error) => console.error("Logging a cost failed (run docs/supabase.sql again?)", error));
+}
+
+/** /stats: people, videos, questions, money in and out. Owner only. */
+async function showStats(chatId: number, deps: Deps): Promise<void> {
+  await deps.tg.typing(chatId);
+  const data = await deps.store.statsData();
+  await deps.tg.sendMessage(chatId, statsText(data, { ownerId: deps.ownerId, cap: deps.open ? deps.open.cap : deps.invite.spots, limits: deps.limits }));
+}
+
+async function watchOne(chatId: number, user: BotUser, get: () => Promise<WatchInput>, sourceUrl: string, note: string, paid: Paid, deps: Deps, outcome = { ok: true }) {
   const status = await deps.tg.sendMessage(chatId, "Watching…");
   const turns = user.turns;
   const unsaved = async (text: string) => {
+    outcome.ok = false;
     user.turns = turns;
     await giveBack(user, "videos", paid, deps);
     await deps.tg.editMessage(chatId, status, paid === "nothing" ? text : `${text} ${NOT_USED}`).catch(() => {});
@@ -828,6 +860,8 @@ async function watchOne(chatId: number, user: BotUser, get: () => Promise<WatchI
   if (!input.frames.length && !input.transcript && !input.caption) {
     return await unsaved(["I couldn't get anything out of that one.", ...input.notes].join("\n"));
   }
+  // Only the start of a long video was watched: Knowing Plus watches more.
+  if (input.cut && deps.plan && paid !== "plan" && user.id !== deps.ownerId) input.notes = [...input.notes, `${PLAN.name} watches videos up to ${PLAN_MAX_SECONDS / 60} minutes. /plan`];
   const progress = { saved: "" };
   try {
     await saveWatched(chatId, status, user, input, sourceUrl, note, deps, progress);

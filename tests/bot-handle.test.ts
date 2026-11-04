@@ -7,6 +7,7 @@ import { MemoryStore } from "@/lib/bot/store";
 import { ALL_COMMANDS, COMMANDS, WELCOME } from "@/lib/bot/profile";
 import { readReferral, referralCode } from "@/lib/bot/referral";
 import { PLAN, type PlanOffer } from "@/lib/bot/plan";
+import { MAX_SECONDS, PLAN_MAX_SECONDS } from "@/lib/bot/costs";
 import { NoTranscription, type Answer, type Brain, type InlineButton, type Media, type Pack, type Save, type SaveDraft, type TelegramApi, type WatchResult } from "@/lib/bot/types";
 
 /** Packs on sale in these tests. */
@@ -689,7 +690,7 @@ describe("handleUpdate", () => {
   it("watches a shared TikTok link and reacts briefly, with the steps one tap away", async () => {
     const { deps, sent, edits, store, media } = setup();
     await handleUpdate(text("look https://vm.tiktok.com/ZMabc/"), deps);
-    expect(media.fromLink).toHaveBeenCalledWith("https://vm.tiktok.com/ZMabc/");
+    expect(media.fromLink).toHaveBeenCalledWith("https://vm.tiktok.com/ZMabc/", PLAN_MAX_SECONDS);
     expect(sent[0]?.html).toBe("Watching…");
     expect(edits[0]?.html).toContain("A split dodge drill for your weak hand.");
     expect(edits[0]?.html).toContain("Saved: Split dodge drill");
@@ -723,7 +724,7 @@ describe("handleUpdate", () => {
   it("watches a video sent straight to the bot", async () => {
     const { deps, store, media } = setup();
     await handleUpdate({ message: { message_id: 1, chat: { id: 7 }, from: { id: 7 }, video: { file_id: "F", duration: 12 } } }, deps);
-    expect(media.fromTelegramFile).toHaveBeenCalledWith("F", 12);
+    expect(media.fromTelegramFile).toHaveBeenCalledWith("F", 12, PLAN_MAX_SECONDS);
     expect(store.saves).toHaveLength(1);
   });
 
@@ -1444,5 +1445,59 @@ describe("what Knowing knows about itself", () => {
     const friend = vi.mocked(brain.answer).mock.calls[1]![0];
     expect(friend.about).toContain("/folders");
     expect(friend.about).not.toContain("/refund");
+  });
+});
+
+describe("video length and /stats", () => {
+  it("watches 5 minutes normally and 30 on Knowing Plus, and points to Plus when a video was cut", async () => {
+    const { deps, media, edits } = setup({ plan: PLAN });
+    await handleUpdate(text("/start join-abc123", 99), deps);
+    vi.mocked(media.fromLink).mockResolvedValueOnce({ frames: ["aGk="], transcript: "", caption: "long", notes: ["It's over 5 minutes long, so I watched the first 5."], cut: true });
+    await handleUpdate(text("https://vm.tiktok.com/long/", 99), deps);
+    expect(media.fromLink).toHaveBeenLastCalledWith("https://vm.tiktok.com/long/", MAX_SECONDS);
+    expect(edits.at(-1)?.html).toContain("Knowing Plus watches videos up to 30 minutes. /plan");
+  });
+
+  it("watches 30 minutes for someone on Knowing Plus", async () => {
+    const { deps, media } = setup({ plan: PLAN, limits: { videos: 0, questions: 0 } });
+    await handleUpdate(text("/start join-abc123", 99), deps);
+    await handleUpdate(planPaid("s1", "2099-12-03T10:00:00Z"), deps);
+    await handleUpdate(text("https://vm.tiktok.com/long/", 99), deps);
+    expect(media.fromLink).toHaveBeenLastCalledWith("https://vm.tiktok.com/long/", PLAN_MAX_SECONDS);
+  });
+
+  it("logs what each video and question cost, and which failed", async () => {
+    const { deps, store, media } = setup();
+    await handleUpdate(text("/start join-abc123", 99), deps);
+    await handleUpdate(text("https://vm.tiktok.com/one/", 99), deps);
+    vi.mocked(media.fromLink).mockRejectedValueOnce(new Error("gone"));
+    await handleUpdate(text("https://vm.tiktok.com/two/", 99), deps);
+    await handleUpdate(text("what was that drill?", 99), deps);
+    const videos = store.costs.find((c) => c.userId === 99 && c.kind === "videos");
+    expect(videos).toMatchObject({ uses: 2, failed: 1 });
+    expect(videos!.dollars).toBeGreaterThan(0);
+    expect(store.costs.find((c) => c.userId === 99 && c.kind === "questions")).toMatchObject({ uses: 1, failed: 0 });
+  });
+
+  it("keeps working when the cost log can't be written", async () => {
+    const { deps, store } = setup();
+    store.addCost = async () => {
+      throw new Error("relation bot_costs does not exist");
+    };
+    await handleUpdate(text("https://vm.tiktok.com/one/"), deps);
+    expect(store.saves).toHaveLength(1);
+  });
+
+  it("shows /stats to the owner only", async () => {
+    const { deps, sent, brain } = setup();
+    await handleUpdate(text("/start join-abc123", 99), deps);
+    await handleUpdate(text("https://vm.tiktok.com/one/", 99), deps);
+    await handleUpdate(text("/stats"), deps);
+    expect(sent.at(-1)?.html).toContain("Knowing stats");
+    expect(sent.at(-1)?.html).toContain("Joined: 1 of 10 spots");
+    expect(sent.at(-1)?.html).toContain("1 today, 1 this week, 1 in 30 days, 1 in all");
+    await handleUpdate(text("/stats", 99), deps);
+    expect(sent.at(-1)?.html).not.toContain("Knowing stats");
+    expect(brain.answer).toHaveBeenCalledTimes(1);
   });
 });

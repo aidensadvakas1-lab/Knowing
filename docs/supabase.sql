@@ -244,3 +244,30 @@ end $$;
 -- Only the bot's server key may call them.
 revoke execute on function bot_spend(bigint, text, int, int, text), bot_give_back(bigint, text, text, text), bot_plan_cost(bigint, numeric) from public, anon, authenticated;
 grant execute on function bot_spend(bigint, text, int, int, text), bot_give_back(bigint, text, text, text), bot_plan_cost(bigint, numeric) to service_role;
+
+-- What each video and question really cost, per person per day, for /stats.
+-- Measured from what each AI call reports (lib/bot/meter.ts). Deleted with the user.
+create table if not exists bot_costs (
+  day date not null,
+  user_id bigint not null references bot_users (id) on delete cascade,
+  kind text not null,                    -- 'videos' or 'questions'
+  uses int not null default 0,           -- watched or answered, failed ones included
+  failed int not null default 0,         -- failed and given back
+  dollars numeric not null default 0,
+  primary key (day, user_id, kind)
+);
+alter table bot_costs enable row level security;
+
+create or replace function bot_add_cost(p_id bigint, p_kind text, p_dollars numeric, p_ok boolean)
+returns void
+language sql as $$
+  insert into bot_costs (day, user_id, kind, uses, failed, dollars)
+  select (now() at time zone 'utc')::date, p_id, p_kind, 1, case when p_ok then 0 else 1 end, greatest(p_dollars, 0)
+  where p_kind in ('videos', 'questions')
+  on conflict (day, user_id, kind) do update
+    set uses = bot_costs.uses + 1,
+        failed = bot_costs.failed + excluded.failed,
+        dollars = bot_costs.dollars + excluded.dollars;
+$$;
+revoke execute on function bot_add_cost(bigint, text, numeric, boolean) from public, anon, authenticated;
+grant execute on function bot_add_cost(bigint, text, numeric, boolean) to service_role;

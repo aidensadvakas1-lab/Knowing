@@ -92,3 +92,42 @@ describe("using one up in the database", () => {
     expect(JSON.parse(calls.at(-1)!.body).wallet).toMatchObject({ videos: 1 });
   });
 });
+
+describe("costs and /stats in the database", () => {
+  it("logs a cost in one step", async () => {
+    const calls: Array<{ url: string; body: string }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init: RequestInit) => (calls.push({ url, body: String(init.body) }), new Response("", { status: 200 }))));
+    await new SupabaseStore("https://x.supabase.co", "key").addCost(7, "videos", 0.04, false);
+    expect(calls[0].url).toContain("/rest/v1/rpc/bot_add_cost");
+    expect(JSON.parse(calls[0].body)).toEqual({ p_id: 7, p_kind: "videos", p_dollars: 0.04, p_ok: false });
+  });
+
+  it("reads everything /stats needs a page at a time, and works before bot_costs exists", async () => {
+    const urls: string[] = [];
+    const users = Array.from({ length: 1_000 }, (_, i) => ({ id: i + 1, usage: { day: "2026-11-01", videos: 1, questions: 0 }, wallet: {}, referral: {}, digest: {}, updated_at: "2026-11-03T00:00:00Z" }));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        urls.push(url);
+        if (url.includes("bot_costs")) return new Response('{"code":"42P01","message":"relation \\"bot_costs\\" does not exist"}', { status: 404 });
+        if (url.includes("bot_users")) return Response.json(url.includes("offset=0") ? users : [{ ...users[0], id: 1_001 }]);
+        if (url.includes("saves")) return Response.json([{ user_id: 5, created_at: "2026-11-03T00:00:00Z", type: "tip", folder: "", topic: "Gym, Legs" }]);
+        return Response.json([{ user_id: 5, created_at: "2026-11-03T00:00:00Z" }]);
+      }),
+    );
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const data = await new SupabaseStore("https://x.supabase.co", "key").statsData();
+    expect(data.users).toHaveLength(1_001);
+    expect(urls.filter((u) => u.includes("bot_users"))).toHaveLength(2);
+    expect(data.saves[0]).toEqual({ userId: 5, createdAt: "2026-11-03T00:00:00Z", type: "tip", folder: "Gym" });
+    expect(data.chats).toHaveLength(1);
+    expect(data.costs).toBeNull();
+  });
+
+  it("forgets someone's costs with the rest of them", async () => {
+    const store = new MemoryStore();
+    await store.addCost(9, "questions", 0.02, true);
+    await store.deleteUser(9);
+    expect(store.costs).toEqual([]);
+  });
+});

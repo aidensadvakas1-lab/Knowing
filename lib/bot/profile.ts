@@ -41,7 +41,7 @@ export const ALL_COMMANDS: Command[] = [
   { command: "memory", short: "What I remember about you", does: "What I remember about you, with a button to forget each thing.", menu: true },
   { command: "usage", short: "What you have left", does: "Your free videos and questions left, and any extras you bought or earned. Free to check. /limits does the same.", menu: true },
   { command: "buy", short: "Get more videos and questions", does: "A refill of videos and questions together, or Knowing Plus, paid with Telegram Stars. Refills never expire.", menu: true },
-  { command: "plan", short: "Knowing Plus: more every day", does: "Knowing Plus: 5 videos and 10 questions every day, starting again at midnight UTC, for a monthly Stars subscription. Shows today's numbers, and cancels or turns renewal back on.", menu: true },
+  { command: "plan", short: "Knowing Plus: more every day", does: "Knowing Plus: 5 videos and 10 questions every day, starting again at midnight UTC, and videos up to 30 minutes long, for a monthly Stars subscription. Shows today's numbers, and cancels or turns renewal back on.", menu: true },
   { command: "invite", short: "Invite friends, earn free videos", does: "Your own invite link. When a friend joins with it, saves a video and asks me something, you get 3 free videos, for up to 5 friends.", menu: true },
   { command: "support", short: "Ask the owner for help", does: "Sends your message to the owner, like /support it didn't answer me. The reply comes here.", menu: true },
   { command: "paysupport", short: "Help with a payment", does: "For a payment problem or a refund, like /paysupport I paid but didn't get my videos." },
@@ -54,6 +54,7 @@ export const OWNER_COMMANDS: Command[] = [
   { command: "invite", short: "", does: "For you, the owner: the bot's main link, and how many people have joined." },
   { command: "refund", short: "", does: "/refund user_id payment_id refunds a Star payment (each payment message has the exact command)." },
   { command: "reply", short: "", does: "/reply user_id message answers someone's /support or /paysupport." },
+  { command: "stats", short: "", does: "For you, the owner: people, videos, questions, Stars earned and what the AI really cost." },
 ];
 
 /** Shown in the menu button next to the message box. */
@@ -166,7 +167,7 @@ export function commandsText(owner = false): string {
  */
 export function aboutKnowing(s: Setup, owner = false): string {
   const commands = [...ALL_COMMANDS, ...(owner ? OWNER_COMMANDS : [])].map((c) => `/${c.command}: ${c.does}`).join("\n");
-  return `What Knowing is: a Telegram bot. People send it videos to keep, and it watches each one (frames, speech and on-screen text, the first 5 minutes), saves exactly what it showed, files it in a folder and reacts like a friend. Later they ask about them in their own words, by text or a voice message (up to a minute), and get the exact thing back with the moment in the video and a link. They can also just chat; it remembers what they tell it and every chat.
+  return `What Knowing is: a Telegram bot. People send it videos to keep, and it watches each one (frames, speech and on-screen text: the first 5 minutes, or 30 on Knowing Plus), saves exactly what it showed, files it in a folder and reacts like a friend. Later they ask about them in their own words, by text or a voice message (up to a minute), and get the exact thing back with the moment in the video and a link. They can also just chat; it remembers what they tell it and every chat.
 Saving: share from TikTok, YouTube and most apps (Share, then Telegram, then Knowing), paste a link, or send a video file in any format, a GIF or a round video (Telegram lets bots take files up to 20 MB). Instagram, X and Facebook don't let it download from a link, so the file has to be sent. A link from those doesn't use up a video.
 Buttons under a saved video: Show steps; Start now (step by step, for drills and plans); 📂 with its folder's name (move it, or make a new folder); 📌 Collect (tick the collections it's in, or make a new one); Fix something (say what's wrong and it's corrected); Add what it says (paste the words when it couldn't hear them); Keep both or Replace the old one (when it's a repeat). A save's full card (from Show steps, or a number in a folder) also has Delete.
 Folders: every video is in one. It picks the folder, going by their folders, what they've moved where and their rules. They move a video with 📂, or many at once by asking ("put my pasta videos in Dinner ideas"), rename, merge or delete a folder in /folders (deleting moves its videos to Unsorted) or by asking, and set rules by asking ("anything about cars goes in Car mods"). Big folders split into sections by themselves.

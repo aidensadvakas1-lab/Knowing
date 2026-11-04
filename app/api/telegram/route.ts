@@ -21,9 +21,9 @@ import { apiError } from "@/lib/server";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-// Watching a video (download, frames, speech, on-screen text, then Claude) can take over a minute.
-// Vercel's Hobby plan allows up to 300 seconds with Fluid compute, which new projects have on.
-export const maxDuration = 120;
+// Watching a video (download, frames, speech, on-screen text, then Claude) can take over a minute,
+// and a 30-minute one on Knowing Plus a few. Vercel allows up to 300 seconds with Fluid compute, which new projects have on.
+export const maxDuration = 300;
 
 /**
  * Free videos and questions per person, given once (they don't refill). Override with

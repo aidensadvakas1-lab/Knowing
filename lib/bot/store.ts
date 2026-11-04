@@ -7,7 +7,8 @@
  */
 import { fetchRetry } from "../net";
 import { readCollections } from "./collections";
-import { readRules } from "./folders";
+import { readRules, topicFolder } from "./folders";
+import type { CostRow, StatsData } from "./stats";
 import type { BotUser, Collection, DigestState, FilingRule, PackKind, Payment, Plan, Referral, Save, Sitting, Spent, SpendRule, Store, Usage, Wallet } from "./types";
 
 /** Recent turns kept per user, so follow-ups make sense. Older chats are kept as searchable memories. */
@@ -127,6 +128,10 @@ export class MemoryStore implements Store {
   /** When each user's row was last saved, like updated_at. */
   active = new Map<number, string>();
   saves: Save[] = [];
+  /** Logged costs (bot_costs). */
+  costs: CostRow[] = [];
+  /** Chats for /stats, like chat_memories. */
+  chats: Array<{ userId: number; createdAt: string }> = [];
 
   async getUser(id: number) {
     return structuredClone(this.users.get(id) ?? newUser(id));
@@ -166,6 +171,29 @@ export class MemoryStore implements Store {
     this.wallets.set(userId, wallet);
     return wallet.plan.cost;
   }
+  async addCost(userId: number, kind: PackKind, dollars: number, ok: boolean) {
+    const day = new Date().toISOString().slice(0, 10);
+    let row = this.costs.find((c) => c.day === day && c.userId === userId && c.kind === kind);
+    if (!row) this.costs.push((row = { day, userId, kind, uses: 0, failed: 0, dollars: 0 }));
+    row.uses += 1;
+    if (!ok) row.failed += 1;
+    row.dollars += Math.max(0, dollars);
+  }
+  async statsData(): Promise<StatsData> {
+    return {
+      users: [...this.users.values()].map((u) => ({
+        id: u.id,
+        usage: { ...u.usage },
+        wallet: readWallet(structuredClone(this.wallets.get(u.id))),
+        referral: readReferral(this.referrals.get(u.id)),
+        digest: readDigest(this.digests.get(u.id)),
+        active: this.active.get(u.id) ?? "",
+      })),
+      saves: this.saves.map((s) => ({ userId: s.userId, createdAt: s.createdAt, type: s.type, folder: s.folder || topicFolder(s.topic) })),
+      chats: structuredClone(this.chats),
+      costs: structuredClone(this.costs),
+    };
+  }
   async addSave(save: Save) {
     this.saves.unshift(structuredClone(save));
   }
@@ -183,6 +211,7 @@ export class MemoryStore implements Store {
     this.filing.delete(userId);
     this.collections.delete(userId);
     this.saves = this.saves.filter((s) => s.userId !== userId);
+    this.costs = this.costs.filter((c) => c.userId !== userId);
   }
   async hasUser(id: number) {
     return this.users.has(id);
@@ -327,6 +356,9 @@ const fromUserRow = (r: UserRow): BotUser => ({
   usage: readUsage(r.usage),
   sitting: readSitting(r.sitting),
 });
+
+/** Rows read per request for /stats. */
+const STATS_PAGE = 1_000;
 
 export class SupabaseStore implements Store {
   constructor(
@@ -519,6 +551,38 @@ export class SupabaseStore implements Store {
         return row.wallet.plan.cost;
       },
     );
+  }
+
+  async addCost(userId: number, kind: PackKind, dollars: number, ok: boolean): Promise<void> {
+    await this.rest("rpc/bot_add_cost", { method: "POST", body: JSON.stringify({ p_id: userId, p_kind: kind, p_dollars: Math.max(0, dollars), p_ok: ok }) });
+  }
+
+  /** Every row of a query, a page at a time, up to `most`. */
+  private async all<T>(path: string, most = 20_000): Promise<T[]> {
+    const out: T[] = [];
+    for (let offset = 0; offset < most; offset += STATS_PAGE) {
+      const page = await this.rest<T[]>(`${path}&limit=${STATS_PAGE}&offset=${offset}`);
+      out.push(...page);
+      if (page.length < STATS_PAGE) break;
+    }
+    return out;
+  }
+
+  async statsData(): Promise<StatsData> {
+    const since = new Date(Date.now() - 30 * 86_400_000).toISOString();
+    const [users, saves, chats, costs] = await Promise.all([
+      this.all<{ id: number; usage: unknown; wallet: unknown; referral?: unknown; digest?: unknown; updated_at: string }>("bot_users?select=id,usage,wallet,referral,digest,updated_at&order=id"),
+      this.all<{ user_id: number; created_at: string; type: string; folder?: string; topic: string }>("saves?select=user_id,created_at,type,folder,topic&order=created_at.desc"),
+      this.all<{ user_id: number; created_at: string }>(`chat_memories?select=user_id,created_at&created_at=gte.${encodeURIComponent(since)}&order=created_at.desc`).catch((error) => (console.error("Reading chats for /stats failed", error), [])),
+      // Missing until docs/supabase.sql is run again.
+      this.all<{ day: string; user_id: number; kind: string; uses: number; failed: number; dollars: number | string }>(`bot_costs?select=*&day=gte.${since.slice(0, 10)}&order=day`).catch((error) => (console.error("Reading costs for /stats failed", error), null)),
+    ]);
+    return {
+      users: users.map((r) => ({ id: Number(r.id), usage: readUsage(r.usage), wallet: readWallet(r.wallet), referral: readReferral(r.referral), digest: readDigest(r.digest), active: r.updated_at ?? "" })),
+      saves: saves.map((r) => ({ userId: Number(r.user_id), createdAt: r.created_at, type: r.type ?? "info", folder: r.folder || topicFolder(r.topic ?? "") })),
+      chats: chats.map((r) => ({ userId: Number(r.user_id), createdAt: r.created_at })),
+      costs: costs && costs.map((r) => ({ day: r.day, userId: Number(r.user_id), kind: r.kind === "questions" ? "questions" : "videos", uses: Number(r.uses) || 0, failed: Number(r.failed) || 0, dollars: Number(r.dollars) || 0 })),
+    };
   }
 
   async setUsage(userId: number, usage: Usage): Promise<void> {

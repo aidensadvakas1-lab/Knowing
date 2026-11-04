@@ -82,7 +82,7 @@ describe("the cost meter", () => {
 
   it("counts unknown audio as the longest, and ignores charges outside a use", async () => {
     charge(5); // nothing is being measured
-    expect(await costOf(async () => chargeAudio(0))).toBeCloseTo(0.001 + 5 * 0.003, 6);
+    expect(await costOf(async () => chargeAudio(0))).toBeCloseTo(0.001 + 30 * 0.003, 6);
     expect(await costOf(async () => {})).toBeCloseTo(0.001, 6);
   });
 
